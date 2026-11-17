@@ -247,6 +247,9 @@ GlyphPanel   = {glyphs:"1043FEE69929", digits[12], target{ua,coords,galaxy}, mod
 * **实现**：自研 EXML 模板（8 槽）→ 多候选签名定位槽位 → `WriteProcessMemory` 写 seed → 回读比对。
 * **降级**：签名全未命中 → 禁用并提示「游戏版本未适配，可用符文浮窗代替」。
 * **验收**：写入后游戏内表情领取，外观与预览一致；游戏更新后签名失败能优雅退出不写。
+* **兼容 Super Ship Hunter**：若用户已装 SSH 的数据 Mod，starforge 会复用它的
+  `R_TEMP_ROBOT` / `R_TEMP_EXOTIC` 两个槽（探测里标 `[SSH兼容]`），无需换 Mod 即可测通；
+  两槽 `Slots` 都是 120，因此**只靠 8 字节出厂种子区分**。自家模板与 SSH 同时存在时，优先自家。
 * **宁可不写的三种情况**：候选缺少 Slots 佐证（得分 <0.6）、多个候选同样可信、回读校验不符。
 
 ## F07 星系搜索 ✅

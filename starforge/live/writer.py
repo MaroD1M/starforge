@@ -16,11 +16,17 @@ import struct
 from dataclasses import dataclass
 
 from ..core import log
-from . import exml, mem as mem_mod
+from . import compat, exml, mem as mem_mod
 
 log = log.get("live.writer")
 
 WINDOW = 0x60          # 候选附近检查范围
+
+
+def all_entries() -> list[dict]:
+    """我们自己的 8 槽 + 兼容 SSH 的 2 槽（后者只在用户装了 SSH 时才会命中）。"""
+    own = [{**e, "source": "starforge"} for e in exml.manifest()]
+    return own + compat.manifest()
 MIN_REGION = 0x1000
 
 
@@ -72,78 +78,104 @@ def _still_valid(proc, slot: Slot, entry: dict) -> bool:
     return struct.pack("<I", entry["slots"]) in win
 
 
-TAG7 = exml.TAG            # b"STARFOR"：一次扫描就能把 8 种模板全找出来
-
-
 def scan_all(proc, entries: list[dict] | None = None, fresh: bool = False,
-             max_per_type: int = 32) -> dict[str, list[tuple[int, float]]]:
-    """**只读**、单次遍历内存，返回 {type: [(addr, score), ...]}。
+             max_per_entry: int = 32) -> dict[str, list[tuple[int, float]]]:
+    """**只读**、单次遍历内存，返回 {entry_id: [(addr, score), ...]}。
 
-    一次扫描找公共 7 字节前缀，再用第 8 字节（0xA0+i）区分船型——
-    比"每种船型各扫一遍"省 8 倍 IO，也让远程诊断只需一次遍历。
+    对我们的 8 槽，8 个出厂种子共享 7 字节前缀 `STARFOR`，先按前缀粗筛再按第 8 字节分类；
+    对兼容条目（SSH 的种子互不相同）则逐个种子搜索。两种都只读。
     """
-    entries = entries or exml.manifest()
-    by_index = {e["index"]: e for e in entries}
+    entries = entries if entries is not None else all_entries()
     cache = getattr(proc, "_sf_scan", None)
-    if cache is not None and not fresh:
+    cache_key = tuple(e["id"] for e in entries)
+    if cache is not None and not fresh and getattr(proc, "_sf_scan_key", None) == cache_key:
         return cache
 
-    found: dict[str, list[tuple[int, float]]] = {e["type"]: [] for e in entries}
-    total_hits = 0
+    found: dict[str, list[tuple[int, float]]] = {e["id"]: [] for e in entries}
+    def _is_own(e: dict) -> bool:                     # 缺省视为我们自己的槽
+        return e.get("source", "starforge") == "starforge"
+
+    own = [e for e in entries if _is_own(e)]
+    by_index = {e["index"]: e for e in own}
+
     for region in proc.regions(min_size=MIN_REGION):
         try:
             buf = proc.read(region.base, region.size)
         except mem_mod.LiveUnsupported:
             continue
-        start = 0
-        while True:
-            i = buf.find(TAG7, start)
-            if i < 0:
-                break
-            start = i + 1
-            if i + 8 > len(buf):
-                break
-            idx = buf[i + 7]
-            entry = by_index.get(idx - 0xA0) if 0xA0 <= idx <= 0xAF else None
-            if entry is None:
+        # (a) 我们的 8 槽：一次 find 覆盖全部
+        if own:
+            start = 0
+            while True:
+                i = buf.find(exml.TAG, start)
+                if i < 0 or i + 8 > len(buf):
+                    break
+                start = i + 1
+                idx = buf[i + 7]
+                entry = by_index.get(idx - 0xA0) if 0xA0 <= idx <= 0xAF else None
+                if entry is None:
+                    continue
+                addr = region.base + i
+                bucket = found[entry["id"]]
+                if len(bucket) < max_per_entry:
+                    bucket.append((addr, _score(proc, addr, entry)))
+        # (b) 兼容条目：逐个种子搜（它们的种子彼此不同，不会串味）
+        for e in entries:
+            if _is_own(e):
                 continue
-            addr = region.base + i
-            score = _score(proc, addr, entry)
-            bucket = found[entry["type"]]
-            if len(bucket) < max_per_type:
-                bucket.append((addr, score))
-            total_hits += 1
+            pat = struct.pack("<Q", e["factory_seed"])
+            start = 0
+            while True:
+                i = buf.find(pat, start)
+                if i < 0:
+                    break
+                start = i + 1
+                addr = region.base + i
+                bucket = found[e["id"]]
+                if len(bucket) < max_per_entry:
+                    bucket.append((addr, _score(proc, addr, e)))
+
     try:
         setattr(proc, "_sf_scan", found)
+        setattr(proc, "_sf_scan_key", cache_key)
     except Exception:                                       # noqa: BLE001
         pass
-    log.info("模板槽扫描：%d 处命中，覆盖 %d 种船型", total_hits,
-             sum(1 for v in found.values() if v))
+    hits = sum(len(v) for v in found.values())
+    log.info("模板槽扫描：%d 处命中，覆盖 %d 条模板", hits, sum(1 for v in found.values() if v))
     return found
 
 
 def locate(proc, type_: str, entries: list[dict] | None = None, fresh: bool = False) -> Slot:
     """在进程内存里找到 type_ 对应模板槽的种子地址（优先用缓存）。"""
-    entries = entries or exml.manifest()
-    entry = next((e for e in entries if e["type"] == type_), None)
-    if entry is None:
+    entries = entries if entries is not None else all_entries()
+    matches = [e for e in entries if e["type"] == type_]
+    if not matches:
         raise LocateError(f"模板清单里没有船型 {type_}")
+    entry = matches[0]                                   # 自己的模板优先；没有则用兼容槽
 
     cache = _cache(proc)
     if not fresh and type_ in cache and _still_valid(proc, cache[type_], entry):
         return cache[type_]
 
     scanned = scan_all(proc, entries, fresh=fresh)
-    scored = [(a, s) for a, s in scanned.get(type_, []) if s >= 0.6]   # 至少要有 Slots 佐证
+    # 同一船型可能既有我们的槽、也有 SSH 的槽：全收，按得分排序；
+    # 得分并列时优先"自己的模板"（更可控），再按地址稳定排序。
+    scored = []
+    for e in matches:
+        prefer = 0 if e.get("source", "starforge") == "starforge" else 1
+        for a, sc in scanned.get(e["id"], []):
+            if sc >= 0.6:
+                scored.append((prefer, a, sc, e))
     if not scored:
         raise LocateError(
             f"没找到 {type_} 的模板槽。可能原因：① 没装 starforge-templates 数据 Mod；"
             "② 游戏版本变了导致布局不同；③ 还没进过存档。")
-    scored.sort(key=lambda x: (-x[1], x[0]))
-    if len(scored) > 1 and abs(scored[0][1] - scored[1][1]) < 1e-9:
+    scored.sort(key=lambda x: (x[0], -x[2], x[1]))
+    if len(scored) > 1 and scored[0][0] == scored[1][0] and abs(scored[0][2] - scored[1][2]) < 1e-9:
         raise LocateError(f"{type_} 的模板槽命中多个同样可信的候选（{len(scored)} 个），拒绝写入")
-    addr, score = scored[0]
-    log.info("定位 %s 模板槽：0x%X（score %.2f）", type_, addr, score)
+    _prefer, addr, score, entry = scored[0]
+    log.info("定位 %s 模板槽：0x%X（score %.2f，来源 %s）", type_, addr, score,
+             entry.get("source", "starforge"))
     slot = Slot(index=entry["index"], type=type_, seed_addr=addr, score=score,
                 verified_slots=True, factory_seed=entry["factory_seed"], slots=entry["slots"])
     cache[type_] = slot
@@ -173,11 +205,11 @@ def probe(proc, entries: list[dict] | None = None) -> dict:
     用途：你在 Windows 上跑 E 段失败时，把这份 JSON 发我，我就能判断是
     模板没装、内存被归一化、还是多份模板冲突。
     """
-    entries = entries or exml.manifest()
+    entries = entries if entries is not None else all_entries()
     scanned = scan_all(proc, entries, fresh=True)
     out = []
     for e in entries:
-        cands = sorted(scanned.get(e["type"], []), key=lambda x: (-x[1], x[0]))
+        cands = sorted(scanned.get(e["id"], []), key=lambda x: (-x[1], x[0]))
         good = [c for c in cands if c[1] >= 0.6]
         if not cands:
             reason = "没有命中：模板 Mod 可能没装/没生效"
@@ -188,7 +220,8 @@ def probe(proc, entries: list[dict] | None = None) -> dict:
         else:
             reason = "可写入"
         ambiguous = len(good) > 1 and abs(good[0][1] - good[1][1]) < 1e-9
-        out.append({"type": e["type"], "label": e["label"], "slots": e["slots"],
+        out.append({"type": e["type"], "id": e["id"], "source": e.get("source", "starforge"),
+                    "label": e["label"], "slots": e["slots"],
                     "factory_seed": hex(e["factory_seed"]),
                     "candidates": [{"addr": hex(a), "score": round(sc, 3)} for a, sc in cands[:8]],
                     "chosen": (hex(good[0][0]) if (good and not ambiguous) else None),

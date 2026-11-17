@@ -129,10 +129,15 @@ def _decode_dds(data: bytes) -> tuple[int, int, bytes]:
     return w2, h2, rgba.tobytes()
 
 
-@lru_cache(maxsize=32)
+_ICON_CACHE: dict[tuple[str, int], np.ndarray] = {}       # 只缓存成功结果（负结果会因设置变化而失效）
+
+
 def icon_rgb(digit: str, size: int = 96) -> np.ndarray | None:
-    """游戏原版符文 → (size,size,3) float32；缺依赖/缺 pak 返回 None。"""
+    """游戏原版符文 → (size,size,3) float32；缺依赖/缺 pak 返回 None（不缓存失败）。"""
     digit = str(digit).upper()
+    hit = _ICON_CACHE.get((digit, size))
+    if hit is not None:
+        return hit
     pak = _pak_path()
     if not pak or len(digit) != 1 or digit not in HEX:
         return None
@@ -153,7 +158,9 @@ def icon_rgb(digit: str, size: int = 96) -> np.ndarray | None:
             yi = np.clip((np.arange(size) * (h / size)).astype(int), 0, h - 1)
             xi = np.clip((np.arange(size) * (w / size)).astype(int), 0, w - 1)
             rgb = rgb[yi][:, xi]
-        return np.clip(rgb, 0, 1).astype(np.float32)
+        out_rgb = np.clip(rgb, 0, 1).astype(np.float32)
+        _ICON_CACHE[(digit, size)] = out_rgb
+        return out_rgb
     except Exception as e:                          # noqa: BLE001
         log.debug("符文图标解码不可用（%s: %s），退回位图字体", type(e).__name__, e)
         return None

@@ -384,9 +384,10 @@
     $('#diagOut').textContent = '探测中（只读，不写内存）…';
     try {
       const r = await api('/api/live/probe');
+      const tag = t => t.source === 'super-ship-hunter' ? '[SSH兼容]' : '[starforge]';
       const lines = r.types.map(t => {
         const cands = t.candidates.map(c => `${c.addr}(${c.score})`).join(' ') || '—';
-        return `${t.type.padEnd(9)} 槽位${t.slots}  ${t.chosen ? '✓ ' + t.chosen : '✗'}  ${t.reason}\n          候选: ${cands}`;
+        return `${tag(t)} ${t.type.padEnd(9)} 槽位${t.slots}  ${t.chosen ? '✓ ' + t.chosen : '✗'}  ${t.reason}\n          候选: ${cands}`;
       });
       $('#diagOut').textContent = lines.join('\n') + '\n\n（把这段发给我可定位问题）';
     } catch (e) { $('#diagOut').textContent = '探测失败：' + e.message; }

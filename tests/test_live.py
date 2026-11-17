@@ -267,7 +267,7 @@ def test_scan_all_finds_all_types_in_one_pass():
     images, base = _image(entries)                      # 同一块内存里放全部 8 种
     proc = mem_mod.FakeProcess(images)
     found = writer.scan_all(proc, entries, fresh=True)
-    assert set(found) == {e["type"] for e in entries}
+    assert set(found) == {e["id"] for e in entries}
     assert all(len(v) == 1 for v in found.values()), {k: len(v) for k, v in found.items()}
     # 每种都应有 Slots 佐证（score 1.0）
     assert all(score >= 0.99 for v in found.values() for _a, score in v)
@@ -316,3 +316,63 @@ def test_probe_api_requires_windows(client):
         assert r.status_code in (200, 409)
     else:
         assert r.status_code == 503
+
+
+# ---------------------------------------------------------------- 兼容 Super Ship Hunter 的模板槽
+
+from starforge.live import compat                       # noqa: E402
+
+
+def test_compat_manifest_is_u64():
+    m = compat.manifest()
+    assert {e["type"] for e in m} == {"sentinel", "exotic"}
+    for e in m:
+        assert 0 <= e["factory_seed"] < 2 ** 64
+        assert e["slots"] == 120 and e["source"] == "super-ship-hunter"
+    # 两个槽 seed 不同（只能靠 8 字节种子区分，Slots 都是 120）
+    assert m[0]["factory_seed"] != m[1]["factory_seed"]
+
+
+def _ssh_image():
+    import struct
+    buf = bytearray(0x8000)
+    for i, e in enumerate(compat.manifest()):
+        off = 0x2000 + i * 0x200
+        buf[off:off + 8] = struct.pack("<Q", e["factory_seed"])
+        buf[off + 0x20:off + 0x24] = struct.pack("<I", e["slots"])
+    return [(0x20000000, buf)], 0x20000000
+
+
+def test_locate_uses_ssh_slot_when_our_mod_absent():
+    images, base = _ssh_image()
+    proc = mem_mod.FakeProcess(images)
+    slot = writer.locate(proc, "sentinel", writer.all_entries())
+    assert slot.seed_addr == base + 0x2000
+
+
+def test_our_slot_wins_over_ssh_when_both_present():
+    import struct
+    entries = writer.all_entries()
+    buf = bytearray(0x9000)
+    ours = next(e for e in entries if e["type"] == "sentinel" and e.get("source") == "starforge")
+    ssh = next(e for e in entries if e["type"] == "sentinel" and e.get("source") == "super-ship-hunter")
+    for off, e in ((0x1000, ours), (0x3000, ssh)):
+        buf[off:off + 8] = struct.pack("<Q", e["factory_seed"])
+        buf[off + 0x20:off + 0x24] = struct.pack("<I", e["slots"])
+    proc = mem_mod.FakeProcess([(0x30000000, buf)])
+    slot = writer.locate(proc, "sentinel", entries)
+    assert slot.seed_addr == 0x30000000 + 0x1000          # 自己的模板优先
+
+
+def test_probe_reports_sources():
+    images, _ = _ssh_image()
+    proc = mem_mod.FakeProcess(images)
+    rep = writer.probe(proc, writer.all_entries())
+    by_source = {}
+    for t in rep["types"]:
+        by_source.setdefault(t["source"], []).append(t)
+    assert set(by_source) == {"starforge", "super-ship-hunter"}
+    ssh_sent = next(t for t in by_source["super-ship-hunter"] if t["type"] == "sentinel")
+    assert ssh_sent["chosen"] and ssh_sent["reason"] == "可写入"
+    own_sent = next(t for t in by_source["starforge"] if t["type"] == "sentinel")
+    assert own_sent["chosen"] is None and "没装" in own_sent["reason"]

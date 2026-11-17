@@ -90,7 +90,10 @@ starforge\starforge.exe glyph-overlay 1043FEE69929 --click-through
 
 ## E. 实时通道（需要开游戏，风险最高，最后做）
 
-先装模板 Mod：
+> **快捷通道**：如果你已经装了 **Super Ship Hunter** 的 Mod，可以跳过"装我们的模板"这一步，
+> 直接测 `sentinel` / `exotic` 两型——starforge 会自动识别并复用它的两个槽（探测里标 `[SSH兼容]`）。
+
+先装模板 Mod（可选，装了就 8 种船型都能测）：
 
 - [ ] 设置页 →「生成模板 Mod」→ 记下生成路径
 - [ ] 把 `starforge-templates` 整个文件夹复制到 `<游戏目录>\GAMEDATA\MODS\`
