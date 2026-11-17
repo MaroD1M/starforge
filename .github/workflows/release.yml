@@ -27,6 +27,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: 验证打包内含 tkinter（符文置顶窗口需要）
+        shell: pwsh
+        run: |
+          python -c "import tkinter; print('tkinter available:', tkinter.TkVersion)"
+
       - name: 自检（不依赖游戏文件）
         shell: pwsh
         env:
@@ -40,7 +45,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --name starforge --onedir `
             --collect-all hgpaktool --collect-submodules starforge `
-            --exclude-module tkinter --exclude-module PyQt5 `
+            --hidden-import tkinter `
             starforge/__main__.py
 
       - name: 压缩产物
