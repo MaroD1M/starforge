@@ -129,6 +129,23 @@ def cmd_settings(a) -> int:
     return 0
 
 
+def cmd_glyph_overlay(a) -> int:
+    from . import glyphs as glyph_mod, overlay
+    try:
+        digits = glyph_mod.digits_for(a.glyphs)
+        png = glyph_mod.panel_png(digits, tile=a.tile)
+    except ValueError as e:
+        print(f"符文串无效：{e}", file=sys.stderr)
+        return 2
+    try:
+        overlay.show(digits, png, alpha=a.alpha, click_through=a.click_through, scale=a.scale)
+    except overlay.OverlayUnsupported as e:
+        print(f"无法显示置顶窗口：{e}\n可改用：python -m starforge serve（浏览器里的符文弹层）",
+              file=sys.stderr)
+        return 3
+    return 0
+
+
 def cmd_selftest(a) -> int:
     from .data import load_catalog, load_icons
     gd = settings.current().gamedata_resolved()
@@ -193,6 +210,14 @@ def main(argv=None) -> int:
     p.add_argument("--game")
     p.add_argument("--write", type=lambda v: v.lower() in ("1", "true", "yes", "on"), default=None)
     p.set_defaults(func=cmd_settings)
+
+    p = sub.add_parser("glyph-overlay", help="把 12 个传送门符文贴成置顶窗口")
+    p.add_argument("glyphs", help="12 位 glyph 串或系统地址")
+    p.add_argument("--alpha", type=float, default=0.94)
+    p.add_argument("--tile", type=int, default=72, help="每个符文像素")
+    p.add_argument("--scale", type=float, default=1.0)
+    p.add_argument("--click-through", action="store_true", help="鼠标穿透（不挡游戏点击）")
+    p.set_defaults(func=cmd_glyph_overlay)
 
     p = sub.add_parser("selftest", help="自检")
     p.set_defaults(func=cmd_selftest)

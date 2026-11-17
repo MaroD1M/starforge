@@ -14,7 +14,7 @@
 
   const S = {
     ship: 'fighter', catalog: null, want: new Set(), avoid: new Set(), mode: 'want',
-    results: [], selected: null, writing: false, mine: [], mineSel: null,
+    results: [], selected: null, writing: false, mine: [], mineSel: null, live: {supported:false, running:false},
     glyphs: '', viewer: null, jobTimer: null,
   };
 
@@ -35,6 +35,13 @@
       if (h.gamedata) await loadCatalog(S.ship);
       else $('#searchMsg').textContent = '未配置部件目录（GAMEDATA）：请到设置页指定';
       await loadSettings();
+      try {
+        S.live = await api('/api/live/status');
+        const txt = S.live.supported
+          ? (S.live.running ? `可用 · 已连上 NMS.exe（PID ${S.live.pid}）` : '可用 · 游戏未运行')
+          : '不可用（仅 Windows）';
+        $('#liveStatus').textContent = txt;
+      } catch (e) { $('#liveStatus').textContent = '检测失败：' + e.message; }
     } catch (e) { $('#searchMsg').textContent = '启动失败：' + e.message; }
   }
 
@@ -155,6 +162,7 @@
         <button class="mini" data-act="copySeed">复制种子</button>
         <button class="mini" data-act="copyShare">复制分享码</button>
         ${panel === 'searchDetail' ? '<button class="mini primary" data-act="apply">写回存档…</button>' : ''}
+        ${S.live.supported ? '<button class="mini" data-act="live">送进游戏（模板槽）</button>' : ''}
       </div>
       <div class="kv"></div>
       <div class="parts"></div>`;
@@ -182,6 +190,14 @@
       host.querySelector('.parts').innerHTML = parts.map(p => `<img loading="lazy" title="${esc(p)}" src="/api/icons/${encodeURIComponent(p)}.png?ship=${ref.type}">`).join('');
     }
     if (panel === 'searchDetail') host.querySelector('[data-act="apply"]').onclick = () => openApply(ref);
+    const liveBtn = host.querySelector('[data-act="live"]');
+    if (liveBtn) liveBtn.onclick = () => {
+      if (!S.live.running) { alert('游戏没在运行。先启动游戏并载入存档，再点这里。'); return; }
+      if (!confirm(`把这艘 ${ref.type} 的外观（${ref.seed}）写进游戏内模板槽？\n只改模板种子，不动你的船。`)) return;
+      post('/api/live/push', { type: ref.type, seed: ref.seed, confirm: true })
+        .then(r => alert(`已写入模板槽（地址 0x${r.address.toString(16)}），游戏内用对应的领取方式即可看到。`))
+        .catch(e => alert('失败：' + e.message));
+    };
   }
 
   async function copy(text) {
@@ -339,6 +355,13 @@
       const c = await api('/api/capabilities');
       $('#lvBadge').textContent = c.preview_level === 'L1' ? 'L1 真 3D' : 'L0 部件图';
       if (!$('#shipSel').options.length) await loadCatalog(S.ship);
+    } catch (e) { $('#setMsg').textContent = e.message; }
+  };
+  $('#genMod').onclick = async () => {
+    const dest = prompt('生成到哪个目录？（留空 = 缓存目录）', '');
+    try {
+      const r = await post('/api/live/template-mod', dest ? { dest } : {});
+      $('#setMsg').textContent = `已生成：${r.path}`;
     } catch (e) { $('#setMsg').textContent = e.message; }
   };
   $('#runDiag').onclick = async () => {

@@ -31,12 +31,16 @@ TEMPLATES = [
     ("solar", "MODELS/COMMON/SPACECRAFT/SAILSHIP/SAILSHIP_PROC.SCENE.MBIN", "太阳帆", "Sail"),
 ]
 
-# 出厂种子：ASCII "STARFORGE" + 序号，用于"写入前"的首次定位
-BASE_SEED = int.from_bytes(b"STARFORGE", "little")
+# 出厂种子：7 字节 ASCII 前缀 + 1 字节序号 = 恰好 64 位（种子字段是 int64！）
+# 之前用 9 字节 "STARFORGE" 会溢出 u64 —— 已被测试抓住。
+TAG = b"STARFOR"
 
 
 def factory_seed(index: int) -> int:
-    return BASE_SEED + index
+    """0x00..0x07 对应的可搜索、互不相同的 64 位出厂种子。"""
+    if not 0 <= index < 16:
+        raise ValueError("index 必须在 0..15")
+    return int.from_bytes(TAG, "little") | ((0xA0 + index) << 56)
 
 
 def slots_for(index: int) -> int:

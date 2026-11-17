@@ -388,3 +388,45 @@ def api_diagnostics():
         out["saves"] = f"不可用：{e}"
     out["system"] = system.capabilities()
     return ok(**out)
+
+
+# ---------------------------------------------------------------- 实时通道（M5）
+
+@bp.get("/live/status")
+def api_live_status():
+    from ..live import writer
+    return ok(**writer.status())
+
+
+@bp.post("/live/template-mod")
+def api_live_template_mod():
+    """生成模板 Mod 到指定目录（默认写进缓存目录，供用户复制到 GAMEDATA/MODS）。"""
+    from ..live import exml
+    body = request.get_json(silent=True) or {}
+    dest = body.get("dest") or str(paths.cache_dir())
+    out = exml.write_mod(dest)
+    return ok(**out, hint="把 starforge-templates 文件夹复制到 游戏目录/GAMEDATA/MODS/ 即可")
+
+
+@bp.post("/live/push")
+def api_live_push():
+    from ..live import mem, writer
+    settings.require_write()                       # 仍受写开关约束
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirm"):
+        raise BadRequest("缺少 confirm=true（写入游戏内存必须二次确认）")
+    type_, seed = body.get("type"), body.get("seed")
+    if not type_ or not seed:
+        raise BadRequest("需要 type 与 seed")
+    if not mem.IS_WINDOWS:
+        raise GameFilesMissing("实时通道仅支持 Windows（Linux/Proton 无法读写进程内存）",
+                               hint="可以改用存档写回，或把游戏内符文浮窗当作替代")
+    try:
+        proc = mem.attach("NMS.exe")
+    except mem.LiveUnsupported as e:
+        raise WriteRefused(str(e))
+    with proc:
+        try:
+            return ok(**writer.push(proc, str(type_), str(seed)))
+        except writer.LocateError as e:
+            raise WriteRefused(str(e))
