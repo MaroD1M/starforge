@@ -1,0 +1,7 @@
+# 核心（本地服务 + 存档 + 搜索 + 三维）
+flask>=3.0
+numpy>=1.24
+lz4>=4.0
+hgpaktool>=1.1.3
+# 仅"系统/星球生成"需要（跑 NMS.exe 代码）；缺它时星球功能自动降级
+unicorn>=2.0; platform_system != "Darwin"

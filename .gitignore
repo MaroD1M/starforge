@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+
+# 本项目运行产物（绝不入库）
+*.glb
+*.png
+!docs/img/*.png
+*.bak
+.part
+cache/
+toolcache/
+artifacts/
+
+# 用户与游戏数据（隐私红线）
+No Man's Sky/
+NMS存档/
+*.hg
+*.sav
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Windows/macOS 打包产物
+*.spec
