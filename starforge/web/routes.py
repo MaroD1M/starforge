@@ -267,3 +267,124 @@ def api_glyph_panel():
         raise BadRequest(str(e))
     payload.update(target=body.get("target"), pinned=bool(body.get("pinned")))
     return ok(**payload)
+
+
+# ---------------------------------------------------------------- 星系 / 星球（M4）
+
+@bp.get("/capabilities")
+def api_capabilities():
+    from .. import preview, system
+    return ok(preview_level=preview.level(), system=system.capabilities(),
+              write_enabled=settings.current().write_enabled)
+
+
+@bp.get("/system")
+def api_system():
+    from .. import system
+    ua = request.args.get("ua")
+    glyphs = request.args.get("glyphs")
+    save = request.args.get("save")
+    try:
+        if glyphs:
+            ua_val = __import__("nms_procgen.locate", fromlist=["x"]).parse_address(glyphs)
+        elif ua:
+            ua_val = int(ua, 16) if str(ua).lower().startswith("0x") else int(ua)
+        else:
+            ua_val = None
+        return ok(**system.system(ua_val, planets=request.args.get("planets") != "0", save_path=save))
+    except Exception as e:                     # noqa: BLE001
+        raise BadRequest(f"{type(e).__name__}: {e}")
+
+
+@bp.post("/system/scan")
+def api_system_scan():
+    from .. import jobs, system
+    body = request.get_json(silent=True) or {}
+    if not system.available():
+        raise __import__("starforge.core.errors", fromlist=["x"]).GameFilesMissing(
+            "没有检测到游戏目录：扇扫需要 NMS.exe 与 PCBANKS")
+    center = body.get("center")
+    ua = None
+    if center:
+        try:
+            ua = int(str(center), 16) if str(center).lower().startswith("0x") else None
+            if ua is None:
+                from nms_procgen import locate
+                ua = locate.parse_address(str(center))
+        except Exception as e:                 # noqa: BLE001
+            raise BadRequest(f"无法解析圆心地址：{e}")
+    job = jobs.REGISTRY.create("system_scan")
+    params = dict(center_ua=ua, radius=int(body.get("radius") or 0),
+                  systems_per_region=int(body.get("systems") or 200),
+                  filters=body.get("filters") or {}, limit=int(body.get("limit") or 40),
+                  save_path=body.get("save"))
+    job.progress.update({k: v for k, v in params.items() if k != "save_path"})
+    jobs.run_in_thread(job, lambda j: system.scan(job=j, **params))
+    return ok(job_id=job.id, params={k: v for k, v in params.items() if k != "save_path"})
+
+
+# ---------------------------------------------------------------- 服务端缩略图
+
+@bp.get("/thumb/<ship>/<seed>.png")
+def api_thumb(ship: str, seed: str):
+    from .. import preview, render
+    parts = [p for p in (request.args.get("parts") or "").split(",") if p]
+    views = tuple(v for v in (request.args.get("views") or "iso").split(",") if v in render.VIEWS)
+    size = max(160, min(int(request.args.get("size") or 420), 900))
+    try:
+        data = render.ship_png(ship, seed, parts or None, views or ("iso",), (size, size))
+    except Exception as e:                     # noqa: BLE001 - 没有游戏数据时退 L0 部件图
+        from ..glyphs import panel_png
+        raise BadRequest(f"无法渲染：{type(e).__name__}: {e}")
+    return Response(data, mimetype="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ---------------------------------------------------------------- 设置 / 诊断
+
+@bp.get("/settings")
+def api_settings_get():
+    s = settings.current()
+    from .. import preview, system
+    return ok(settings={"write_enabled": s.write_enabled, "confirm_writes": s.confirm_writes,
+                        "saves_dir": s.saves_dir, "gamedata_dir": s.gamedata_dir,
+                        "game_dir": s.game_dir, "backup_keep": s.backup_keep},
+              resolved={"saves_dir": str(s.saves_dir_resolved() or ""),
+                        "gamedata_dir": str(s.gamedata_resolved() or "")},
+              preview_level=preview.level(), system_available=system.available())
+
+
+@bp.post("/settings")
+def api_settings_set():
+    body = request.get_json(silent=True) or {}
+    allowed = {k: body[k] for k in ("write_enabled", "confirm_writes", "saves_dir",
+                                    "gamedata_dir", "game_dir", "backup_keep") if k in body}
+    s = settings.update(**allowed)
+    return ok(settings={"write_enabled": s.write_enabled, "saves_dir": s.saves_dir,
+                        "gamedata_dir": s.gamedata_dir, "game_dir": s.game_dir})
+
+
+@bp.get("/diagnostics")
+def api_diagnostics():
+    from .. import preview, system
+    from ..save import library
+    out = {"version": __import__("starforge").__version__,
+           "preview_level": preview.level(),
+           "write_enabled": settings.current().write_enabled}
+    try:
+        out["shipwright"] = str(paths.shipwright_root())
+    except Exception as e:                        # noqa: BLE001
+        out["shipwright"] = f"缺失：{e}"
+    gd = settings.current().gamedata_resolved()
+    out["gamedata"] = str(gd) if gd else "未配置"
+    if gd:
+        try:
+            cat = load_catalog(gd)
+            out["catalog"] = cat.stats
+        except Exception as e:                    # noqa: BLE001
+            out["catalog"] = f"读取失败：{e}"
+    try:
+        out["saves"] = library.scan_dir()["dir"]
+    except Exception as e:                        # noqa: BLE001
+        out["saves"] = f"不可用：{e}"
+    out["system"] = system.capabilities()
+    return ok(**out)
