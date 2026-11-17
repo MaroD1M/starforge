@@ -102,3 +102,14 @@ def test_settings_reports_path_checks(client, game_env, saves_dir):
     assert j["checks"]["game_dir"]["ok"] is True
     assert j["checks"]["saves_dir"]["ok"] is True
     assert "detail" in j["checks"]["gamedata_dir"]
+
+
+def test_ships_include_class_and_stats(client, game_env, saves_dir):
+    from starforge.core import settings as settings_mod
+    settings_mod.update(saves_dir=str(saves_dir))
+    j = client.get("/api/ships").get_json()
+    rows = j["ships"]
+    assert any(r.get("ship_class") for r in rows)
+    with_stats = [r for r in rows if r.get("stats")]
+    assert with_stats and "damage" in with_stats[0]["stats"]
+    assert all("type_label" in r and "can_preview" in r for r in rows)

@@ -236,3 +236,12 @@ td code{color:#a9bcd6}
 .dlgbody label.pick.on{border-color:var(--accent);background:#111b2c}
 .dlgbody .warnbox{background:#1c1710;border:1px solid #4a3a1c;color:#f0cd9a;border-radius:9px;padding:8px 10px;margin-top:10px}
 .dlgbody code{color:#cfe0ff}
+
+/* 属性条 */
+.stats{margin-top:10px;display:grid;gap:6px}
+.stat{display:flex;align-items:center;gap:8px;font-size:11.5px}
+.stat span{width:52px;color:var(--muted)}
+.stat .bar{flex:1;height:6px;background:#141c29;border-radius:99px;overflow:hidden}
+.stat .bar i{display:block;height:100%;background:linear-gradient(90deg,#3a7ce0,#6aa9ff);border-radius:99px}
+.stat b{width:44px;text-align:right;color:#cfe0ff;font-weight:600}
+.planet.here{border-color:#2f8b62;box-shadow:0 0 0 1px rgba(73,209,154,.25)}

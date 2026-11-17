@@ -103,6 +103,16 @@ def open_ships(path: str | Path) -> tuple[list[ShipRef], list[str]]:
     nms_save, nms_ships, _ = _nms()
     opened = nms_save.open_save(str(p))
     raw = nms_ships.list_ships(opened.readable)
+    try:
+        stats_by_slot = {}
+        for sh in raw:
+            try:
+                st = nms_ships.ship_stats(opened.readable, sh.index)
+                stats_by_slot[sh.index] = st
+            except Exception:                      # noqa: BLE001
+                continue
+    except Exception:                              # noqa: BLE001
+        stats_by_slot = {}
     out, warns = [], []
     for sh in raw:
         try:
@@ -110,6 +120,11 @@ def open_ships(path: str | Path) -> tuple[list[ShipRef], list[str]]:
         except Exception as e:                             # noqa: BLE001
             warns.append(f"槽位 {getattr(sh, 'index', '?')} 无法转换：{e}")
             continue
+        st = stats_by_slot.get(ref.slot)
+        if st:
+            from ..data.shipref import stats_summary
+            ref.ship_class = str(st.get("class") or "")
+            ref.stats = stats_summary(st)
         if not ref.procedural:
             warns.append(f"槽位 {ref.slot} 是固定模型（{ref.type_label}），外观不由种子决定")
         elif not ref.proc_model_matches():

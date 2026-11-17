@@ -82,6 +82,8 @@ class ShipRef:
     source: str = "search"          # search|save|memory|design
     slot: int | None = None         # 来自存档时的槽位
     procedural: bool = True
+    ship_class: str = ""            # S/A/B/C（来自存档）
+    stats: dict | None = None       # {damage, shield, hyperdrive, agility}
 
     # --- 构造 ---
     @classmethod
@@ -135,6 +137,18 @@ class ShipRef:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def stats_summary(raw_stats: dict) -> dict:
+    """把 ship_stats 的行转成 {damage/shield/hyperdrive/agility: value}。"""
+    key = {"SHIP_DAMAGE": "damage", "SHIP_SHIELD": "shield",
+           "SHIP_HYPERDRIVE": "hyperdrive", "SHIP_AGILE": "agility"}
+    out = {}
+    for row in raw_stats.get("stats") or []:
+        k = key.get(str(row.get("id")))
+        if k:
+            out[k] = row.get("value")
+    return out
 
 
 def coerce(obj) -> ShipRef:

@@ -361,6 +361,23 @@
     $$('#grid .card')[0].click();
   }
 
+  function statsLine(st) {
+    if (!st || !Object.keys(st).length) return '';
+    const nm = { damage: '伤害', shield: '护盾', hyperdrive: '超光速', agility: '机动' };
+    return Object.entries(st).map(([k, v]) => `${nm[k] || k} ${v}`).join(' · ');
+  }
+
+  function statsBars(st) {
+    if (!st || !Object.keys(st).length) return '';
+    const nm = { damage: '伤害', shield: '护盾', hyperdrive: '超光速', agility: '机动' };
+    const max = { damage: 100, shield: 100, hyperdrive: 100, agility: 60 };
+    return '<div class="stats">' + Object.entries(st).map(([k, v]) => {
+      const pct = Math.max(4, Math.min(100, (v / (max[k] || 100)) * 100));
+      return `<div class="stat"><span>${nm[k] || k}</span>
+        <div class="bar"><i style="width:${pct}%"></i></div><b>${v}</b></div>`;
+    }).join('') + '</div>';
+  }
+
   async function exportShips(items, name) {
     if (!items.length) { toast('没有可导出的船'); return; }
     toast('正在打包 glb + png…', 60000);
@@ -431,10 +448,14 @@
     const kv = async () => {
       let info = {};
       try { info = await api(`/api/preview/${ref.type}/${ref.seed}`); } catch (e) { /* 忽略 */ }
-      host.querySelector('.kvbox').innerHTML = [
+      const rows = [
         ['渲染档位', info.level || '—'], ['顶点', nf(info.verts)], ['三角', nf(info.tris)],
         ['部件数', parts.length], ['来源', ref.source || '—'],
-      ].map(([k, v]) => `<div class="kvrow"><span>${k}</span><span>${esc(v)}</span></div>`).join('');
+      ];
+      if (ref.ship_class) rows.unshift(['等级', ref.ship_class]);
+      host.querySelector('.kvbox').innerHTML =
+        rows.map(([k, v]) => `<div class="kvrow"><span>${k}</span><span>${esc(v)}</span></div>`).join('')
+        + statsBars(ref.stats);
     };
     kv();
     host.querySelector('.parts').innerHTML = parts.map(p =>
@@ -467,7 +488,8 @@
           <img loading="lazy" src="/api/thumb/${s.type}/${s.seed}.png?size=120" alt=""
                onerror="this.style.visibility='hidden'">
           <div class="meta"><b>${esc(s.name || '(未命名)')}</b>
-            <div>${esc(s.type_label || s.type)}${s.can_preview ? '' : ' · 固定模型'} · ${esc(s.seed)}</div></div>
+            <div>${esc(s.type_label || s.type)}${s.ship_class ? ' · ' + esc(s.ship_class) + ' 级' : ''}${s.can_preview ? '' : ' · 固定模型'}</div>
+            <div>${statsLine(s.stats)}</div></div>
         </div>`).join('') || '<div class="tiny">这个存档里没有船</div>';
       $('#mineGrid').innerHTML = S.mine.map((s, i) => `
         <div class="card" data-i="${i}">
@@ -579,9 +601,10 @@
       $('#sysGlyph').onclick = () => showGlyphs(s.glyphs, s.coords);
       $('#planetCards').innerHTML = planets.map(p => {
         const c = BIOME_COLOR[p.biome_name] || '#6aa9ff';
-        return `<div class="planet">
+        const here = (s.planet != null && p.index === s.planet + 1);
+        return `<div class="planet ${here ? 'here' : ''}">
           <div class="top"><span class="dot" style="background:${c};color:${c}"></span><b>${esc(p.biome_name)}</b>
-            <div class="spacer"></div><span class="tiny">#${p.index}</span></div>
+            <div class="spacer"></div><span class="tiny">${here ? '你在这里' : '#' + p.index}</span></div>
           <div class="tiny">哨兵 ${esc(p.sentinels)}</div>
           <div class="glyph">${esc(s.glyphs)}</div>
           <div class="row"><button class="btn small" data-glyph="${esc(s.glyphs)}">符文</button></div>
@@ -589,10 +612,25 @@
       }).join('') || '<div class="tiny">这个星系没有行星数据</div>';
       $$('#planetCards [data-glyph]').forEach(b => b.onclick = () => showGlyphs(b.dataset.glyph, s.coords));
       const ships = s.ships || [];
+      const PREVIEWABLE = new Set(['fighter', 'hauler', 'explorer', 'shuttle', 'exotic', 'living', 'solar', 'sentinel']);
       $('#scanInfo').textContent = `本星系船池 ${ships.length} 条 · 生成 ${s.elapsed_ms} ms`;
-      $('#sysDetail').innerHTML = `<h3>本星系船池</h3>` + ships.map(sh =>
-        `<div class="kvrow"><span>${esc(sh.kind)}</span><code>${esc(sh.seed)}</code></div>`).join('') +
+      const rows = ships.map((sh, i) => {
+        const can = PREVIEWABLE.has(sh.type) && sh.seed && !/^0x0+$/.test(sh.seed);
+        return `<div class="kvrow"><span>${esc(sh.kind)}</span>
+          <span><code>${esc(sh.seed)}</code>
+          ${can ? `<button class="btn small" data-ship="${i}">3D</button>` : ''}</span></div>`;
+      }).join('');
+      $('#sysDetail').innerHTML = `<h3>本星系船池</h3>${rows}` +
         (s.interceptor ? `<div class="kvrow"><span>拦截机（本星系）</span><code>${esc(s.interceptor)}</code></div>` : '');
+      $$('#sysDetail [data-ship]').forEach(b => b.onclick = async () => {
+        const sh = ships[+b.dataset.ship];
+        const ref = { type: sh.type, seed: sh.seed, parts: null, source: 'system', name: sh.kind };
+        await showShip(ref, 'sysDetail', false);
+        const back = document.createElement('button');
+        back.className = 'btn small'; back.textContent = '← 返回船池';
+        back.onclick = () => loadCurrentSystem();
+        $('#sysDetail').prepend(back);
+      });
     } catch (e) {
       $('#sysBadge').innerHTML = `<span class="msg">${esc(e.message)}</span>`;
     }
