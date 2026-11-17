@@ -1,5 +1,13 @@
 # 更新记录
 
+## v0.9.6-beta
+- **打包版自带上游**：CI 在构建时把 NMS-Shipwright（MIT）的 `nms_save`/`nms_procgen`/
+  `data/mapping.json` vendor 进包（约 0.5 MB），**用户不再需要安装 Shipwright 仓库**
+  - 此前打包版读不了存档（`nms_save` 不在包里），只有命令行能跑
+  - 运行时缓存 `NMS_TOOL_CACHE` 默认外置到 `~/.starforge/cache`，不往安装目录写
+- 新增 `THIRD_PARTY_NOTICES.md`（含 Shipwright 的 MIT 许可说明，产物内附全文）
+- `selftest` 会写明上游是"内置(打包版)"还是"同机仓库"
+
 ## v0.9.5-beta
 - **修复致命打包缺陷**：此前 exe 里没有 `starforge/web/static`（漏了 `--add-data`），
   命令行能用但网页 404。现在静态资源随包发布，并新增「网页冒烟」步骤（起服务→请求首页与 app.js）

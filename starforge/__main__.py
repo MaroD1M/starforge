@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import sys
 import threading
@@ -167,10 +168,15 @@ def cmd_selftest(a) -> int:
     from .data import load_catalog, load_icons
     gd = settings.current().gamedata_resolved()
     try:
-        sw = str(paths.shipwright_root())
-    except Exception:                      # noqa: BLE001 - 没装上游也要能自检
-        sw = "未找到"
-    print("Shipwright:", sw)
+        sw = paths.ensure_shipwright_importable()
+        try:                               # 是不是同机仓库？
+            repo = os.path.abspath(str(paths.shipwright_root()))
+            kind = "同机仓库" if os.path.normcase(repo) == os.path.normcase(os.path.abspath(sw)) else "内置(打包版)"
+        except Exception:                  # noqa: BLE001  没有仓库 → 只能是内置
+            kind = "内置(打包版)"
+        print(f"Shipwright: {sw}  [{kind}]")
+    except Exception as e:                 # noqa: BLE001 - 没装上游也要能自检
+        print(f"Shipwright: 未找到（{e}）")
     print("GAMEDATA  :", gd or "未找到")
     if gd:
         cat = load_catalog(gd)

@@ -63,8 +63,24 @@ def shipwright_root() -> Path:
 
 
 def ensure_shipwright_importable() -> str:
-    """把 Shipwright 放进 sys.path（同机路径依赖，不 fork、不改它）。"""
-    root = str(shipwright_root())
+    """让 `nms_save` / `nms_procgen` 可导入。
+
+    顺序：
+      1) 已经被打包进程序（PyInstaller 把 vendor 版放进 _internal）→ 直接可用；
+      2) 否则把同机的 NMS-Shipwright 仓库加进 sys.path（开发/高级用户）；
+      3) 都没有 → 抛 GameFilesMissing，并提示在设置里指定或改用自包含发布包。
+
+    另外在导入**之前**把 NMS_TOOL_CACHE 指到可写目录，避免往程序安装目录里写缓存。
+    """
+    import os as _os
+    if not _os.environ.get("NMS_TOOL_CACHE"):
+        _os.environ["NMS_TOOL_CACHE"] = str(cache_dir() / "gamecache")
+    try:                                   # 1) 打包版：已经能导入
+        import nms_save  # noqa: F401
+        return _os.path.dirname(_os.path.dirname(nms_save.__file__))
+    except Exception:                      # noqa: BLE001
+        pass
+    root = str(shipwright_root())          # 2) 同机仓库
     if root not in sys.path:
         sys.path.insert(0, root)
     return root

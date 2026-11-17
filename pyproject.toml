@@ -1,6 +1,6 @@
 [project]
 name = "starforge"
-version = "0.9.5"
+version = "0.9.6"
 description = "无人深空飞船/星球搜寻与预览（本地网页 + Python 内核）"
 requires-python = ">=3.10"
 dependencies = ["flask>=3.0", "numpy>=1.24", "lz4>=4.0", "psutil>=5.9"]
