@@ -11,7 +11,9 @@ import os
 import time
 
 from .core import log, paths, settings, strings
-from . import paint as paint_mod
+import numpy as np
+
+from . import paint as paint_mod, render
 from .data import load_catalog, load_icons
 from .data.shipref import PROC_MODELS, ShipRef
 from . import gltf
@@ -110,6 +112,51 @@ def build(ref: ShipRef, want_glb: bool = True) -> dict:
                     part_icons=part_icons(ref.type, ref.parts))
         log.warning("L1 预览失败，降级 L0：%s", e)
     return info
+
+
+def part_model(ship: str, part: str) -> dict:
+    """只取一个部件的几何（用于部件级 3D 预览）。"""
+    paths.ensure_shipwright_importable()
+    from nms_procgen import model3d
+    # 上游会把"固定件"（座舱盖/起落架/武器）一起返回；用一个不存在的部件名求出固定件集合，
+    # 再做差集，才是这个部件本身。
+    base = model3d._picked_meshes(ship, {"__SF_NONE__"}, None, frozenset())
+    meshes = model3d._picked_meshes(ship, {part.upper()}, None, frozenset())
+    keys = {(g, h, w.tobytes()) for g, h, w, *_ in base}
+    own = [m for m in meshes if (m[0], m[1], m[2].tobytes()) not in keys]
+    if not own:
+        raise ValueError(f"这艘船没有部件 {part}（可能属于别的船型）")
+    meshes = own
+    geos = model3d._geometry(sorted({g for g, *_ in meshes if g}))
+    groups = {}
+    for g, h, world, cls, posed, first, tex in meshes:
+        m = geos.get(g, {}).get(h)
+        if m is None:
+            continue
+        pos = m[0] @ world[:3, :3].T + world[:3, 3]
+        nrm = m[1] @ world[:3, :3].T
+        key = (cls, tex)
+        groups.setdefault(key, ([], [], [], []))
+        groups[key][0].append(pos.astype(np.float32))
+        groups[key][1].append(nrm.astype(np.float32))
+        groups[key][2].append(m[2])
+        groups[key][3].append(m[3])
+    out = {}
+    for key, (p_, n_, uv_, ix_) in groups.items():
+        out[key] = (np.concatenate(p_), np.concatenate(n_), np.concatenate(uv_), np.concatenate(ix_))
+    allp = np.concatenate([g[0] for g in out.values()])
+    return {"groups": out, "bounds": (allp.min(0).tolist(), allp.max(0).tolist())}
+
+
+def part_png(ship: str, part: str, size: int = 200) -> bytes:
+    """部件 3D 缩略图（光栅化，缓存）。"""
+    import hashlib
+    key = hashlib.sha1(f"part|{ship}|{part.upper()}|{size}".encode()).hexdigest()[:20]
+    def build() -> bytes:
+        m = part_model(ship, part)
+        img = render.rasterize(m["groups"], ("iso",), (size, size), ss=2, ambient=0.32, fill=0.86)
+        return render.png_bytes(img)
+    return render._cache_png(key, build)
 
 
 def glb_for(ref: ShipRef) -> str:

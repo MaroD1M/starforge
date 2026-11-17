@@ -96,6 +96,24 @@ def render(groups: dict, views=("iso",), size=(420, 420), splat: int = 2, ss: in
     return (out * 255).astype(np.uint8)
 
 
+def trim(img: np.ndarray, pad: int = 6) -> np.ndarray:
+    """裁掉四周纯背景，让缩略图里的船/部件占满画面。"""
+    bg = np.median(img.reshape(-1, 3), axis=0)
+    diff = np.abs(img.astype(np.int16) - bg.astype(np.int16)).sum(2) > 12
+    ys, xs = np.nonzero(diff)
+    if len(ys) < 10:
+        return img
+    y0, y1 = max(0, ys.min() - pad), min(img.shape[0], ys.max() + pad)
+    x0, x1 = max(0, xs.min() - pad), min(img.shape[1], xs.max() + pad)
+    h, w = y1 - y0, x1 - x0
+    side = max(h, w)
+    sq = np.zeros((side, side, 3), np.uint8)
+    sq[:] = bg.astype(np.uint8)
+    oy, ox = (side - h) // 2, (side - w) // 2
+    sq[oy:oy + h, ox:ox + w] = img[y0:y1, x0:x1]
+    return sq
+
+
 def placeholder_png(size: int = 256, label: str = "") -> bytes:
     """占位图：深色底 + 斜纹，用于"固定模型/无种子"这类没有 3D 的船。"""
     h = w = size
@@ -142,3 +160,102 @@ def ship_png(type_: str, seed: str, parts: list[str] | None = None,
         return png_bytes(render(model["groups"], views, size, colours=colours))
 
     return _cache_png(key, build)
+
+
+# ---------------------------------------------------------------- 三角光栅化（比点云像"建模"）
+
+def rasterize(groups: dict, views=("iso",), size=(640, 640), colours: dict | None = None,
+              ss: int = 1, ambient: float = 0.28, fill: float = 0.62) -> np.ndarray:
+    """把三角面真正填充出来（z-buffer + Lambert 面着色）。
+
+    点云渲染只在顶点处落点，看起来"散"；光栅化会把面填满，观感接近正常建模软件。
+    对小三角形（多数）走"单像素"快路径，大三角形才做包围盒填充，保证速度。
+    """
+    pts, tris, cols = [], [], []
+    off = 0
+    for key, (p, n, uv, ix) in groups.items():
+        cls = key[0] if isinstance(key, tuple) else key
+        base = np.array((colours or {}).get(cls) or GROUP_COLOR.get(cls, (0.62, 0.62, 0.66)), np.float32)
+        P = np.asarray(p, np.float32)
+        I = np.asarray(ix, np.int64).reshape(-1, 3)
+        pts.append(P)
+        tris.append(I + off)
+        cols.append(np.tile(base, (len(I), 1)))
+        off += len(P)
+    P = np.concatenate(pts)
+    T = np.concatenate(tris)
+    C = np.concatenate(cols)
+    center = (P.min(0) + P.max(0)) / 2
+    rel = P - center
+    # 用 99.5 分位定尺度：个别远离主体的支点不会把主体缩得很小
+    span = float(np.percentile(np.abs(rel), 99.5)) * 2 or 1.0
+    P = rel
+
+    W, H = size[0] * ss, size[1] * ss
+    out = np.zeros((H, len(views) * W, 3), np.float32) + np.array([0.043, 0.055, 0.075], np.float32)
+    light = np.array([0.42, 0.78, 0.46], np.float32)
+    light /= np.linalg.norm(light)
+
+    for k, vname in enumerate(views):
+        yaw, pitch = VIEWS.get(vname, (35, 18))
+        R = _rot("y", yaw) @ _rot("x", pitch)
+        q = P @ R.T
+        scr = np.empty((len(q), 2), np.float32)
+        scr[:, 0] = q[:, 0] / span * (W * fill) + k * W + W / 2
+        scr[:, 1] = -q[:, 1] / span * (W * fill) + H / 2
+        z = q[:, 2]
+        zbuf = np.full((H, W), -1e9, np.float32)
+        tile = out[:, k * W:(k + 1) * W]
+
+        a, b, c = scr[T[:, 0]], scr[T[:, 1]], scr[T[:, 2]]
+        za, zb, zc = z[T[:, 0]], z[T[:, 1]], z[T[:, 2]]
+        area = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1])
+        # 面法线（世界坐标）用于着色
+        wp = P[T]
+        fn = np.cross(wp[:, 1] - wp[:, 0], wp[:, 2] - wp[:, 0])
+        ln = np.linalg.norm(fn, axis=1, keepdims=True)
+        fn = fn / np.where(ln == 0, 1, ln)
+        shade = ambient + (1 - ambient) * np.clip(fn @ (R.T @ light), 0, 1)
+        fcol = np.clip(C * shade[:, None], 0, 1)
+
+        # 背面剔除（法线朝外的才画）
+        fn_view = fn @ R.T
+        front = fn_view[:, 2] > 0
+        big = front & (np.abs(area) >= 3.0)   # 小于 3 平方像素的走向量化单像素路径
+        # (a) 小三角：全部向量化（画家算法：远→近覆盖）
+        small_idx = np.nonzero(front & ~big)[0]
+        if len(small_idx):
+            cx = ((a[small_idx, 0] + b[small_idx, 0] + c[small_idx, 0]) / 3).astype(np.int32)
+            cy = ((a[small_idx, 1] + b[small_idx, 1] + c[small_idx, 1]) / 3).astype(np.int32)
+            np.clip(cx, 0, W - 1, out=cx); np.clip(cy, 0, H - 1, out=cy)
+            order = np.argsort(za[small_idx])          # 远的先画
+            tile[cy[order], cx[order]] = fcol[small_idx][order]
+        # (b) 大三角：包围盒 + 重心坐标填充（数量少）
+        for i in np.nonzero(big)[0]:
+            ax, ay = a[i]; bx, by = b[i]; cx_, cy_ = c[i]
+            minx = int(max(0, np.floor(min(ax, bx, cx_)))); maxx = int(min(W - 1, np.ceil(max(ax, bx, cx_))))
+            miny = int(max(0, np.floor(min(ay, by, cy_)))); maxy = int(min(H - 1, np.ceil(max(ay, by, cy_))))
+            if minx > maxx or miny > maxy:
+                continue
+            xs = np.arange(minx, maxx + 1, dtype=np.float32) + 0.5
+            ys = np.arange(miny, maxy + 1, dtype=np.float32) + 0.5
+            if len(xs) * len(ys) > 60000:
+                continue
+            X, Y = np.meshgrid(xs, ys)
+            w0 = ((bx - ax) * (Y - ay) - (by - ay) * (X - ax)) / area[i]
+            w1 = ((cx_ - bx) * (Y - by) - (cy_ - by) * (X - bx)) / area[i]
+            w2 = 1.0 - w0 - w1
+            mask = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
+            if not mask.any():
+                continue
+            depth = w2 * za[i] + w0 * zb[i] + w1 * zc[i]
+            sub = zbuf[miny:maxy + 1, minx:maxx + 1]
+            upd = mask & (depth > sub)
+            if not upd.any():
+                continue
+            sub[upd] = depth[upd]
+            tile[miny:maxy + 1, minx:maxx + 1][upd] = fcol[i]
+
+    if ss > 1:
+        out = out.reshape(size[1], ss, len(views) * size[0], ss, 3).mean(axis=(1, 3))
+    return (np.clip(out, 0, 1) * 255).astype(np.uint8)

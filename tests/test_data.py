@@ -110,3 +110,32 @@ def test_icons_lazy_decode_still_works(gamedata):
     b = ics.png("_PIT_A", "sentinel")
     assert b is a                                   # 命中缓存，不重复解码
     assert ics.png("_NO_SUCH_", "sentinel") is None
+
+
+# ---------------------------------------------------------------- 中文化
+
+def test_zh_part_labels_keep_numbering():
+    from starforge import zh
+    assert zh.part_label("_PIT_A") == "座舱 A"
+    assert zh.part_label("_LIGHTS_C1") == "灯光 C1"
+    assert zh.part_label("_TOPFLAP_NULL") == "上襟翼 无"
+    assert zh.part_label("_TYPE_BLACK1Q") == "外观样式 黑1Q"
+    assert zh.group_label("_SUBWINGS_") == "副翼组"
+    # 认不出的词原样保留，不能丢字
+    assert zh.part_label("_WEIRDNODE_X") != ""
+
+
+def test_zh_field_labels():
+    from starforge import zh
+    assert zh.biome_label("Lush") == "茂盛"
+    assert zh.sentinel_label("corrupted") == "腐化"
+    assert zh.race_label("Korvax") == "科瓦克斯"
+    assert zh.kind_label("space station") == "空间站"
+    assert zh.biome_label(None) == "未知"
+
+
+def test_catalog_api_has_chinese_labels(client, game_env):
+    j = client.get("/api/catalog/sentinel").get_json()
+    groups = {g["group"]: g for g in j["groups"]}
+    assert groups["_PIT_"]["label"] == "座舱"
+    assert any(o["label"].startswith("座舱") for o in groups["_PIT_"]["options"])

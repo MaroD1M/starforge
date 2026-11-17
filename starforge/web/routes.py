@@ -86,6 +86,11 @@ def api_catalog_ship(ship: str):
         tree = parts_mod.tree(ship)
     except ValueError as e:
         raise NotFound(str(e))
+    from .. import zh as zh_mod
+    for g in tree:
+        g["label"] = zh_mod.group_label(g["group"])
+        for o in g["options"]:
+            o["label"] = zh_mod.part_label(o["part"])
     return ok(ship=ship, source=parts_mod.source(), groups=tree)
 
 
@@ -290,6 +295,7 @@ def api_capabilities():
 @bp.get("/system")
 def api_system():
     from .. import system
+    from .. import zh as zh_mod
     ua = request.args.get("ua")
     glyphs = request.args.get("glyphs")
     save = request.args.get("save")
@@ -300,7 +306,16 @@ def api_system():
             ua_val = int(ua, 16) if str(ua).lower().startswith("0x") else int(ua)
         else:
             ua_val = None
-        return ok(**system.system(ua_val, planets=request.args.get("planets") != "0", save_path=save))
+        info = system.system(ua_val, planets=request.args.get("planets") != "0", save_path=save)
+        info["race_zh"] = zh_mod.race_label(info.get("race"))
+        for pl in info.get("planet_list") or []:
+            pl["biome_zh"] = zh_mod.biome_label(pl.get("biome_name"))
+            pl["sentinels_zh"] = zh_mod.sentinel_label(pl.get("sentinels"))
+        for sh in info.get("ships") or []:
+            sh["kind_zh"] = zh_mod.kind_label(sh.get("kind"))
+            sh["type_label"] = zh_mod.zh(__import__("starforge.data.shipref", fromlist=["TYPE_LABELS"]).TYPE_LABELS,
+                                         sh.get("type"), sh.get("type") or "")
+        return ok(**info)
     except Exception as e:                     # noqa: BLE001
         raise BadRequest(f"{type(e).__name__}: {e}")
 
@@ -328,7 +343,14 @@ def api_system_scan():
                   filters=body.get("filters") or {}, limit=int(body.get("limit") or 40),
                   save_path=body.get("save"))
     job.progress.update({k: v for k, v in params.items() if k != "save_path"})
-    jobs.run_in_thread(job, lambda j: system.scan(job=j, **params))
+    def _scan(j):
+        rows = system.scan(job=j, **params)
+        from .. import zh as zh_mod
+        for r in rows:
+            r["biome_zh"] = zh_mod.biome_label(r.get("biome_name"))
+            r["sentinels_zh"] = zh_mod.sentinel_label(r.get("sentinels"))
+        return rows
+    jobs.run_in_thread(job, _scan)
     return ok(job_id=job.id, params={k: v for k, v in params.items() if k != "save_path"})
 
 
@@ -352,6 +374,28 @@ def api_export():
 
 
 # ---------------------------------------------------------------- 服务端缩略图
+
+@bp.get("/part-thumb/<ship>/<part>.png")
+def api_part_thumb(ship: str, part: str):
+    """单个部件的 3D 缩略图（从游戏几何光栅化）。"""
+    from .. import preview
+    size = max(64, min(int(request.args.get("size") or 200), 420))
+    from .. import render
+    try:
+        data = preview.part_png(ship, part, size)
+    except Exception:                                       # noqa: BLE001
+        # 该船没有这个部件 / 没有游戏文件：退回游戏内图标，再退回占位图（永远是 200）
+        try:
+            from ..data import load_icons
+            ics = load_icons()
+            data = ics.png(part, ship) or ics.png(part) or b""
+        except Exception:                                   # noqa: BLE001
+            data = b""
+        if not data:
+            data = render.placeholder_png(size)
+    return Response(data, mimetype="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
 
 @bp.get("/thumb/<ship>/<seed>.png")
 def api_thumb(ship: str, seed: str):

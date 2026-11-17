@@ -257,15 +257,25 @@
     try { cat = await api('/api/catalog/' + S.ship); }
     catch (e) { $('#partTree').innerHTML = `<div class="msg">${esc(e.message)}</div>`; return; }
     const q = ($('#partFilter').value || '').toLowerCase();
+    S.labels = {};
+    (cat.groups || []).forEach(g => {
+      const seen = {};
+      g.options.forEach(o => {
+        const base = o.label || o.part;
+        seen[base] = (seen[base] || 0) + 1;
+        S.labels[o.part] = seen[base] > 1 ? `${base} #${seen[base]}` : base;
+      });
+    });
     const total = cat.groups.reduce((n, g) => n + g.options.length, 0);
     $('#partCount').textContent = `（${nf(total)} 项${cat.source === 'game' ? ' · 游戏推导' : ''}）`;
     $('#partTree').innerHTML = cat.groups.map(g => {
       const opts = g.options.filter(o => !q || o.part.toLowerCase().includes(q));
       if (!opts.length) return '';
-      return `<div class="grp"><div class="grptitle">${esc(g.group)}</div><div class="opts">` +
+      return `<div class="grp"><div class="grptitle" title="${esc(g.group)}">${esc(g.label || g.group)}<span class="raw">${esc(g.group.replace(/^_|_$/g, ''))}</span></div><div class="opts">` +
         opts.map(o => {
           const cls = S.want.has(o.part) ? 'want' : S.avoid.has(o.part) ? 'avoid' : '';
-          return `<span class="opt ${cls}" data-part="${esc(o.part)}">${esc(o.part.replace(/^_|_$/g, ''))}</span>`;
+          return `<span class="opt ${cls}" data-part="${esc(o.part)}" data-label="${esc(o.label || o.part)}"
+                   title="${esc(o.part)}">${esc(o.label || o.part.replace(/^_|_$/g, ''))}</span>`;
         }).join('') + '</div></div>';
     }).join('') || '<div class="tiny">没有匹配的部件</div>';
     $$('#partTree .opt').forEach(el => el.onclick = () => {
@@ -279,8 +289,9 @@
 
   function renderSelected() {
     const all = [...[...S.want].map(p => [p, 'want']), ...[...S.avoid].map(p => [p, 'avoid'])];
+    const labelOf = p => (S.labels && S.labels[p]) || p.replace(/^_|_$/g, '');
     $('#selectedSummary').innerHTML = all.map(([p, m]) =>
-      `<span class="sel" title="${m === 'want' ? '想要' : '不要'}">${m === 'want' ? '' : '✕ '}${esc(p.replace(/^_|_$/g, ''))}</span>`).join('')
+      `<span class="sel" title="${m === 'want' ? '想要' : '不要'}：${esc(p)}">${m === 'want' ? '' : '✕ '}${esc(labelOf(p))}</span>`).join('')
       || '<span class="tiny">还没选部件</span>';
   }
 
@@ -557,10 +568,14 @@
         + statsBars(ref.stats);
     };
     kv();
-    host.querySelector('.parts').innerHTML = parts.map(p =>
-      `<img loading="lazy" title="${esc(p)}" src="/api/icons/${encodeURIComponent(p)}.png?ship=${ref.type}"
-        onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'ph',textContent:'${esc(p.replace(/^_|_$/g, '').slice(0, 8))}'}))">`
-    ).join('');
+    const partName = p => (S.labels && S.labels[p]) || p.replace(/^_|_$/g, '');
+    host.querySelector('.parts').innerHTML = parts.map(p => {
+      const nm = partName(p);
+      return `<img loading="lazy" title="${esc(nm)}（${esc(p)}）"
+        data-fallback="0"
+        src="/api/part-thumb/${ref.type}/${encodeURIComponent(p)}.png?size=96"
+        onerror="if(this.dataset.fallback==='0'){this.dataset.fallback='1';this.src='/api/icons/${encodeURIComponent(p)}.png?ship=${ref.type}';}else{this.replaceWith(Object.assign(document.createElement('span'),{className:'ph',title:${JSON.stringify(p)},textContent:${JSON.stringify(nm.slice(0, 6))}}))}">`;
+    }).join('');
     const act = a => host.querySelector(`[data-a="${a}"]`);
     act('copy') && (act('copy').onclick = () => { navigator.clipboard.writeText(ref.seed); toast('种子已复制'); });
     act('share') && (act('share').onclick = () => {
@@ -708,7 +723,7 @@
       $('#sysBadge').innerHTML = `
         <b>${esc(s.ua)}</b><br>
         <span class="kv">坐标 ${esc(s.coords)}</span><span class="kv">glyphs <code>${esc(s.glyphs)}</code></span><br>
-        <span class="kv">${esc(s.galaxy_name)}</span><span class="kv">种族 ${esc(s.race || '—')}</span>
+        <span class="kv">${esc(s.galaxy_name)}</span><span class="kv">种族 ${esc(s.race_zh || s.race || '—')}</span>
         <span class="kv">行星 ${s.planets}</span><span class="kv">${s.dissonant ? 'dissonant ✓' : '不刷拦截机'}</span>
         <div style="margin-top:8px"><button class="btn small" id="sysGlyph">显示本星系符文</button></div>`;
       $('#sysGlyph').onclick = () => showGlyphs(s.glyphs, s.coords);
@@ -716,9 +731,10 @@
         const c = BIOME_COLOR[p.biome_name] || '#6aa9ff';
         const here = (s.planet != null && p.index === s.planet + 1);
         return `<div class="planet ${here ? 'here' : ''}">
-          <div class="top"><span class="dot" style="background:${c};color:${c}"></span><b>${esc(p.biome_name)}</b>
+          <div class="top"><span class="dot" style="background:${c};color:${c}"></span>
+            <b>${esc(p.biome_zh || p.biome_name)}</b>
             <div class="spacer"></div><span class="tiny">${here ? '你在这里' : '#' + p.index}</span></div>
-          <div class="tiny">哨兵 ${esc(p.sentinels)}</div>
+          <div class="tiny">哨兵 ${esc(p.sentinels_zh || p.sentinels)}</div>
           <div class="glyph">${esc(s.glyphs)}</div>
           <div class="row"><button class="btn small" data-glyph="${esc(s.glyphs)}">符文</button></div>
         </div>`;
@@ -729,7 +745,7 @@
       $('#scanInfo').textContent = `本星系船池 ${ships.length} 条 · 生成 ${s.elapsed_ms} ms`;
       const rows = ships.map((sh, i) => {
         const can = PREVIEWABLE.has(sh.type) && sh.seed && !/^0x0+$/.test(sh.seed);
-        return `<div class="kvrow"><span>${esc(sh.kind)}</span>
+        return `<div class="kvrow"><span>${esc(sh.kind_zh || sh.kind)}</span>
           <span><code>${esc(sh.seed)}</code>
           ${can ? `<button class="btn small" data-ship="${i}">3D</button>` : ''}</span></div>`;
       }).join('');
@@ -765,8 +781,8 @@
         $('#scanInfo').textContent = `扫描结果 ${rows.length} 条`;
         $('#scanTable').innerHTML = rows.length ? `<table><thead><tr><th>行星</th><th>生物群系</th>
           <th>哨兵</th><th>glyphs</th><th></th></tr></thead><tbody>` +
-          rows.map(r => `<tr><td>#${r.index}</td><td>${esc(r.biome_name)}</td>
-            <td>${esc(r.sentinels)}${r.dissonant ? ' · D' : ''}</td>
+          rows.map(r => `<tr><td>#${r.index}</td><td>${esc(r.biome_zh || r.biome_name)}</td>
+            <td>${esc(r.sentinels_zh || r.sentinels)}${r.dissonant ? ' · D' : ''}</td>
             <td><code>${esc(r.glyphs)}</code></td>
             <td><button class="btn small" data-glyph="${esc(r.glyphs)}">符文</button></td></tr>`).join('') +
           '</tbody></table>' : '<div class="tiny">没有符合条件的结果，放宽条件或加大扫描数</div>';
