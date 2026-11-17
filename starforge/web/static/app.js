@@ -703,6 +703,11 @@
   }
   $('#glyphClose').onclick = () => $('#glyphModal').classList.add('hide');
   $('#glyphCopy').onclick = () => { navigator.clipboard.writeText(S.glyphs); toast('已复制'); };
+  $('#glyphOverlay').onclick = async () => {
+    if (!DESKTOP.ready) { toast('仅桌面模式可用'); return; }
+    const ok = await window.pywebview.api.launch_overlay(S.glyphs);
+    toast(ok ? '已打开置顶符文条（Esc 关闭）' : '打开失败，见日志');
+  };
   $('#glyphPop').onclick = () => {
     const w = window.open('', 'sf-glyphs', 'width=880,height=240');
     if (!w) { toast('浏览器拦截了弹窗'); return; }

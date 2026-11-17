@@ -97,6 +97,29 @@ class _Api:
             log.debug("打开目录失败：%s", e)
             return False
 
+    def overlay_command(self, glyphs: str) -> list[str]:
+        """构造"符文置顶窗口"的启动命令（打包版与源码版路径不同）。"""
+        import sys as _sys
+        if getattr(_sys, "frozen", False):
+            return [_sys.executable, "glyph-overlay", str(glyphs), "--click-through"]
+        return [_sys.executable, "-m", "starforge", "glyph-overlay", str(glyphs), "--click-through"]
+
+    def launch_overlay(self, glyphs: str) -> bool:
+        """开一个独立的置顶符文窗口（不注入游戏，Esc 关闭）。"""
+        import subprocess
+        import sys as _sys
+        try:
+            cmd = self.overlay_command(glyphs)
+            kwargs = {"close_fds": True}
+            if os.name == "nt":
+                kwargs["creationflags"] = 0x00000008      # DETACHED_PROCESS
+            subprocess.Popen(cmd, **kwargs)
+            log.info("已启动符文置顶窗口：%s", glyphs)
+            return True
+        except Exception as e:                            # noqa: BLE001
+            log.warning("启动置顶窗口失败：%s", e)
+            return False
+
     def info(self) -> dict:
         return {"version": __import__("starforge").__version__,
                 "home": str(paths.app_home()),

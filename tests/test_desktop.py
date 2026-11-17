@@ -114,3 +114,28 @@ def test_normalize_fixes_common_mistakes(tmp_path):
     assert locate_game.normalize(str(game / "Binaries")) == str(game)     # 选到了 Binaries
     assert locate_game.normalize(str(steam)) == str(steam / "steamapps" / "common" / "No Man's Sky")
     assert locate_game.normalize(None) is None
+
+
+def test_overlay_command_source_and_frozen(monkeypatch):
+    import sys as _sys
+    api = desktop._Api()
+    cmd = api.overlay_command("1043FEE69929")
+    assert "glyph-overlay" in cmd and "1043FEE69929" in cmd and "--click-through" in cmd
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    cmd2 = api.overlay_command("ABC")
+    assert cmd2[1] == "glyph-overlay" and cmd2[0] == _sys.executable
+
+
+# ---------------------------------------------------------------- 预热
+
+def test_warm_status_shape(client):
+    j = client.get("/api/warm").get_json()
+    assert j["ok"] and "running" in j and "done" in j and "ms" in j
+
+
+def test_warm_start_without_game_is_safe(monkeypatch, tmp_path):
+    from starforge import warm
+    from starforge.core import settings as settings_mod
+    settings_mod.update(game_dir="")
+    st = warm.start(background=False)          # 没有游戏目录时也要干净结束
+    assert st["done"] is True or st["error"]

@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
     """每个测试用独立的 STARFORGE_HOME，避免污染真实 ~/.starforge。"""
+    monkeypatch.setenv("STARFORGE_NO_WARM", "1")   # 测试里不跑后台预热
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("STARFORGE_HOME", str(home))

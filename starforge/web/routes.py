@@ -427,6 +427,15 @@ def api_settings_set():
                         "gamedata_dir": s.gamedata_dir, "game_dir": s.game_dir})
 
 
+@bp.get("/warm")
+def api_warm():
+    """预热状态；?start=1 时后台启动。"""
+    from .. import warm
+    if request.args.get("start") in ("1", "true", "yes"):
+        return ok(**warm.start(background=True))
+    return ok(**warm.status())
+
+
 @bp.get("/desktop")
 def api_desktop():
     """桌面窗口能力（界面用它决定是否显示"桌面窗口"徽标与提示）。"""

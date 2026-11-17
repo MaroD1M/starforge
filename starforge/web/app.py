@@ -78,6 +78,11 @@ def create_app() -> Flask:
     from .routes import bp
     app.register_blueprint(bp)
 
+    from ..core import settings as settings_mod
+    if settings_mod.current().game_dir and not os.environ.get("STARFORGE_NO_WARM"):
+        from .. import warm
+        warm.start(background=True)          # 后台预热：pak 元数据 / 单船几何 / 系统生成
+
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
     @app.get("/")
