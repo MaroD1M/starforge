@@ -1,5 +1,11 @@
 # 更新记录
 
+## v0.12.2-beta
+- **修打包环境的 500**：没有游戏/数据时 `/api/catalog/<ship>` 现在返回**带原因的 404**
+  （此前上游抛 `GamePathError` 变成 500，CI 的 webcheck 因此失败）
+- `parts.tree()` 把上游异常统一成可读的 `ValueError`
+- webcheck 对"依赖游戏文件"的两个接口允许 404（必须是 JSON），其余仍要求 200
+
 ## v0.12.1-beta
 - **打包可靠性**：`packaging/entry.py` 显式导入 zh/tex/parts/export/warm/render/preview 等模块，
   保证它们一定进 PYZ（v0.12.0 无法确认中文化模块是否被打进去）

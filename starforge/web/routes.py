@@ -86,6 +86,8 @@ def api_catalog_ship(ship: str):
         tree = parts_mod.tree(ship)
     except ValueError as e:
         raise NotFound(str(e))
+    except Exception as e:                        # noqa: BLE001 - 上游各种异常都别冒 500
+        raise NotFound(f"取不到 {ship} 的部件表：{type(e).__name__}: {e}")
     from .. import zh as zh_mod
     for g in tree:
         g["label"] = zh_mod.group_label(g["group"])

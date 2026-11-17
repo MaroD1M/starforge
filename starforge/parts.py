@@ -62,7 +62,10 @@ def tree(ship: str) -> list[dict]:
             return got
     except Exception as e:                       # noqa: BLE001
         log.debug("catalog 不可用（%s），改用游戏资源推导", type(e).__name__)
-    got = _from_game(ship)
+    try:
+        got = _from_game(ship)
+    except Exception as e:                       # noqa: BLE001 - 没游戏/没数据：给出可读原因
+        raise ValueError(f"取不到 {ship} 的部件表：{type(e).__name__}: {e}") from e
     if not got:
         raise ValueError(f"游戏资源里没有 {ship} 的部件描述（游戏目录是否配置正确？）")
     return got

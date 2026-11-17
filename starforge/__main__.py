@@ -181,12 +181,18 @@ def cmd_webcheck(a) -> int:
     app = create_app()
     c = app.test_client()
     checks = []
+    # 这些依赖游戏文件：没有游戏时 404（带 JSON 原因）也算"模块正常"
+    optional = {"/api/catalog/fighter", "/api/part-thumb/sentinel/_PIT_A.png"}
     for path in ("/", "/static/app.js", "/static/app.css", "/static/viewer.js",
                  "/api/health", "/api/settings", "/api/capabilities",
                  "/api/textures/status", "/api/catalog/fighter",
                  "/api/part-thumb/sentinel/_PIT_A.png", "/api/desktop", "/api/warm"):
         r = c.get(path)
-        ok = r.status_code == 200 and len(r.data) > 50
+        if path in optional:
+            ok = (r.status_code == 200 and len(r.data) > 50) or (
+                r.status_code == 404 and r.mimetype == "application/json")
+        else:
+            ok = r.status_code == 200 and len(r.data) > 50
         checks.append((path, r.status_code, len(r.data), ok))
     html = c.get("/").data.decode("utf-8", "replace")
     checks.append(("首页含 page-search", 200, len(html), "page-search" in html))
