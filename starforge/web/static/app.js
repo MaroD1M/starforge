@@ -124,60 +124,64 @@
   }
 
   // ---------------------------------------------------------------- 3D 查看器
-  function ensureViewer() {
-    if (S.viewer) return S.viewer;
-    const canvas = $('#viewerCanvas');
-    S.viewer = StarforgeViewer.mount(canvas);
-    $('#vIso').onclick = () => { S.viewer.setView('iso'); markView('#vIso'); };
-    $('#vTop').onclick = () => { S.viewer.setView('top'); markView('#vTop'); };
-    $('#vSide').onclick = () => { S.viewer.setView('side'); markView('#vSide'); };
-    $('#vSpin').onclick = () => { const on = !$('#vSpin').classList.contains('on'); $('#vSpin').classList.toggle('on', on); S.viewer.spin(on); };
-    return S.viewer;
+  function ensureViewer(host) {
+    // 作用域限定在传入面板内：两个面板各有自己的查看器，不能按全局 id 取
+    const canvas = host.querySelector('canvas');
+    const v = StarforgeViewer.mount(canvas);
+    const btns = { iso: host.querySelector('[data-v="iso"]'), top: host.querySelector('[data-v="top"]'),
+                   side: host.querySelector('[data-v="side"]'), spin: host.querySelector('[data-v="spin"]') };
+    const mark = sel => ['iso', 'top', 'side'].forEach(k => btns[k] && btns[k].classList.toggle('on', k === sel));
+    btns.iso.onclick = () => { v.setView('iso'); mark('iso'); };
+    btns.top.onclick = () => { v.setView('top'); mark('top'); };
+    btns.side.onclick = () => { v.setView('side'); mark('side'); };
+    btns.spin.onclick = () => { const on = !btns.spin.classList.contains('on'); btns.spin.classList.toggle('on', on); v.spin(on); };
+    return { v, btns };
   }
-  const markView = sel => { ['#vIso', '#vTop', '#vSide'].forEach(s => $(s).classList.toggle('on', s === sel)); };
 
   async function showShip(ref, panel) {
     S.selected = ref;
     const parts = ref.parts || [];
     const q = parts.length ? '?parts=' + encodeURIComponent(parts.join(',')) : '';
     const host = $('#' + panel);
+    if (host._viewer) { try { host._viewer.dispose(); } catch (e) {} host._viewer = null; }
     host.innerHTML = `
-      <div class="viewerWrap"><canvas id="viewerCanvas"></canvas>
-        <div class="viewerbar"><span id="viewerInfo" class="muted">载入中…</span><span class="grow"></span>
-          <button id="vIso" class="mini on">等轴</button><button id="vTop" class="mini">俯视</button>
-          <button id="vSide" class="mini">侧视</button><button id="vSpin" class="mini">自动旋转</button>
-          <a id="vGlb" class="mini" href="/api/model/${ref.type}/${ref.seed}.glb${q}" download>下载 glb</a></div></div>
+      <div class="viewerWrap"><canvas></canvas>
+        <div class="viewerbar"><span class="vinfo muted">载入中…</span><span class="grow"></span>
+          <button class="mini on" data-v="iso">等轴</button><button class="mini" data-v="top">俯视</button>
+          <button class="mini" data-v="side">侧视</button><button class="mini" data-v="spin">自动旋转</button>
+          <a class="mini" href="/api/model/${ref.type}/${ref.seed}.glb${q}" download>下载 glb</a></div></div>
       <h3>${esc(ref.type)} · <code>${esc(ref.seed)}</code></h3>
       <div class="actions">
-        <button class="mini" id="copySeed">复制种子</button>
-        <button class="mini" id="copyShare">复制分享码</button>
-        ${panel === 'searchDetail' ? '<button class="mini primary" id="applyBtn">写回存档…</button>' : ''}
+        <button class="mini" data-act="copySeed">复制种子</button>
+        <button class="mini" data-act="copyShare">复制分享码</button>
+        ${panel === 'searchDetail' ? '<button class="mini primary" data-act="apply">写回存档…</button>' : ''}
       </div>
-      <div id="kv"></div>
-      <div class="parts" id="partIcons"></div>`;
-    S.viewer = null;
+      <div class="kv"></div>
+      <div class="parts"></div>`;
     try {
-      const v = ensureViewer();
+      const { v } = ensureViewer(host);
+      host._viewer = v;
       const info = await v.load(`/api/model/${ref.type}/${ref.seed}.glb${q}`);
-      $('#viewerInfo').textContent = `${info.prims} 组网格 · ${(info.bytes / 1e6).toFixed(1)} MB`;
+      host.querySelector('.vinfo').textContent = `${info.prims} 组网格 · ${(info.bytes / 1e6).toFixed(1)} MB`;
     } catch (e) {
-      $('.viewerWrap').innerHTML = `<img src="/api/thumb/${ref.type}/${ref.seed}.png?size=520${parts.length ? '&parts=' + encodeURIComponent(parts.join(',')) : ''}" style="width:100%;display:block">`;
+      const wrap = host.querySelector('.viewerWrap');
+      wrap.innerHTML = `<img src="/api/thumb/${ref.type}/${ref.seed}.png?size=520${parts.length ? '&parts=' + encodeURIComponent(parts.join(',')) : ''}" style="width:100%;display:block">`;
       const hint = document.createElement('div'); hint.className = 'msg';
       hint.textContent = '3D 加载失败（' + e.message + '），已用服务端渲染图代替';
-      $('.viewerWrap').after(hint);
+      wrap.after(hint);
     }
-    $('#copySeed').onclick = () => copy(ref.seed);
-    $('#copyShare').onclick = () => copy('nsh1:' + btoa([ref.type, ref.seed, (parts || []).join('|')].join(';')));
+    host.querySelector('[data-act="copySeed"]').onclick = () => copy(ref.seed);
+    host.querySelector('[data-act="copyShare"]').onclick = () => copy('nsh1:' + btoa([ref.type, ref.seed, (parts || []).join('|')].join(';')));
     const preview = await api(`/api/preview/${ref.type}/${ref.seed}`).catch(() => ({}));
-    $('#kv').innerHTML = [
+    host.querySelector('.kv').innerHTML = [
       ['档位', preview.level || '—'], ['顶点', (preview.verts || 0).toLocaleString()],
       ['三角', (preview.tris || 0).toLocaleString()], ['部件数', parts.length],
       ['来源', ref.source || '—'],
     ].map(([k, v]) => `<div class="kvrow"><span>${k}</span><span>${esc(v)}</span></div>`).join('');
     if (parts.length) {
-      $('#partIcons').innerHTML = parts.map(p => `<img loading="lazy" title="${esc(p)}" src="/api/icons/${encodeURIComponent(p)}.png?ship=${ref.type}">`).join('');
+      host.querySelector('.parts').innerHTML = parts.map(p => `<img loading="lazy" title="${esc(p)}" src="/api/icons/${encodeURIComponent(p)}.png?ship=${ref.type}">`).join('');
     }
-    if (panel === 'searchDetail') $('#applyBtn').onclick = () => openApply(ref);
+    if (panel === 'searchDetail') host.querySelector('[data-act="apply"]').onclick = () => openApply(ref);
   }
 
   async function copy(text) {
