@@ -33,6 +33,34 @@ import starforge.glyphs  # noqa: F401
 import starforge.gltf  # noqa: F401
 import starforge.overlay  # noqa: F401
 import starforge.desktop  # noqa: F401
+
+# 显式导入，保证这些模块一定进 PYZ（v0.12.0 曾无法确认 zh/tex 是否被打进去）
+import starforge.zh  # noqa: F401
+import starforge.tex  # noqa: F401
+import starforge.paint  # noqa: F401
+import starforge.parts  # noqa: F401
+import starforge.export  # noqa: F401
+import starforge.warm  # noqa: F401
+import starforge.render  # noqa: F401
+import starforge.preview  # noqa: F401
+import starforge.gltf  # noqa: F401
+import starforge.search  # noqa: F401
+import starforge.jobs  # noqa: F401
+import starforge.system  # noqa: F401
+import starforge.glyphs  # noqa: F401
+import starforge.selfcheck  # noqa: F401
+import starforge.locate_game  # noqa: F401
+import starforge.save.library  # noqa: F401
+import starforge.save.writer  # noqa: F401
+import starforge.live.scan  # noqa: F401
+import starforge.live.mem  # noqa: F401
+import starforge.live.writer  # noqa: F401
+import starforge.live.compat  # noqa: F401
+import starforge.live.exml  # noqa: F401
+import starforge.data.catalog  # noqa: F401
+import starforge.data.icons  # noqa: F401
+import starforge.data.shipref  # noqa: F401
+import starforge.web.routes  # noqa: F401
 import starforge.live.scan  # noqa: F401
 import starforge.live.exml  # noqa: F401
 import starforge.live.mem  # noqa: F401

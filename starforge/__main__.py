@@ -182,7 +182,9 @@ def cmd_webcheck(a) -> int:
     c = app.test_client()
     checks = []
     for path in ("/", "/static/app.js", "/static/app.css", "/static/viewer.js",
-                 "/api/health", "/api/settings", "/api/capabilities"):
+                 "/api/health", "/api/settings", "/api/capabilities",
+                 "/api/textures/status", "/api/catalog/fighter",
+                 "/api/part-thumb/sentinel/_PIT_A.png", "/api/desktop", "/api/warm"):
         r = c.get(path)
         ok = r.status_code == 200 and len(r.data) > 50
         checks.append((path, r.status_code, len(r.data), ok))

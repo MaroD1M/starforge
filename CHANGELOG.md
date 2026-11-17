@@ -1,5 +1,11 @@
 # 更新记录
 
+## v0.12.1-beta
+- **打包可靠性**：`packaging/entry.py` 显式导入 zh/tex/parts/export/warm/render/preview 等模块，
+  保证它们一定进 PYZ（v0.12.0 无法确认中文化模块是否被打进去）
+- **webcheck 扩展**：逐项验证 `/api/textures/status`、`/api/catalog/<ship>`、
+  `/api/part-thumb/...`、`/api/desktop`、`/api/warm`（12 项全过才算打包成功）
+
 ## v0.12.0-beta（重构 v2）
 中文化 + 更接近真实建模的渲染 + 部件级预览 + 贴图管线 + 零配置自愈。
 详见 [docs/PLAN-V2.md](docs/PLAN-V2.md)。
