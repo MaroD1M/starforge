@@ -144,3 +144,22 @@ def test_api_glyph_single_digit_png(client):
 def test_api_jobs_empty(client):
     j = client.get("/api/jobs").get_json()
     assert j["ok"] and isinstance(j["jobs"], list)
+
+
+# ---------------------------------------------------------------- Windows 控制台编码
+
+
+def test_cli_survives_cp1252_console(tmp_path):
+    """CI 首跑的真实故障：cp1252 控制台下打印中文抛 UnicodeEncodeError。
+
+    这里用 PYTHONIOENCODING=cp1252 复现环境，要求 CLI 仍然以 0 退出。
+    """
+    import os
+    import subprocess
+    import sys
+    env = dict(os.environ)
+    env.update(PYTHONIOENCODING="cp1252", STARFORGE_HOME=str(tmp_path / "home"))
+    r = subprocess.run([sys.executable, "-m", "starforge", "selftest"],
+                       capture_output=True, env=env, timeout=120,
+                       cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]))
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-800:]

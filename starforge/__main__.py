@@ -17,7 +17,7 @@ import threading
 import webbrowser
 from pathlib import Path
 
-from .core import lock, log, paths, settings, strings
+from .core import console, lock, log, paths, settings, strings
 
 log = log.get("cli")
 
@@ -132,7 +132,11 @@ def cmd_settings(a) -> int:
 def cmd_selftest(a) -> int:
     from .data import load_catalog, load_icons
     gd = settings.current().gamedata_resolved()
-    print("Shipwright:", paths.shipwright_root() if _ok(paths.shipwright_root) else "未找到")
+    try:
+        sw = str(paths.shipwright_root())
+    except Exception:                      # noqa: BLE001 - 没装上游也要能自检
+        sw = "未找到"
+    print("Shipwright:", sw)
     print("GAMEDATA  :", gd or "未找到")
     if gd:
         cat = load_catalog(gd)
@@ -156,6 +160,7 @@ def _ok(fn) -> bool:
 
 
 def main(argv=None) -> int:
+    console.setup_console()          # Windows cp1252 下 print 中文不再崩（CI 首跑踩过）
     ap = argparse.ArgumentParser(prog="starforge", description=strings.APP_TITLE)
     sub = ap.add_subparsers(dest="cmd")
 

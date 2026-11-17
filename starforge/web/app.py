@@ -28,6 +28,8 @@ def _host_only(value: str) -> str:
 
 
 def create_app() -> Flask:
+    from ..core import console
+    console.setup_console()
     app = Flask(__name__, static_folder=None)
     app.json.ensure_ascii = False
 
