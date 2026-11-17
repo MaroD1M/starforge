@@ -28,19 +28,24 @@ jobs:
           pip install -r requirements.txt pyinstaller
 
       - name: 自检（不依赖游戏文件）
+        shell: pwsh
         env:
           STARFORGE_HOME: ${{ runner.temp }}/sfhome
-        run: python -m starforge selftest || echo "::warning::selftest 退出码非 0（无游戏数据时属正常）"
+        run: |
+          python -m starforge selftest
+          if ($LASTEXITCODE -ne 0) { Write-Host "::warning::selftest 非 0（无游戏数据时属正常）" }
 
       - name: 打包（onedir，不做单文件：启动快、杀软误报少）
+        shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --name starforge --onedir ^
-            --collect-all hgpaktool --collect-submodules starforge ^
-            --exclude-module tkinter --exclude-module PyQt5 ^
+          pyinstaller --noconfirm --clean --name starforge --onedir `
+            --collect-all hgpaktool --collect-submodules starforge `
+            --exclude-module tkinter --exclude-module PyQt5 `
             starforge/__main__.py
 
       - name: 压缩产物
-        run: Compress-Archive -Path dist\starforge\* -DestinationPath dist\starforge-${{ github.ref_name }}-win64.zip
+        shell: pwsh
+        run: Compress-Archive -Path dist/starforge/* -DestinationPath "dist/starforge-${{ github.ref_name }}-win64.zip"
 
       - name: 发布
         uses: softprops/action-gh-release@v2
