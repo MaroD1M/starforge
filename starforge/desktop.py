@@ -136,6 +136,9 @@ def run(port: int = 0, width: int = 1440, height: int = 900, debug: bool = False
         return 4
 
     url = f"http://127.0.0.1:{port}/"
+    info = probe()
+    if not info["available"]:
+        log.warning("窗口不可用：%s", info["reason"])
     try:
         import webview
     except Exception as e:                                # noqa: BLE001
@@ -181,9 +184,29 @@ def run(port: int = 0, width: int = 1440, height: int = 900, debug: bool = False
     return 0
 
 
-def available() -> bool:
+def probe() -> dict:
+    """窗口能力自检：pywebview / pythonnet（Windows Edge 后端需要）/ WebView2 运行时。"""
+    out = {"pywebview": False, "pythonnet": None, "windows": os.name == "nt",
+           "available": False, "reason": ""}
     try:
-        import webview  # noqa: F401
-        return True
-    except Exception:                                      # noqa: BLE001
-        return False
+        import webview
+        out["pywebview"] = True
+        out["version"] = getattr(webview, "__version__", "")
+    except Exception as e:                                 # noqa: BLE001
+        out["reason"] = f"没装 pywebview（{type(e).__name__}）"
+        return out
+    if os.name == "nt":
+        try:
+            import clr  # noqa: F401                     # pythonnet：Edge 渲染必需
+            out["pythonnet"] = True
+        except Exception:                                  # noqa: BLE001
+            out["pythonnet"] = False
+            out["reason"] = "缺少 pythonnet（Windows Edge 窗口需要；将退回浏览器）"
+    out["available"] = out["pywebview"] and (out["pythonnet"] in (True, None))
+    if out["available"]:
+        out["reason"] = ""
+    return out
+
+
+def available() -> bool:
+    return bool(probe()["available"])

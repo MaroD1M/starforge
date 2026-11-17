@@ -75,12 +75,25 @@
             </select>
           </div>
         </div>
-        <button id="goSearch" class="btn primary block">开始搜索</button>
-        <div id="etaInfo" class="tiny"></div>
+        <div class="row" style="gap:8px">
+          <button id="goSearch" class="btn primary" style="flex:1">开始搜索</button>
+          <button id="demoBtn" class="btn" title="用一组示例条件直接搜">示例</button>
+        </div>
+        <div id="etaInfo" class="tiny" style="margin-top:6px"></div>
         <div id="searchMsg" class="msg"></div>
       </div>
 
       <div class="pane results">
+        <div id="onboard" class="onboard hide">
+          <h3>三步开始</h3>
+          <div class="steps">
+            <div class="step"><b>1</b><div><b>确认路径</b><div class="tiny">游戏目录与存档目录（多数情况已自动填好）</div></div>
+              <button class="btn small" id="obFix">一键配置</button></div>
+            <div class="step"><b>2</b><div><b>选船型与部件</b><div class="tiny">左侧点一下部件＝想要；再点一下＝不要</div></div></div>
+            <div class="step"><b>3</b><div><b>搜索并看 3D</b><div class="tiny">点结果卡片，右侧可旋转、可导出 glb</div></div>
+              <button class="btn small primary" id="obDemo">来个示例</button></div>
+          </div>
+        </div>
         <div class="row results-bar">
           <span id="resultInfo" class="tiny">还没有结果</span>
           <div class="spacer"></div>

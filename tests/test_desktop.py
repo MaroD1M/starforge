@@ -49,3 +49,15 @@ def test_paint_look_uses_game_colours(game_env):
     cols = paint.look("0x992C8A47F60A6B10", "sentinel")
     assert "paint" in cols and len(cols["paint"]) == 3
     assert all(0 <= c <= 1 for c in cols["paint"])
+
+
+def test_probe_reports_reason_when_unavailable():
+    info = desktop.probe()
+    assert set(info) >= {"pywebview", "pythonnet", "available", "reason", "windows"}
+    if not info["available"]:
+        assert info["reason"]
+
+
+def test_probe_api(client):
+    j = client.get("/api/desktop").get_json()
+    assert j["ok"] and "available" in j and "reason" in j

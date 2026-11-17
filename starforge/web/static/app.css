@@ -213,3 +213,16 @@ td code{color:#a9bcd6}
 ::-webkit-scrollbar-thumb{background:#232c3d;border-radius:10px;border:2px solid transparent;background-clip:content-box}
 ::-webkit-scrollbar-thumb:hover{background:#31405a;background-clip:content-box}
 ::-webkit-scrollbar-track{background:transparent}
+
+/* 新手引导 */
+.onboard{border:1px solid #22314a;background:linear-gradient(180deg,#101827,#0d131d);border-radius:var(--r);
+  padding:14px 16px;margin-bottom:14px}
+.onboard h3{margin:0 0 10px;font-size:13.5px;color:#cfe0ff}
+.steps{display:grid;gap:8px}
+.step{display:flex;align-items:center;gap:10px}
+.step>b{width:20px;height:20px;border-radius:99px;display:grid;place-items:center;font-size:11px;
+  background:#18243a;color:#9fc0ee;border:1px solid #2b3d5c;flex:none}
+.step .tiny{margin-top:1px}
+.step .btn{margin-left:auto}
+.kbd{font-family:ui-monospace,monospace;font-size:10.5px;background:#141c29;border:1px solid #263349;
+  border-bottom-width:2px;border-radius:5px;padding:0 5px;color:#9fb0c8}

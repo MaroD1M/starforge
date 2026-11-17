@@ -91,6 +91,10 @@
   async function boot() {
     try {
       let h = await refreshHealth();
+      try {                                                  // 恢复上次条件
+        const q = JSON.parse(localStorage.getItem('sf.query') || 'null');
+        if (q?.ship) { S.ship = q.ship; S.want = new Set(q.want || []); S.avoid = new Set(q.avoid || []); }
+      } catch (e) { /* 忽略 */ }
       if (!h.data_ready || !h.saves_ready || !h.game_dir) {
         try {
           const a = await api('/api/autodetect');
@@ -99,10 +103,23 @@
       }
       await loadSettings();
       try { S.live = await api('/api/live/status'); renderLive(); } catch (e) { /* 忽略 */ }
+      try {
+        const d = await api('/api/desktop');
+        if (!DESKTOP.ready) {
+          $('#shell').textContent = d.available ? '桌面窗口（可用）' : '浏览器模式';
+          if (!d.available && d.reason) $('#shell').title = d.reason;
+        }
+      } catch (e) { /* 忽略 */ }
       await loadShips();
+      maybeOnboard(h);
     } catch (e) {
       $('#searchMsg').textContent = '启动失败：' + e.message;
     }
+  }
+
+  function maybeOnboard(h) {
+    const need = !h.saves_ready || !h.data_ready;
+    $('#onboard').classList.toggle('hide', !need);
   }
 
   /* ---------------- 搜索：船型与部件 ---------------- */
@@ -177,11 +194,48 @@
   }
 
   /* ---------------- 搜索执行 ---------------- */
+  async function runDemo() {
+    try {
+      const cat = await api('/api/catalog/' + S.ship);
+      const pool = cat.groups.flatMap(g => g.options.map(o => o.part));
+      const picks = [pool[0], pool[Math.floor(pool.length / 3)], pool[Math.floor(pool.length / 2)]];
+      const pick = [...new Set(picks)].filter(Boolean).slice(0, 2);
+      S.want = new Set(pick);
+      await renderParts();
+      $('#partFilter').value = '';
+      $('#goSearch').click();
+    } catch (e) { toast('示例失败：' + e.message); }
+  }
+  $('#demoBtn').onclick = runDemo;
+  const obFix = $('#obFix'); if (obFix) obFix.onclick = () => $('#fixAll').click();
+  const obDemo = $('#obDemo'); if (obDemo) obDemo.onclick = runDemo;
+
+  // 快捷键
+  document.addEventListener('keydown', e => {
+    const tag = (e.target.tagName || '').toLowerCase();
+    const typing = tag === 'input' || tag === 'select' || tag === 'textarea';
+    if (e.key === 'Escape') { $('#glyphModal').classList.add('hide'); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); $('#goSearch').click(); return; }
+    if (typing) return;
+    if (e.key === 'j' || e.key === 'k') {                       // 上下切换结果
+      const cards = $$('#grid .card'); if (!cards.length) return;
+      const cur = cards.findIndex(c => c.classList.contains('on'));
+      const next = Math.max(0, Math.min(cards.length - 1, cur + (e.key === 'j' ? 1 : -1)));
+      cards[next].click(); cards[next].scrollIntoView({ block: 'nearest' });
+    }
+    if ('1234'.includes(e.key)) {                              // 视角
+      const v = ['iso', 'top', 'side', 'spin'][+e.key - 1];
+      const b = document.querySelector(`#searchDetail [data-v="${v}"], #mineDetail [data-v="${v}"]`);
+      if (b) b.click();
+    }
+  });
+
   $('#goSearch').onclick = async () => {
     if (!S.want.size && !S.avoid.size) { $('#searchMsg').textContent = '先选至少一个部件（点一下变绿＝想要）'; return; }
     $('#searchMsg').textContent = ''; $('#grid').innerHTML = ''; $('#gridEmpty').classList.add('hide');
     $('#resultInfo').textContent = '搜索中…';
     try {
+      localStorage.setItem('sf.query', JSON.stringify({ ship: S.ship, want: [...S.want], avoid: [...S.avoid] }));
       const r = await post('/api/search', {
         ship: S.ship, want: [...S.want], avoid: [...S.avoid],
         limit: +$('#limit').value || 12, max_seeds: +$('#maxSeeds').value, time_limit: 30, workers: 1,

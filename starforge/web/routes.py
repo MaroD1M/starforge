@@ -369,6 +369,13 @@ def api_settings_set():
                         "gamedata_dir": s.gamedata_dir, "game_dir": s.game_dir})
 
 
+@bp.get("/desktop")
+def api_desktop():
+    """桌面窗口能力（界面用它决定是否显示"桌面窗口"徽标与提示）。"""
+    from .. import desktop
+    return ok(**desktop.probe())
+
+
 @bp.get("/autodetect")
 def api_autodetect():
     """自动发现游戏/存档/数据目录（只填空项）。?apply=0 只看不写。"""

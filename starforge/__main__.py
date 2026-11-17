@@ -32,6 +32,10 @@ def _free_port() -> int:
 def cmd_app(a) -> int:
     """默认命令：打开原生桌面窗口（不弹浏览器）。"""
     from . import desktop
+    info = desktop.probe()
+    if not info["available"]:
+        print(f"桌面窗口不可用：{info['reason']}", file=sys.stderr)
+        print("将改用浏览器打开（功能完全一致）。", file=sys.stderr)
     return desktop.run(port=getattr(a, "port", 0), debug=getattr(a, "debug", False))
 
 
