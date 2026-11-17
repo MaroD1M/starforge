@@ -136,9 +136,18 @@ def test_static_dir_resolution_finds_assets():
     assert __import__("os").path.exists(__import__("os").path.join(d, "index.html"))
 
 
-def test_cli_build_has_static_assets():
-    """CI 里 CLI 包曾漏了 --add-data 静态资源；这里守住工作流配置。"""
+def test_package_includes_static_assets():
+    """打包必须带上静态资源（v0.11.0 首跑就是漏了它导致网页 500）。"""
     from pathlib import Path
     wf = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text("utf-8")
-    cli = wf.split("name starforge-cli")[1].split("冒烟测试")[0]
-    assert "starforge/web/static;starforge/web/static" in cli
+    block = wf.split("pyinstaller --noconfirm")[1].split("冒烟测试")[0]   # 打包命令所在段
+    assert "starforge/web/static;starforge/web/static" in block
+    assert "build/vendor/data;data" in block
+
+
+def test_single_exe_build():
+    """单 exe 方案：不应再有第二个构建目标。"""
+    from pathlib import Path
+    wf = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text("utf-8")
+    assert "starforge-cli" not in wf
+    assert wf.count("pyinstaller --noconfirm") == 1

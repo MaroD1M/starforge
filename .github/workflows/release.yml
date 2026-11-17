@@ -57,7 +57,7 @@ jobs:
         shell: pwsh
         run: python packaging/vendor.py --shipwright upstream-shipwright --dest build/vendor
 
-      - name: 打包 GUI（无控制台窗口；入口 packaging/entry.py + vendor 的上游包）
+      - name: 打包（单 exe：双击=桌面窗口并隐藏控制台，带子命令=命令行；入口 packaging/entry.py）
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --name starforge --onedir `
@@ -69,20 +69,7 @@ jobs:
             --collect-all texture2ddecoder --collect-all webview --collect-all pythonnet --hidden-import clr `
             --collect-submodules starforge --hidden-import tkinter `
             --add-data "starforge/web/static;starforge/web/static" `
-            --windowed packaging/entry.py
-
-      - name: 额外构建命令行版（保留控制台，供 ships/selfcheck/live 等命令）
-        shell: pwsh
-        run: |
-          pyinstaller --noconfirm --clean --name starforge-cli --onedir `
-            --paths . --paths build/vendor `
-            --collect-submodules starforge `
-            --add-data "starforge/web/static;starforge/web/static" `
-            --collect-all hgpaktool --collect-all numpy --collect-all flask `
-            --collect-all texture2ddecoder --collect-all webview --collect-all pythonnet `
-            --hidden-import clr --hidden-import tkinter `
-            --add-data "build/vendor/data;data" `
-            --add-data "build/vendor/THIRD_PARTY_SHIPWRIGHT_LICENSE.txt;." `
+            --exclude-module numpy.f2py --exclude-module numpy.distutils `
             packaging/entry.py
 
       - name: 冒烟测试打包产物（抓漏依赖：v0.9.0-beta 曾漏掉 numpy）
@@ -90,7 +77,7 @@ jobs:
         env:
           STARFORGE_HOME: ${{ runner.temp }}/sfhome-pkg
         run: |
-          $exe = "dist/starforge-cli/starforge-cli.exe"
+          $exe = "dist/starforge/starforge.exe"
           if (-not (Test-Path $exe)) { throw "没有找到 $exe" }
           $help = & $exe --help 2>&1 | Out-String
           $help | Out-Host
@@ -99,7 +86,7 @@ jobs:
           & $exe selftest | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "打包产物 selftest 失败（exit $LASTEXITCODE）" }
           # 关键依赖必须在包内
-          foreach ($bundle in @("dist/starforge/_internal", "dist/starforge-cli/_internal")) {
+          foreach ($bundle in @("dist/starforge/_internal")) {
             foreach ($p in @("numpy", "flask", "werkzeug", "_tkinter", "lz4", "hgpaktool",
                              "texture2ddecoder", "webview", "mapping.json")) {
               $hit = Get-ChildItem -Recurse -Path $bundle -Filter "*$p*" -ErrorAction SilentlyContinue
@@ -118,7 +105,7 @@ jobs:
         env:
           STARFORGE_HOME: ${{ runner.temp }}/sfhome-web
         run: |
-          $exe = "dist/starforge-cli/starforge-cli.exe"
+          $exe = "dist/starforge/starforge.exe"
           & $exe webcheck
           if ($LASTEXITCODE -ne 0) { throw "网页自检失败（exit $LASTEXITCODE）" }
 
@@ -127,7 +114,7 @@ jobs:
         env:
           STARFORGE_HOME: ${{ runner.temp }}/sfhome-serve
         run: |
-          $exe = "dist/starforge-cli/starforge-cli.exe"
+          $exe = "dist/starforge/starforge.exe"
           $out = Join-Path $env:RUNNER_TEMP "serve.out.log"
           $err = Join-Path $env:RUNNER_TEMP "serve.err.log"
           $p = Start-Process -FilePath $exe -ArgumentList "serve","--port","8899","--no-browser" `
@@ -153,10 +140,7 @@ jobs:
       - name: 压缩产物（GUI + CLI 打进同一个包）
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist/release | Out-Null
-          Copy-Item -Recurse dist/starforge dist/release/starforge
-          Copy-Item -Recurse dist/starforge-cli dist/release/starforge-cli
-          Compress-Archive -Path dist/release/* -DestinationPath "dist/starforge-${{ github.ref_name }}-win64.zip"
+          Compress-Archive -Path dist/starforge/* -DestinationPath "dist/starforge-${{ github.ref_name }}-win64.zip"
 
       - name: 发布
         uses: softprops/action-gh-release@v2

@@ -44,3 +44,22 @@ def safe(text: object) -> str:
     except (UnicodeEncodeError, LookupError):
         return s.encode(sys.stdout.encoding or "utf-8", "replace").decode(
             sys.stdout.encoding or "utf-8", "replace")
+
+
+def hide_console_window() -> bool:
+    """把当前进程的控制台窗口藏起来（Windows）。
+
+    用于"单 exe"方案：双击（无子命令）时走桌面窗口，顺手把黑控制台藏掉；
+    带子命令（ships/serve/…）时保持控制台可见。失败不影响功能。
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if not hwnd:
+            return False
+        ctypes.windll.user32.ShowWindow(hwnd, 0)      # SW_HIDE
+        return True
+    except Exception:                                  # noqa: BLE001
+        return False

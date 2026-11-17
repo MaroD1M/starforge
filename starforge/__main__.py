@@ -31,6 +31,7 @@ def _free_port() -> int:
 
 def cmd_app(a) -> int:
     """默认命令：打开原生桌面窗口（不弹浏览器）。"""
+    console.hide_console_window()          # 单 exe：双击时把控制台藏掉
     from . import desktop
     info = desktop.probe()
     if not info["available"]:
@@ -257,6 +258,8 @@ def _strip_internal_args(argv: list[str]) -> list[str]:
 def main(argv=None) -> int:
     console.setup_console()          # Windows cp1252 下 print 中文不再崩（CI 首跑踩过）
     argv = _strip_internal_args(list(sys.argv[1:] if argv is None else argv))
+    if not argv:                          # 双击启动：尽早把控制台藏掉，减少闪烁
+        console.hide_console_window()
     ap = argparse.ArgumentParser(prog="starforge", description=strings.APP_TITLE)
     sub = ap.add_subparsers(dest="cmd")
 

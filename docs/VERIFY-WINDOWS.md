@@ -15,7 +15,8 @@
 启动：
 
 ```bat
-starforge\starforge.exe            :: 或双击 starforge.exe
+starforge\starforge.exe            :: 双击即应用窗口（会自动隐藏黑控制台）
+starforge\starforge.exe selfcheck  :: 命令行模式（保留控制台）
 ```
 
 浏览器应自动打开 `http://127.0.0.1:<随机端口>/`。

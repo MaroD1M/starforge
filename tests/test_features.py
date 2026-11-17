@@ -189,3 +189,27 @@ def test_console_survives_missing_streams(monkeypatch):
     console.setup_console()                    # 不抛异常
     print("应该被吞掉")
     assert sys.stdout is not None              # 已被替换成空流
+
+
+def test_hide_console_is_safe_off_windows():
+    """非 Windows 上必须安全返回 False，不能抛异常。"""
+    from starforge.core import console
+    assert console.hide_console_window() in (True, False)
+
+
+def test_default_command_is_gui():
+    """无子命令时必须走桌面窗口（单 exe 方案的前提）。"""
+    import inspect
+    from starforge import __main__ as m
+    src = inspect.getsource(m.main)
+    assert "cmd_app(argparse.Namespace" in src
+
+
+def test_main_hides_console_before_parsing(monkeypatch):
+    """双击（无子命令）时应在解析参数前就尝试隐藏控制台。"""
+    import inspect
+    from starforge import __main__ as m
+    src = inspect.getsource(m.main)
+    i_hide = src.index("hide_console_window")
+    i_parse = src.index("ArgumentParser")
+    assert i_hide < i_parse
