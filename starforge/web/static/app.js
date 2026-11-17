@@ -19,6 +19,31 @@
     clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hide'), ms);
   }
 
+  const DESKTOP = { ready: false };
+
+  function bindDesktop() {
+    DESKTOP.ready = true;
+    document.body.classList.add('desktop');
+    $$('.desk-only').forEach(b => b.classList.remove('hide'));
+    $('#shell').textContent = '桌面窗口';
+    $$('[data-pick]').forEach(btn => btn.onclick = async () => {
+      const kind = btn.dataset.pick;
+      const p = await window.pywebview.api.pick_folder(kind);
+      if (!p) return;
+      ({ game: () => $('#gameDir'), saves: () => $('#savesDir'), gamedata: () => $('#gameData') }[kind]?.() || (() => null))().value = p;
+      toast('已选择：' + p);
+      await loadSettings(); await refreshHealth(); await loadShips();
+    });
+    const pickSave = $('#pickSave');
+    if (pickSave) pickSave.onclick = async () => {
+      const p = await window.pywebview.api.pick_file('save');
+      if (!p) return;
+      $('#savePath').value = p;
+      openSave();
+    };
+  }
+  window.addEventListener('pywebviewready', bindDesktop);
+
   const S = {
     ship: 'sentinel', catalog: null, want: new Set(), avoid: new Set(), mode: 'want',
     results: [], mine: [], viewer: null, jobTimer: null, glyphs: '', live: {},

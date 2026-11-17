@@ -11,6 +11,7 @@ import os
 import time
 
 from .core import log, paths, settings, strings
+from . import paint as paint_mod
 from .data import load_catalog, load_icons
 from .data.shipref import PROC_MODELS, ShipRef
 from . import gltf
@@ -74,6 +75,8 @@ def build(ref: ShipRef, want_glb: bool = True) -> dict:
         return info
 
     try:
+        colours = paint_mod.look(ref.seed, ref.type)
+        info["colours"] = {k: paint_mod.hexcol(v) for k, v in colours.items()}
         paths.ensure_shipwright_importable()
         from nms_procgen import model3d
         t0 = time.time()
@@ -83,7 +86,7 @@ def build(ref: ShipRef, want_glb: bool = True) -> dict:
         if want_glb:
             blob = model3d.pack(model)
             header, groups = gltf.parse_pack(blob)
-            data = gltf.build_glb(header, groups, name=f"{ref.type}_{ref.seed}")
+            data = gltf.build_glb(header, groups, colours=colours, name=f"{ref.type}_{ref.seed}")
             with open(glb_path + ".part", "wb") as f:
                 f.write(data)
             os.replace(glb_path + ".part", glb_path)

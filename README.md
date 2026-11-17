@@ -48,6 +48,21 @@ starforge 把该输的 12 个符文放大置顶显示，你照着传送门点即
 
 ![游戏原版符文](docs/img/glyphs.png)
 
+同一艘船，按种子的真实配色渲染：
+
+![种子真实配色](docs/img/paint.png)
+
+## 桌面应用（默认形态）
+
+双击 `starforge.exe` 会打开一个**原生窗口**（Windows 上用 Edge WebView2 渲染，不出现浏览器地址栏、不需要装 Python）：
+
+- 路径全部自动检测；设置页有「浏览…」原生目录选择框，不用手打
+- 数据层已内置（NMS-Shipwright, MIT），**不需要额外安装任何东西**
+- 没有 Gagarin 数据也能用：部件树从游戏 pak 自己推导
+- 3D 用**种子真实配色**渲染（从游戏数据解出主色/副色/底漆）
+
+> 命令行仍可用：`starforge.exe serve`（浏览器调试）、`ships`、`selfcheck`、`glyph-overlay`、`live probe`。
+
 ## 快速开始
 
 ```bash

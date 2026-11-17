@@ -29,6 +29,12 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def cmd_app(a) -> int:
+    """默认命令：打开原生桌面窗口（不弹浏览器）。"""
+    from . import desktop
+    return desktop.run(port=getattr(a, "port", 0), debug=getattr(a, "debug", False))
+
+
 def cmd_serve(a) -> int:
     from .web.app import create_app
     s = settings.current()
@@ -204,7 +210,12 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="starforge", description=strings.APP_TITLE)
     sub = ap.add_subparsers(dest="cmd")
 
-    p = sub.add_parser("serve", help="启动本地网页")
+    p = sub.add_parser("app", help="打开桌面窗口（默认）")
+    p.add_argument("--port", type=int, default=0)
+    p.add_argument("--debug", action="store_true")
+    p.set_defaults(func=cmd_app)
+
+    p = sub.add_parser("serve", help="只用浏览器打开（调试用）")
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--no-browser", action="store_true")
     p.set_defaults(func=cmd_serve)
@@ -255,7 +266,7 @@ def main(argv=None) -> int:
 
     a = ap.parse_args(argv)
     if not getattr(a, "func", None):
-        return cmd_serve(argparse.Namespace(port=0, no_browser=False))
+        return cmd_app(argparse.Namespace(port=0, debug=False))     # 双击 → 原生窗口
     return a.func(a)
 
 

@@ -336,7 +336,9 @@ def api_thumb(ship: str, seed: str):
     views = tuple(v for v in (request.args.get("views") or "iso").split(",") if v in render.VIEWS)
     size = max(160, min(int(request.args.get("size") or 420), 900))
     try:
-        data = render.ship_png(ship, seed, parts or None, views or ("iso",), (size, size))
+        from .. import paint as paint_mod
+        cols = paint_mod.look(seed, ship) if request.args.get("paint", "1") != "0" else None
+        data = render.ship_png(ship, seed, parts or None, views or ("iso",), (size, size), colours=cols)
     except Exception as e:                     # noqa: BLE001 - 没有游戏数据时退 L0 部件图
         from ..glyphs import panel_png
         raise BadRequest(f"无法渲染：{type(e).__name__}: {e}")

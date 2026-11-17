@@ -66,7 +66,7 @@ jobs:
             --add-data "build/vendor/data;data" `
             --add-data "build/vendor/THIRD_PARTY_SHIPWRIGHT_LICENSE.txt;." `
             --collect-all hgpaktool --collect-all numpy --collect-all flask `
-            --collect-all texture2ddecoder `
+            --collect-all texture2ddecoder --collect-all webview `
             --collect-submodules starforge --hidden-import tkinter `
             --add-data "starforge/web/static;starforge/web/static" `
             packaging/entry.py
@@ -78,12 +78,14 @@ jobs:
         run: |
           $exe = "dist/starforge/starforge.exe"
           if (-not (Test-Path $exe)) { throw "没有找到 $exe" }
-          & $exe --help | Out-Host
+          $help = & $exe --help 2>&1 | Out-String
+          $help | Out-Host
+          if ($help -notmatch "app") { throw "打包产物的帮助里没有 app 命令" }
           if ($LASTEXITCODE -ne 0) { throw "打包产物 --help 失败（exit $LASTEXITCODE）" }
           & $exe selftest | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "打包产物 selftest 失败（exit $LASTEXITCODE）" }
           # 关键依赖必须在包内
-          foreach ($p in @("numpy", "flask", "_tkinter", "lz4", "hgpaktool", "texture2ddecoder", "mapping.json")) {
+          foreach ($p in @("numpy", "flask", "_tkinter", "lz4", "hgpaktool", "texture2ddecoder", "webview", "mapping.json")) {
             $hit = Get-ChildItem -Recurse -Path "dist/starforge/_internal" -Filter "*$p*" -ErrorAction SilentlyContinue
             if (-not $hit) { throw "打包缺少依赖：$p" }
           }
@@ -109,7 +111,7 @@ jobs:
             }
             if (-not $ok) { throw "网页没起来（端口 8899）" }
             if ($r.StatusCode -ne 200) { throw "首页状态码 $($r.StatusCode)" }
-            if ($r.Content -notmatch "tab-search") { throw "首页内容不对（可能没打到静态资源）" }
+            if ($r.Content -notmatch "page-search") { throw "首页内容不对（可能没打到静态资源）" }
             $a = Invoke-WebRequest -Uri "http://127.0.0.1:8899/static/app.js" -UseBasicParsing -TimeoutSec 5
             if ($a.StatusCode -ne 200 -or $a.RawContentLength -lt 1000) { throw "静态资源 app.js 异常" }
             Write-Host "网页冒烟通过（首页 + app.js）"

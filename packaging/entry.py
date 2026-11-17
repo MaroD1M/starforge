@@ -12,6 +12,10 @@ import numpy  # noqa: F401
 import flask  # noqa: F401
 import lz4.block  # noqa: F401
 import hgpaktool  # noqa: F401
+try:                         # 桌面窗口
+    import webview  # noqa: F401
+except Exception:            # noqa: BLE001
+    pass
 try:                         # 可选：解码游戏内 BC7 符文图标
     import texture2ddecoder  # noqa: F401
 except Exception:            # noqa: BLE001
@@ -28,6 +32,7 @@ import starforge.jobs  # noqa: F401
 import starforge.glyphs  # noqa: F401
 import starforge.gltf  # noqa: F401
 import starforge.overlay  # noqa: F401
+import starforge.desktop  # noqa: F401
 import starforge.live.scan  # noqa: F401
 import starforge.live.exml  # noqa: F401
 import starforge.live.mem  # noqa: F401

@@ -45,7 +45,8 @@ def _rot(axis: str, deg: float) -> np.ndarray:
     return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], np.float32)
 
 
-def render(groups: dict, views=("iso",), size=(420, 420), splat: int = 2, ss: int = 2) -> np.ndarray:
+def render(groups: dict, views=("iso",), size=(420, 420), splat: int = 2, ss: int = 2,
+           colours: dict | None = None) -> np.ndarray:
     """ss = 超采样倍率：先按 ss 倍尺寸点绘，再块平均降采样，点云看起来更"实"。"""
     allp = np.concatenate([g[0] for g in groups.values()])
     center = (allp.min(0) + allp.max(0)) / 2
@@ -54,7 +55,7 @@ def render(groups: dict, views=("iso",), size=(420, 420), splat: int = 2, ss: in
     pts, nrm, cols = [], [], []
     for key, (p, n, uv, ix) in groups.items():
         cls = key[0] if isinstance(key, tuple) else key
-        base = np.array(GROUP_COLOR.get(cls, (0.62, 0.62, 0.66)), np.float32)
+        base = np.array((colours or {}).get(cls) or GROUP_COLOR.get(cls, (0.62, 0.62, 0.66)), np.float32)
         pts.append(np.asarray(p, np.float32))
         nrm.append(np.asarray(n, np.float32))
         cols.append(np.tile(base, (len(p), 1)))
@@ -109,22 +110,23 @@ def _cache_png(key: str, builder) -> bytes:
     return data
 
 
-def model_png(glb_bytes: bytes, views=("iso",), size=(420, 420)) -> bytes:
+def model_png(glb_bytes: bytes, views=("iso",), size=(420, 420), colours: dict | None = None) -> bytes:
     """从我们自己产出的 glb 渲图（不需要再跑一遍 model3d）。"""
     key = hashlib.sha1(glb_bytes[:4096] + b"|".join(v.encode() for v in views)).hexdigest()[:20] + f"-{size[0]}"
-    return _cache_png(key, lambda: png_bytes(render(gltf.parse_pack(glb_bytes)[1], views, size)))
+    return _cache_png(key, lambda: png_bytes(render(gltf.parse_pack(glb_bytes)[1], views, size, colours=colours)))
 
 
 def ship_png(type_: str, seed: str, parts: list[str] | None = None,
-             views=("iso",), size=(420, 420)) -> bytes:
+             views=("iso",), size=(420, 420), colours: dict | None = None) -> bytes:
     """直接按船型+种子渲图（内部构建模型，结果按 hash 缓存）。"""
-    raw = f"{type_}|{seed}|{','.join(parts or [])}|{','.join(views)}|{size[0]}"
+    raw = (f"{type_}|{seed}|{','.join(parts or [])}|{','.join(views)}|{size[0]}|"
+           + "|".join(f"{k}:{v}" for k, v in sorted((colours or {}).items())))
     key = hashlib.sha1(raw.encode()).hexdigest()[:20]
 
     def build() -> bytes:
         paths.ensure_shipwright_importable()
         from nms_procgen import model3d
         model = model3d.ship_model(seed, type_, parts or None, True, False)
-        return png_bytes(render(model["groups"], views, size))
+        return png_bytes(render(model["groups"], views, size, colours=colours))
 
     return _cache_png(key, build)
