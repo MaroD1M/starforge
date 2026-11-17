@@ -83,11 +83,16 @@ jobs:
           & $exe selftest | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "打包产物 selftest 失败（exit $LASTEXITCODE）" }
           # 关键依赖必须在包内
-          foreach ($p in @("numpy", "flask", "_tkinter", "lz4", "hgpaktool", "texture2ddecoder", "nms_save", "mapping.json")) {
+          foreach ($p in @("numpy", "flask", "_tkinter", "lz4", "hgpaktool", "texture2ddecoder", "mapping.json")) {
             $hit = Get-ChildItem -Recurse -Path "dist/starforge/_internal" -Filter "*$p*" -ErrorAction SilentlyContinue
             if (-not $hit) { throw "打包缺少依赖：$p" }
           }
-          Write-Host "依赖检查通过"
+          # 纯 Python 的上游包会进 PYZ（磁盘上没有目录），所以用"跑一次 selftest"来验证
+          $out = & $exe selftest 2>&1 | Out-String
+          $out | Out-Host
+          if ($out -match "未找到") { throw "打包产物里没有内置上游（nms_save 不可导入）" }
+          if ($out -notmatch "内置\(打包版\)") { throw "内置上游未被识别为打包版：$out" }
+          Write-Host "依赖检查通过（含内置上游）"
 
       - name: 网页冒烟（起服务 → 请求首页与静态资源 → 关掉）
         shell: pwsh
