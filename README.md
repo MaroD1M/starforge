@@ -115,7 +115,8 @@ starforge **不重复造轮子**，而是把三个开源项目缝成一个产品
 ## 界面（设计稿）
 
 五页：搜索 / 我的船 / 星球 / 设置 + 独立符文浮窗。
-详细手册见 [`docs/`](docs/)（产品、设计、功能、界面、接口、运维、验收）。
+文档：[使用指南](docs/USAGE.md)（逐屏）· [软件手册](docs/MANUAL.md) · [设计方案](docs/DESIGN.md) ·
+[能力清单](docs/CAPABILITIES.md) · [Windows 验收清单](docs/VERIFY-WINDOWS.md)。
 
 ---
 

@@ -2,6 +2,8 @@
 
 | 文件 | 内容 |
 |---|---|
+| [USAGE.md](USAGE.md) | **逐屏使用指南**：安装 → 搜船 → 我的船 → 写回 → 星球 → 送进游戏 → 排障 |
+| [VERIFY-WINDOWS.md](VERIFY-WINDOWS.md) | Windows 真机验收清单（A–E 分段，含通过标准与常见报错） |
 | [MANUAL.md](MANUAL.md) | **软件手册**：产品定位、13 项功能、五页界面线框、符文浮窗规范、接口、运维、验收、里程碑 |
 | [DESIGN.md](DESIGN.md) | 设计方案：架构与进程模型、七个关键决策（含实测数据）、API 契约、性能预算、风险登记 |
 | [CAPABILITIES.md](CAPABILITIES.md) | 能力清单与实机效果：每项功能的判定（可用 / 需实现 / 需游戏内）与真实跑出的结果 |
