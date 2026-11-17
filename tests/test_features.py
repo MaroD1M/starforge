@@ -178,3 +178,14 @@ def test_glyph_icons_from_game_when_available(nms_dir):
     assert rgb is not None and rgb.shape == (96, 96, 3)
     assert rgb.max() > 0.3                       # 有真实像素，不是全黑
     assert glyphs.panel_payload("1043FEE69929")["source"] == "game"
+
+
+def test_console_survives_missing_streams(monkeypatch):
+    """PyInstaller --windowed 下 sys.stdout/stderr 是 None：print 不能炸。"""
+    import sys
+    from starforge.core import console
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    console.setup_console()                    # 不抛异常
+    print("应该被吞掉")
+    assert sys.stdout is not None              # 已被替换成空流

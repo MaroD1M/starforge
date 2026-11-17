@@ -7,13 +7,23 @@ Windows 的默认控制台编码常是 cp1252/cp936，直接 print 中文会抛 
 from __future__ import annotations
 
 import io
+import os
 import sys
 
 
 def setup_console() -> None:
+    """把标准流切成 UTF-8；**没有标准流时（PyInstaller --windowed）换成空流**。
+
+    Windows 无控制台打包时 sys.stdout / sys.stderr 是 None，任何 print() 都会抛异常。
+    这里统一兜住，命令行版不受影响。
+    """
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name, None)
         if stream is None:
+            try:
+                setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+            except Exception:                              # noqa: BLE001
+                pass
             continue
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")   # type: ignore[attr-defined]
