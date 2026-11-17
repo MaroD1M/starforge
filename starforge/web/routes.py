@@ -363,6 +363,13 @@ def api_settings_set():
                         "gamedata_dir": s.gamedata_dir, "game_dir": s.game_dir})
 
 
+@bp.get("/autodetect")
+def api_autodetect():
+    """自动发现游戏/存档/数据目录（只填空项）。?apply=0 只看不写。"""
+    apply = request.args.get("apply", "1") not in ("0", "false", "no")
+    return ok(**settings.autodetect(apply=apply))
+
+
 @bp.get("/diagnostics")
 def api_diagnostics():
     from .. import preview, system

@@ -376,3 +376,19 @@ def test_probe_reports_sources():
     assert ssh_sent["chosen"] and ssh_sent["reason"] == "可写入"
     own_sent = next(t for t in by_source["starforge"] if t["type"] == "sentinel")
     assert own_sent["chosen"] is None and "没装" in own_sent["reason"]
+
+
+def test_probe_reports_structural_candidates_without_writing():
+    import struct
+    entries = exml.manifest()
+    # 只有 ShipLayout 结构、没有出厂种子（模拟"种子被归一化"）
+    buf = bytearray(0x6000)
+    off = 0x1000
+    buf[off:off + 12] = struct.pack("<III", entries[0]["slots"], 1, 1)
+    proc = mem_mod.FakeProcess([(0x40000000, buf)])
+    rep = writer.probe(proc, entries)
+    sent = next(t for t in rep["types"] if t["type"] == "sentinel")
+    assert sent["chosen"] is None
+    assert sent["structural"], "应当报告结构候选"
+    assert "结构候选" in sent["reason"]
+    assert proc.writes == []                       # 只读

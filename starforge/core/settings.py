@@ -5,6 +5,7 @@ S0 验收：`write_enabled` 默认 False，任何写接口在 False 时返回 40
 from __future__ import annotations
 
 import json
+import os
 import threading
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -99,3 +100,65 @@ def require_write() -> None:
     from .errors import WriteDisabled
     if not current().write_enabled:
         raise WriteDisabled("写入功能当前关闭")
+
+
+# ---------------------------------------------------------------- 自动发现
+
+def autodetect(apply: bool = True) -> dict:
+    """自动找游戏 / 存档 / 数据目录（只在对应项为空时填），返回找到的结果与来源。
+
+    优先级：
+      游戏   NMS_DIR 环境变量 → Shipwright 的 gamepath.find()（Steam/GOG/注册表）
+      存档   平台默认路径（Windows: %APPDATA%\\HelloGames\\NMS\\st_*）
+      数据   游戏目录/GAMEDATA（若存在 Gagarin 的 catalog.txt 也认）
+    """
+    from . import log as log_mod, paths
+    log = log_mod.get("settings")
+    found: dict[str, str] = {}
+    cur = current()
+    changed: dict[str, str] = {}
+
+    # 游戏目录
+    game = cur.game_dir
+    if not game:
+        cands = []
+        env = os.environ.get("NMS_DIR")
+        if env:
+            cands.append(env)
+        try:
+            paths.ensure_shipwright_importable()
+            from nms_save import gamepath
+            hit = gamepath.find()
+            if hit:
+                cands.append(hit)
+        except Exception as e:                             # noqa: BLE001
+            log.debug("gamepath 自动发现不可用：%s", e)
+        for c in cands:
+            if c and os.path.exists(os.path.join(c, "Binaries", "NMS.exe")):
+                found["game_dir"] = c
+                break
+
+    # 存档目录
+    if not cur.saves_dir:
+        for d in paths.default_save_dirs():
+            if list(d.glob("*.hg")):
+                found["saves_dir"] = str(d)
+                break
+
+    # 数据目录（Gagarin 的 GAMEDATA；优先游戏目录下的那份）
+    if not cur.gamedata_dir:
+        g = found.get("game_dir") or cur.game_dir
+        if g:
+            cand = os.path.join(g, "GAMEDATA")
+            if os.path.exists(os.path.join(cand, "Gagarin", "ships", "catalog.txt")):
+                found["gamedata_dir"] = cand
+        if "gamedata_dir" not in found:
+            gd = paths.gagarin_gamedata()
+            if gd:
+                found["gamedata_dir"] = str(gd)
+
+    if apply and found:
+        update(**found)
+        changed = dict(found)
+        log.info("自动发现并写入设置：%s", ", ".join(f"{k}={v}" for k, v in found.items()))
+    return {"found": found, "applied": bool(apply and changed)}

@@ -35,6 +35,13 @@
       if (h.gamedata) await loadCatalog(S.ship);
       else $('#searchMsg').textContent = '未配置部件目录（GAMEDATA）：请到设置页指定';
       await loadSettings();
+      // 首次使用：路径空着就自动探一次（不覆盖用户已填的）
+      if (!h.gamedata || !h.saves_dir || !h.game_dir) {
+        try {
+          const a = await api('/api/autodetect');
+          if (a.applied) { await loadSettings(); $('#setMsg').textContent = '已自动检测路径：' + Object.keys(a.found).join('、'); }
+        } catch (e) { /* 忽略：自动检测失败不影响手填 */ }
+      }
       try {
         S.live = await api('/api/live/status');
         const txt = S.live.supported
@@ -372,6 +379,15 @@
       $('#lvBadge').textContent = c.preview_level === 'L1' ? 'L1 真 3D' : 'L0 部件图';
       if (!$('#shipSel').options.length) await loadCatalog(S.ship);
     } catch (e) { $('#setMsg').textContent = e.message; }
+  };
+  $('#autoDetect').onclick = async () => {
+    try {
+      const a = await api('/api/autodetect');
+      await loadSettings();
+      $('#setMsg').textContent = a.applied
+        ? '已填入：' + Object.entries(a.found).map(([k, v]) => `${k}=${v}`).join('；')
+        : '没有发现可自动填入的路径，请手动填写';
+    } catch (e) { $('#setMsg').textContent = '检测失败：' + e.message; }
   };
   $('#genMod').onclick = async () => {
     const dest = prompt('生成到哪个目录？（留空 = 缓存目录）', '');

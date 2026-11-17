@@ -199,6 +199,35 @@ def push(proc, type_: str, seed: str | int, entries: list[dict] | None = None) -
             "before": before, "after": after, "seed": value, "score": slot.score}
 
 
+def scan_structural(proc, entries: list[dict] | None = None,
+                    max_hits: int = 8) -> dict[str, list[int]]:
+    """**只读**兜底策略：按 `ShipLayout{Slots, Seed=1, Level=1}` 的整数三联找候选。
+
+    用途：如果游戏把出厂种子归一化了（审计里的 P0-2 场景），靠种子就找不到槽。
+    这里只**报告**候选地址，不参与写入——避免在不确定布局时写错对象。
+    """
+    entries = entries if entries is not None else all_entries()
+    out: dict[str, list[int]] = {}
+    targets = {e["id"]: e["slots"] for e in entries}
+    for region in proc.regions(min_size=MIN_REGION):
+        try:
+            buf = proc.read(region.base, region.size)
+        except mem_mod.LiveUnsupported:
+            continue
+        for eid, slots in targets.items():
+            pat = struct.pack("<III", int(slots), 1, 1)
+            start = 0
+            while True:
+                i = buf.find(pat, start)
+                if i < 0:
+                    break
+                start = i + 1
+                bucket = out.setdefault(eid, [])
+                if len(bucket) < max_hits:
+                    bucket.append(region.base + i)
+    return out
+
+
 def probe(proc, entries: list[dict] | None = None) -> dict:
     """**只读**诊断：每种船型找到几个候选、哪个最可信、为什么不可信。绝不写入。
 
@@ -227,8 +256,13 @@ def probe(proc, entries: list[dict] | None = None) -> dict:
                     "chosen": (hex(good[0][0]) if (good and not ambiguous) else None),
                     "confidence": round(good[0][1], 3) if good and not ambiguous else 0.0,
                     "reason": reason})
+    structural = scan_structural(proc, entries)
+    for row in out:
+        row["structural"] = [hex(a) for a in structural.get(row["id"], [])][:4]
+        if not row["chosen"] and row["structural"]:
+            row["reason"] += "；但找到结构候选（可能出厂种子已被游戏归一化）"
     return {"ok": True, "platform": "windows" if mem_mod.IS_WINDOWS else "other",
-            "types": out, "hint": "本接口只读：不写任何内存"}
+            "types": out, "hint": "本接口只读：不写任何内存；structural 仅用于排障，不参与写入"}
 
 
 def status() -> dict:

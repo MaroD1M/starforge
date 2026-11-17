@@ -54,3 +54,39 @@ def test_system_current(client, game_env, saves_dir):
     assert j["ok"] and j["planets"] >= 1
     assert j["glyphs"] and len(j["glyphs"]) == 12
     assert "ships" in j and isinstance(j["ships"], list)
+
+
+def test_autodetect_fills_save_dir(tmp_path, monkeypatch):
+    from starforge.core import paths as paths_mod, settings as settings_mod
+    fake = tmp_path / "st_123"
+    fake.mkdir()
+    (fake / "save.hg").write_bytes(b"{\"x\":1}")
+    monkeypatch.setattr(paths_mod, "default_save_dirs", lambda: [fake])
+    monkeypatch.delenv("NMS_DIR", raising=False)
+    settings_mod.update(saves_dir="", gamedata_dir="", game_dir="")
+    rep = settings_mod.autodetect(apply=True)
+    assert rep["found"]["saves_dir"] == str(fake)
+    assert settings_mod.current().saves_dir == str(fake)
+
+
+def test_autodetect_readonly_mode(tmp_path, monkeypatch):
+    from starforge.core import paths as paths_mod, settings as settings_mod
+    fake = tmp_path / "st_x"
+    fake.mkdir()
+    (fake / "save.hg").write_bytes(b"{}")
+    monkeypatch.setattr(paths_mod, "default_save_dirs", lambda: [fake])
+    settings_mod.update(saves_dir="")
+    rep = settings_mod.autodetect(apply=False)
+    assert rep["found"]["saves_dir"] == str(fake)
+    assert rep["applied"] is False
+    assert settings_mod.current().saves_dir == ""       # 未写盘
+
+
+def test_autodetect_api(client, monkeypatch, tmp_path):
+    from starforge.core import paths as paths_mod
+    fake = tmp_path / "st_api"
+    fake.mkdir()
+    (fake / "save.hg").write_bytes(b"{}")
+    monkeypatch.setattr(paths_mod, "default_save_dirs", lambda: [fake])
+    j = client.get("/api/autodetect").get_json()
+    assert j["ok"] and j["found"]["saves_dir"] == str(fake)
