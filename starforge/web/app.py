@@ -88,6 +88,20 @@ def create_app() -> Flask:
     def static_file(filename: str):                   # noqa: ANN202
         return send_from_directory(static_dir, filename)
 
+    @app.errorhandler(404)
+    def _missing(err):                                # noqa: ANN202
+        if os.path.exists(os.path.join(static_dir, "index.html")):
+            return jsonify({"ok": False, "error": {
+                "kind": "not_found", "message": getattr(err, "description", "404"), "hint": ""}}), 404
+        return Response(
+            "<!doctype html><meta charset='utf-8'><title>starforge</title>"
+            "<body style='background:#0c0e13;color:#d7dce5;font:14px system-ui;padding:40px'>"
+            "<h2>网页资源缺失</h2>"
+            "<p>这个打包版本里没有 <code>starforge/web/static</code>（打包时漏了 --add-data）。</p>"
+            "<p>命令行仍可用：<code>starforge.exe ships</code> / <code>selftest</code> / <code>selfcheck</code>。</p>"
+            "<p>请换用较新的 Release，或把 <code>starforge/web/static</code> 复制到程序目录下的同名路径。</p>"
+            "</body>", status=500, mimetype="text/html")
+
     @app.get("/favicon.ico")
     def favicon():                                    # noqa: ANN202
         return Response(status=204)

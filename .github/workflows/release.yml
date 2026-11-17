@@ -50,6 +50,7 @@ jobs:
             --collect-all hgpaktool --collect-all numpy --collect-all flask `
             --collect-all texture2ddecoder `
             --collect-submodules starforge --hidden-import tkinter `
+            --add-data "starforge/web/static;starforge/web/static" `
             packaging/entry.py
 
       - name: 冒烟测试打包产物（抓漏依赖：v0.9.0-beta 曾漏掉 numpy）
@@ -69,6 +70,29 @@ jobs:
             if (-not $hit) { throw "打包缺少依赖：$p" }
           }
           Write-Host "依赖检查通过"
+
+      - name: 网页冒烟（起服务 → 请求首页与静态资源 → 关掉）
+        shell: pwsh
+        env:
+          STARFORGE_HOME: ${{ runner.temp }}/sfhome-web
+        run: |
+          $exe = "dist/starforge/starforge.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "serve","--port","8899","--no-browser" -PassThru
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Milliseconds 500
+              try { $r = Invoke-WebRequest -Uri "http://127.0.0.1:8899/" -UseBasicParsing -TimeoutSec 3; $ok = $true; break } catch {}
+            }
+            if (-not $ok) { throw "网页没起来（端口 8899）" }
+            if ($r.StatusCode -ne 200) { throw "首页状态码 $($r.StatusCode)" }
+            if ($r.Content -notmatch "tab-search") { throw "首页内容不对（可能没打到静态资源）" }
+            $a = Invoke-WebRequest -Uri "http://127.0.0.1:8899/static/app.js" -UseBasicParsing -TimeoutSec 5
+            if ($a.StatusCode -ne 200 -or $a.RawContentLength -lt 1000) { throw "静态资源 app.js 异常" }
+            Write-Host "网页冒烟通过（首页 + app.js）"
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
 
       - name: 压缩产物
         shell: pwsh
