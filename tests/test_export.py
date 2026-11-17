@@ -82,3 +82,27 @@ def test_rasterize_uses_texture_when_given():
                            textures={"TEX/A.dds": tex_img})
     red = (out[:, :, 0] > 150) & (out[:, :, 1] < 100)
     assert red.sum() > 20                              # 有像素被贴图染红
+
+
+def test_dds_pipeline_parses_and_decodes(tmp_path):
+    """自造一个 BC1 DDS：describe 能认出格式，rgba 能解出正确颜色。"""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "fixtures"))
+    from make_dds import checkerboard_dds
+    from starforge import tex
+
+    raw = checkerboard_dds(16, 16)
+    p = tmp_path / "tex.dds"
+    p.write_bytes(raw)
+    info = tex._shiptex().describe(raw)          # 直接验证解析（不经过 pak）
+    assert info and info["format"] == "BC1" and (info["width"], info["height"]) == (16, 16)
+    try:
+        import texture2ddecoder  # noqa: F401
+    except Exception:
+        pytest.skip("没装 texture2ddecoder")
+    from texture2ddecoder import decode_bc1
+    import numpy as np
+    img = np.frombuffer(decode_bc1(raw[info["offset"]:], 16, 16), np.uint8).reshape(16, 16, 4)
+    corner = img[2, 2, [2, 1, 0]]                # BGRA → RGB
+    assert abs(int(corner[0]) - 220) < 16 and abs(int(corner[1]) - 40) < 16

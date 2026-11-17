@@ -13,7 +13,7 @@ import time
 from .core import log, paths, settings, strings
 import numpy as np
 
-from . import paint as paint_mod, render
+from . import paint as paint_mod, render, tex as tex_mod
 from .data import load_catalog, load_icons
 from .data.shipref import PROC_MODELS, ShipRef
 from . import gltf

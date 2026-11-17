@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import threading
 import struct
 import zlib
 
@@ -147,7 +148,8 @@ def model_png(glb_bytes: bytes, views=("iso",), size=(420, 420), colours: dict |
 
 
 def ship_png(type_: str, seed: str, parts: list[str] | None = None,
-             views=("iso",), size=(420, 420), colours: dict | None = None) -> bytes:
+             views=("iso",), size=(420, 420), colours: dict | None = None,
+             raster: bool | None = None, textures: dict | None = None) -> bytes:
     """直接按船型+种子渲图（内部构建模型，结果按 hash 缓存）。"""
     raw = (f"{type_}|{seed}|{','.join(parts or [])}|{','.join(views)}|{size[0]}|"
            + "|".join(f"{k}:{v}" for k, v in sorted((colours or {}).items())))
@@ -157,7 +159,13 @@ def ship_png(type_: str, seed: str, parts: list[str] | None = None,
         paths.ensure_shipwright_importable()
         from nms_procgen import model3d
         model = model3d.ship_model(seed, type_, parts or None, True, False)
-        return png_bytes(render(model["groups"], views, size, colours=colours))
+        use_raster = (size[0] >= 260) if raster is None else raster
+        if not use_raster:
+            return png_bytes(render(model["groups"], views, size, colours=colours))
+        # 网格用小图（ss=1 快），详情用大图（ss=2 细腻）
+        ss = 2 if size[0] >= 440 else 1
+        return png_bytes(rasterize(model["groups"], views, size, colours=colours,
+                                   ss=ss, ambient=0.24, textures=textures))
 
     return _cache_png(key, build)
 
@@ -310,3 +318,43 @@ def rasterize(groups: dict, views=("iso",), size=(640, 640), colours: dict | Non
     if ss > 1:
         out = out.reshape(size[1], ss, len(views) * size[0], ss, 3).mean(axis=(1, 3))
     return (np.clip(out, 0, 1) * 255).astype(np.uint8)
+
+
+# ---------------------------------------------------------------- 后台预取
+
+_PREFETCH_Q: "queue.Queue" = None
+_PREFETCH_THREAD = None
+_PREFETCH_LOCK = threading.Lock()
+
+
+def _prefetch_worker() -> None:
+    while True:
+        job = _PREFETCH_Q.get()
+        if job is None:
+            return
+        type_, seed, size, parts = job
+        try:
+            ship_png(type_, seed, parts, ("iso",), (size, size))
+        except Exception as e:                              # noqa: BLE001
+            log.debug("预取失败 %s %s：%s", type_, seed, e)
+
+
+def prefetch(items, size: int = 340) -> int:
+    """把一批缩略图排队后台渲染（幂等：同一进程一个 worker）。"""
+    global _PREFETCH_Q, _PREFETCH_THREAD
+    with _PREFETCH_LOCK:
+        if _PREFETCH_Q is None:
+            import queue
+            _PREFETCH_Q = queue.Queue(maxsize=256)
+        if _PREFETCH_THREAD is None or not _PREFETCH_THREAD.is_alive():
+            import threading as _t
+            _PREFETCH_THREAD = _t.Thread(target=_prefetch_worker, daemon=True, name="sf-prefetch")
+            _PREFETCH_THREAD.start()
+    n = 0
+    for it in items:
+        try:
+            _PREFETCH_Q.put_nowait((it.get("type"), it.get("seed"), size, it.get("parts")))
+            n += 1
+        except Exception:                                   # noqa: BLE001 - 队列满就算了
+            break
+    return n
