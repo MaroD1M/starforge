@@ -118,9 +118,13 @@ def autodetect(apply: bool = True) -> dict:
     cur = current()
     changed: dict[str, str] = {}
 
-    # 游戏目录（含 Steam 注册表/多磁盘兜底）
-    if not cur.game_dir:
-        from .. import locate_game
+    # 游戏目录（含 Steam 注册表/多磁盘兜底 + 常见填错自愈）
+    from .. import locate_game
+    if cur.game_dir:
+        fixed = locate_game.normalize(cur.game_dir)
+        if fixed and os.path.normcase(fixed) != os.path.normcase(cur.game_dir):
+            found["game_dir"] = fixed
+    else:
         hit = locate_game.find()
         if hit:
             found["game_dir"] = hit

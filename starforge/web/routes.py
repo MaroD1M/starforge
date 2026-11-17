@@ -331,6 +331,25 @@ def api_system_scan():
     return ok(job_id=job.id, params={k: v for k, v in params.items() if k != "save_path"})
 
 
+# ---------------------------------------------------------------- 批量导出
+
+@bp.post("/export")
+def api_export():
+    """把若干艘船导出成 zip（glb + png + manifest.json）。"""
+    from .. import export
+    body = request.get_json(silent=True) or {}
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        raise BadRequest("需要 items：每项至少含 type 与 seed")
+    data, stats = export.export_zip(items, include_glb=body.get("glb", True),
+                                    include_png=body.get("png", True),
+                                    png_size=int(body.get("size") or 640))
+    name = body.get("name") or "starforge-export"
+    return Response(data, mimetype="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}.zip"',
+                             "X-Export-Count": str(stats["exported"])})
+
+
 # ---------------------------------------------------------------- 服务端缩略图
 
 @bp.get("/thumb/<ship>/<seed>.png")

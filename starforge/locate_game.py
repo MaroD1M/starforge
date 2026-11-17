@@ -94,11 +94,39 @@ def _library_paths(steam_root: str) -> list[str]:
     return out
 
 
+def normalize(folder: str | None) -> str | None:
+    r"""把"常见填错"纠正成游戏根目录。
+
+    例如用户选到了 `...\No Man's Sky\GAMEDATA`、`...\Binaries`、
+    或者干脆选了 Steam 根目录 `...\Steam`。
+    """
+    if not folder:
+        return None
+    p = os.path.normpath(os.path.expandvars(os.path.expanduser(folder)))
+    if looks_like_game(p):
+        return p
+    base = os.path.basename(p).lower()
+    if base in ("gamedata", "binaries", "pcbanks"):
+        parent = os.path.dirname(p)
+        if looks_like_game(parent):
+            return parent
+    # Steam 根：往下找 steamapps/common/No Man's Sky
+    cand = os.path.join(p, "steamapps", "common", GAME_DIR_NAME)
+    if looks_like_game(cand):
+        return cand
+    # 已经是 common 层
+    cand = os.path.join(p, GAME_DIR_NAME)
+    if looks_like_game(cand):
+        return cand
+    return None
+
+
 def find() -> str | None:
     """返回游戏根目录（含 Binaries/NMS.exe 与 GAMEDATA/PCBANKS），找不到返回 None。"""
     env = os.environ.get("NMS_DIR")
-    if looks_like_game(env):
-        return os.path.normpath(env)
+    fixed = normalize(env)
+    if fixed:
+        return fixed
 
     # 交给 Shipwright（它会查 Steam/GOG/微软商店）
     try:

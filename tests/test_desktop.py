@@ -97,3 +97,20 @@ def test_find_prefers_env(tmp_path, monkeypatch):
     (fake / "GAMEDATA" / "PCBANKS").mkdir(parents=True)
     monkeypatch.setenv("NMS_DIR", str(fake))
     assert locate_game.find() == str(fake)
+
+
+def test_normalize_fixes_common_mistakes(tmp_path):
+    from starforge import locate_game
+    game = tmp_path / "No Man's Sky"
+    (game / "Binaries").mkdir(parents=True)
+    (game / "Binaries" / "NMS.exe").write_bytes(b"MZ")
+    (game / "GAMEDATA" / "PCBANKS").mkdir(parents=True)
+    steam = tmp_path / "Steam"
+    (steam / "steamapps" / "common").mkdir(parents=True)
+    (steam / "steamapps" / "common" / "No Man's Sky").symlink_to(game)
+
+    assert locate_game.normalize(str(game)) == str(game)                  # 本来就对
+    assert locate_game.normalize(str(game / "GAMEDATA")) == str(game)     # 选到了 GAMEDATA
+    assert locate_game.normalize(str(game / "Binaries")) == str(game)     # 选到了 Binaries
+    assert locate_game.normalize(str(steam)) == str(steam / "steamapps" / "common" / "No Man's Sky")
+    assert locate_game.normalize(None) is None

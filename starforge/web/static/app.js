@@ -136,8 +136,70 @@
   }
 
   function maybeOnboard(h) {
-    const need = !h.saves_ready || !h.data_ready;
+    const need = !h.saves_ready || !h.data_ready || !h.game_dir;
     $('#onboard').classList.toggle('hide', !need);
+    if (need && !sessionStorage.getItem('sf.wizard.shown')) {
+      sessionStorage.setItem('sf.wizard.shown', '1');
+      openWizard();
+    }
+  }
+
+  // 一步式配置向导：自动检测 → 确认 → 保存
+  async function openWizard() {
+    const browse = async (kind, inputId) => {
+      if (!DESKTOP.ready) { toast('浏览器模式下请直接粘贴路径'); return; }
+      const p = await window.pywebview.api.pick_folder(kind);
+      if (p && inputId) { $(inputId).value = p; }
+    };
+    const rowHtml = (label, id, kind, placeholder) => `
+      <div class="field"><label>${label}</label>
+        <div class="row">
+          <input id="${id}" class="input" placeholder="${placeholder}">
+          <button class="btn small" data-browse="${kind}" data-target="#${id}">浏览…</button>
+        </div>
+        <div class="tiny" data-check="${id}"></div>
+      </div>`;
+    dialog({
+      title: '首次使用 · 三步配置',
+      body: `
+        <p>点「自动检测」通常就够用了；也可以手动选择。</p>
+        <div class="row" style="margin:8px 0 4px">
+          <button class="btn small primary" id="wizDetect">自动检测</button>
+          <span class="tiny" id="wizHint">正在检测…</span>
+        </div>
+        ${rowHtml('游戏目录（含 Binaries/NMS.exe）', 'wizGame', 'game', '例如 D:\\Program Files (x86)\\Steam\\steamapps\\common\\No Man\'s Sky')}
+        ${rowHtml('存档目录（含 save.hg）', 'wizSaves', 'saves', '例如 C:\\Users\\你\\AppData\\Roaming\\HelloGames\\NMS\\st_xxx')}
+        <div class="tiny">数据目录可选：没有 Gagarin 数据时会从游戏资源推导部件树。</div>`,
+      okText: '保存并检查', cancelText: '稍后',
+      onOk: async () => {
+        await post('/api/settings', {
+          game_dir: $('#wizGame').value.trim(),
+          saves_dir: $('#wizSaves').value.trim(),
+        });
+        const h = await refreshHealth();
+        await loadSettings(); await loadShips();
+        const bad = [];
+        if (!h.game_dir) bad.push('游戏目录');
+        if (!h.saves_ready) bad.push('存档目录');
+        toast(bad.length ? `仍缺少：${bad.join('、')}` : '配置完成');
+        return true;
+      },
+    });
+    const setVals = s => {
+      if (s.settings.game_dir) $('#wizGame').value = s.settings.game_dir;
+      if (s.settings.saves_dir) $('#wizSaves').value = s.settings.saves_dir;
+    };
+    try { setVals(await api('/api/settings')); } catch (e) { /* 忽略 */ }
+    $$('#dlgBody [data-browse]').forEach(b => b.onclick = () => browse(b.dataset.browse, b.dataset.target));
+    $('#wizDetect').onclick = async () => {
+      $('#wizHint').textContent = '检测中…';
+      try {
+        const a = await api('/api/autodetect');
+        const s = await api('/api/settings');
+        setVals(s);
+        $('#wizHint').textContent = a.applied ? '已填入检测到的路径' : '没找到，请手动选择';
+      } catch (e) { $('#wizHint').textContent = '检测失败：' + e.message; }
+    };
   }
 
   /* ---------------- 搜索：船型与部件 ---------------- */
@@ -281,6 +343,7 @@
     if (j.status === 'failed') { $('#searchMsg').textContent = '搜索失败：' + j.error; return; }
     S.results = j.result || [];
     $('#resultInfo').textContent = `${S.results.length} 个结果`;
+    $('#exportResults').classList.toggle('hide', !S.results.length);
     if (!S.results.length) {
       $('#grid').innerHTML = ''; $('#gridEmpty').classList.remove('hide');
       $('#gridEmpty').querySelector('p').textContent = '没有命中：放宽条件，或把「搜索预算」调大';
@@ -297,6 +360,26 @@
     });
     $$('#grid .card')[0].click();
   }
+
+  async function exportShips(items, name) {
+    if (!items.length) { toast('没有可导出的船'); return; }
+    toast('正在打包 glb + png…', 60000);
+    try {
+      const r = await fetch('/api/export', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items, name, glb: true, png: true, size: 640 }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error?.message || r.status);
+      const n = r.headers.get('X-Export-Count') || '0';
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = name + '.zip'; a.click();
+      URL.revokeObjectURL(a.href);
+      toast(`已导出 ${n} 艘（含 glb 与 png）`);
+    } catch (e) { toast('导出失败：' + e.message); }
+  }
+  $('#exportResults').onclick = () => exportShips(S.results, 'starforge-search');
+  $('#exportMine').onclick = () => exportShips(S.mine, 'starforge-myships');
 
   /* ---------------- 3D ---------------- */
   function ensureViewer(host) {
@@ -378,6 +461,7 @@
       $('#saveMsg').textContent = '';
       $('#saveHint').textContent = `${r.path} · ${r.count} 艘`;
       $('#mineInfo').textContent = `${r.count} 艘船`;
+      $('#exportMine').classList.toggle('hide', !r.count);
       $('#shipList').innerHTML = r.ships.map((s, i) => `
         <div class="row-item" data-i="${i}">
           <img loading="lazy" src="/api/thumb/${s.type}/${s.seed}.png?size=120" alt=""
