@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write              # 仅用于创建 Release
 
+env:
+  PYTHONIOENCODING: utf-8      # 防止 cp1252 控制台下打印非 ASCII 直接崩
+  PYTHONUTF8: "1"
+
 jobs:
   windows:
     runs-on: windows-latest

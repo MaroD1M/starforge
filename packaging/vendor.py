@@ -31,6 +31,10 @@ def _sha(src: str) -> str:
 
 
 def main() -> int:
+    try:                                  # Windows 控制台可能是 cp1252，输出统一转 utf-8
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:                     # noqa: BLE001
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--shipwright", required=True)
     ap.add_argument("--dest", default="build/vendor")
@@ -60,7 +64,7 @@ def main() -> int:
                 "Vendored by starforge packaging/vendor.py — 仅打包用，不进入 starforge 仓库。\n")
 
     size = sum(os.path.getsize(os.path.join(r, f)) for r, _d, fs in os.walk(dst) for f in fs)
-    print(f"vendored → {dst}  ({size/1e3:.0f} KB, commit {commit[:7]})")
+    print(f"vendored -> {dst}  ({size/1e3:.0f} KB, commit {commit[:7]})")
     return 0
 
 
