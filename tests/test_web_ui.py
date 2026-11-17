@@ -8,7 +8,9 @@ def test_index_page_has_four_tabs(client):
     r = client.get("/")
     assert r.status_code == 200
     html = r.data.decode("utf-8")
-    for tab in ("tab-search", "tab-mine", "tab-systems", "tab-settings"):
+    for page in ("page-search", "page-mine", "page-systems", "page-settings"):
+        assert page in html
+    for tab in ('data-tab="search"', 'data-tab="mine"', 'data-tab="systems"', 'data-tab="settings"'):
         assert tab in html
     assert "/static/app.js" in html and "/static/viewer.js" in html
 

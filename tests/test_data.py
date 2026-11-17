@@ -66,3 +66,15 @@ def test_gshi_container_exact(gamedata, path_name):
 def test_gshi_bad_magic():
     with pytest.raises(ValueError):
         gshi.parse_container_bytes(b"NOPE" + b"\0" * 20)
+
+
+def test_parts_fall_back_to_game_assets(nms_dir, monkeypatch):
+    """没有 Gagarin 的 catalog 时，部件树必须能从游戏资源推导出来。"""
+    from starforge.core import settings as settings_mod
+    from starforge import parts
+    settings_mod.update(game_dir=str(nms_dir))
+    monkeypatch.setattr(parts, "load_catalog",
+                        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no catalog")))
+    tree = parts.tree("sentinel")
+    assert len(tree) >= 20 and sum(len(g["options"]) for g in tree) >= 100
+    assert parts.source() == "game"

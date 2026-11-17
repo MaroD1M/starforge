@@ -1,5 +1,13 @@
 # 更新记录
 
+## v0.9.7-beta
+- **界面重做**：左侧导航栏 + 三栏工作区（条件 / 结果 / 3D）、就绪状态芯片、
+  一键配置、行星卡片、船池表格、Toast 提示；不再是一堆裸表单
+- **不依赖外部数据也能用**：部件树优先读 Gagarin 的 `catalog.txt`，**缺失时从游戏 pak
+  的场景描述符自己推导**（实测 53 组 / 272 部件，0 秒），搜索校验随之不再要求 GAGARIN
+- 星球页打开即自动加载当前星系（不用手动扫描）；我的船列表带缩略图
+- CI 修复：内置上游的断言只匹配 `Shipwright:` 行（此前被 `GAMEDATA: 未找到` 误判）
+
 ## v0.9.6-beta
 - **打包版自带上游**：CI 在构建时把 NMS-Shipwright（MIT）的 `nms_save`/`nms_procgen`/
   `data/mapping.json` vendor 进包（约 0.5 MB），**用户不再需要安装 Shipwright 仓库**

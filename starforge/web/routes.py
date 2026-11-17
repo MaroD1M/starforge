@@ -59,30 +59,34 @@ def _has_shipwright() -> bool:
 
 @bp.get("/catalog")
 def api_catalog():
-    gd = settings.current().gamedata_resolved()
-    if not gd:
-        raise NotFound(strings.ERR_NO_GAMEDATA)
-    cat = load_catalog(gd)
-    return ok(stats=cat.stats,
-              open_scopes_at_eof=cat.opens_at_eof,
-              ships={t: {"groups": len(v["groups"]),
-                         "parts": sum(len(o) for o in v["groups"].values()),
-                         "scene": v["scene"]} for t, v in cat.ships.items()},
-              palettes=sorted(cat.palettes.keys()))
+    """船型与部件统计。来源可以是 Gagarin 目录，也可以是从游戏资源推导。"""
+    from .. import parts as parts_mod
+    src = parts_mod.source()
+    ships, failed = {}, {}
+    for t in parts_mod.SHIPS:
+        try:
+            s = parts_mod.summary(t)
+            ships[t] = {"groups": s["groups"], "parts": s["parts"]}
+        except Exception as e:                             # noqa: BLE001
+            failed[t] = str(e)
+    if not ships:
+        raise NotFound("取不到任何船型的部件表：请确认游戏目录，或安装 Gagarin 的 GAMEDATA")
+    payload = {"source": src, "ships": ships,
+               "note": {"gagarin": "来自 Gagarin 目录（带权重与缩略图）",
+                        "game": "从游戏资源推导（无权重/缩略图，需游戏目录）"}.get(src, "")}
+    if failed:
+        payload["failed"] = failed
+    return ok(**payload)
 
 
 @bp.get("/catalog/<ship>")
 def api_catalog_ship(ship: str):
-    gd = settings.current().gamedata_resolved()
-    if not gd:
-        raise NotFound(strings.ERR_NO_GAMEDATA)
-    cat = load_catalog(gd)
-    if ship not in cat.ships:
-        raise NotFound(f"没有这个船型：{ship}")
-    grp = cat.groups_of(ship)
-    return ok(ship=ship, scene=cat.ships[ship]["scene"],
-              groups=[{"group": g, "options": [{"part": p, "weight": w} for p, w in opts]}
-                      for g, opts in grp.items()])
+    from .. import parts as parts_mod
+    try:
+        tree = parts_mod.tree(ship)
+    except ValueError as e:
+        raise NotFound(str(e))
+    return ok(ship=ship, source=parts_mod.source(), groups=tree)
 
 
 @bp.get("/icons/<part>.png")

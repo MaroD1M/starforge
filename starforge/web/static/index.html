@@ -7,159 +7,208 @@
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<header class="top">
-  <div class="brand">starforge</div>
-  <nav class="tabs">
-    <button data-tab="search" class="on">搜飞船</button>
-    <button data-tab="mine">我的船</button>
-    <button data-tab="systems">星球</button>
-    <button data-tab="settings">设置</button>
-  </nav>
-  <div class="right">
-    <span id="lvBadge" class="pill">…</span>
-    <span id="jobbar" class="jobbar hide"></span>
-    <span id="ver" class="muted"></span>
-  </div>
-</header>
+<div class="app">
 
-<main>
-  <!-- ============ 搜索 ============ -->
-  <section id="tab-search" class="tab on">
-    <aside class="side">
-      <label>船型
-        <select id="shipSel"></select>
-      </label>
-      <div class="hint" id="shipHint"></div>
-      <div class="block">
-        <div class="blockhead">部件 <span class="muted" id="partCount"></span></div>
-        <div class="toggles">
-          <button id="modeWant" class="mini on">想要</button>
-          <button id="modeAvoid" class="mini">不要</button>
-          <input id="partFilter" class="filter" placeholder="过滤部件名…">
+  <!-- ============ 侧栏 ============ -->
+  <aside class="rail">
+    <div class="logo" title="starforge">SF</div>
+    <nav>
+      <button class="nav on" data-tab="search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5 21 21"/></svg>
+        <span>搜飞船</span>
+      </button>
+      <button class="nav" data-tab="mine">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+        <span>我的船</span>
+      </button>
+      <button class="nav" data-tab="systems">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/></svg>
+        <span>星球</span>
+      </button>
+      <button class="nav" data-tab="settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.5 5.5l2 2M16.5 16.5l2 2M18.5 5.5l-2 2M7.5 16.5l-2 2"/></svg>
+        <span>设置</span>
+      </button>
+    </nav>
+    <div class="rail-foot"><span id="ver" class="tiny"></span></div>
+  </aside>
+
+  <!-- ============ 主区 ============ -->
+  <main class="main">
+
+    <!-- 顶栏：就绪状态 + 一键配置 -->
+    <header class="topbar">
+      <div class="chips" id="chips"></div>
+      <div class="spacer"></div>
+      <span id="jobbar" class="jobbar hide"></span>
+      <button id="fixAll" class="btn ghost hide">一键配置</button>
+    </header>
+
+    <!-- ---------------- 搜飞船 ---------------- -->
+    <section class="page on" id="page-search">
+      <div class="pane filters">
+        <div class="field">
+          <label>船型</label>
+          <div id="shipPills" class="pills"></div>
         </div>
-        <div id="partTree" class="tree"></div>
+        <div class="field">
+          <div class="row">
+            <label>部件</label>
+            <span class="tiny" id="partCount"></span>
+            <div class="spacer"></div>
+            <div class="seg" id="modeSeg">
+              <button data-mode="want" class="on">要</button>
+              <button data-mode="avoid">不要</button>
+            </div>
+          </div>
+          <input id="partFilter" class="input" placeholder="过滤部件名，如 PIT / WING">
+          <div id="partTree" class="tree"></div>
+        </div>
+        <div class="selected" id="selectedSummary"></div>
+        <div class="grid2">
+          <div class="field"><label>数量</label><input id="limit" class="input" type="number" value="12" min="1" max="60"></div>
+          <div class="field"><label>搜索预算</label>
+            <select id="maxSeeds" class="input">
+              <option value="20000000">2000 万（1–2 秒）</option>
+              <option value="200000000" selected>2 亿（10–15 秒）</option>
+              <option value="2000000000">20 亿（2–3 分钟）</option>
+            </select>
+          </div>
+        </div>
+        <button id="goSearch" class="btn primary block">开始搜索</button>
+        <div id="etaInfo" class="tiny"></div>
+        <div id="searchMsg" class="msg"></div>
       </div>
-      <label>数量 <input id="limit" type="number" value="12" min="1" max="60"></label>
-      <label>最多搜索 <select id="maxSeeds">
-          <option value="20000000">2000 万种子（约 1–2 秒）</option>
-          <option value="200000000" selected>2 亿种子（约 10–15 秒）</option>
-          <option value="2000000000">20 亿种子（约 2–3 分钟）</option>
-        </select></label>
-      <button id="goSearch" class="primary">开始搜索</button>
-      <div id="searchMsg" class="msg"></div>
-    </aside>
-    <div class="content">
-      <div class="gridbar">
-        <span id="resultInfo" class="muted">还没有结果</span>
-        <span class="grow"></span>
-        <span id="etaInfo" class="muted"></span>
+
+      <div class="pane results">
+        <div class="row results-bar">
+          <span id="resultInfo" class="tiny">还没有结果</span>
+          <div class="spacer"></div>
+          <span id="resultSort" class="tiny"></span>
+        </div>
+        <div id="grid" class="grid"></div>
+        <div id="gridEmpty" class="empty">
+          <div class="empty-ico">🛰️</div>
+          <p>选几个部件，点「开始搜索」<br><span class="tiny">例如：<code>_PIT_A</code> + <code>_WINGS_V</code> 能搜到带这两件的拦截机</span></p>
+        </div>
       </div>
-      <div id="grid" class="grid"></div>
-    </div>
-    <aside class="detail" id="searchDetail">
-      <div class="empty">选一个结果看 3D</div>
-    </aside>
-  </section>
 
-  <!-- ============ 我的船 ============ -->
-  <section id="tab-mine" class="tab">
-    <aside class="side">
-      <label>存档 <input id="savePath" placeholder="自动发现"></label>
-      <button id="openSave" class="primary">打开存档</button>
-      <button id="pickDefault" class="mini">用默认存档</button>
-      <div id="saveMsg" class="msg"></div>
-      <div id="shipList" class="list"></div>
-    </aside>
-    <div class="content"><div class="empty">选左边的船看 3D 与部件</div></div>
-    <aside class="detail" id="mineDetail"><div class="empty">—</div></aside>
-  </section>
+      <div class="pane detail" id="searchDetail">
+        <div class="empty"><div class="empty-ico">🧊</div><p>选一个结果<br><span class="tiny">这里会显示可旋转的 3D 与操作</span></p></div>
+      </div>
+    </section>
 
-  <!-- ============ 星球 ============ -->
-  <section id="tab-systems" class="tab">
-    <aside class="side">
-      <label>圆心
-        <select id="centerMode">
-          <option value="current" selected>存档当前位置</option>
-          <option value="glyphs">手动输入 glyph / 坐标</option>
-        </select>
-      </label>
-      <input id="centerInput" class="hide" placeholder="如 1043FEE69929 或 0128:007D:0668:0043">
-      <label>范围 <select id="radius">
-          <option value="0" selected>本 region</option>
-          <option value="1">+ 邻接 region（27 个）</option>
-        </select></label>
-      <label>每区系统数 <input id="sysCount" type="number" value="200" min="20" max="767"></label>
-      <label>生物群系 <select id="biomeSel"><option value="">不限</option></select></label>
-      <label>哨兵 <select id="sentSel">
-          <option value="">不限</option><option>none</option><option>low</option>
-          <option>high</option><option>aggressive</option><option>corrupted</option>
-        </select></label>
-      <label class="check"><input id="dissChk" type="checkbox"> 只要 dissonant（能刷拦截机）</label>
-      <label>上限 <input id="sysLimit" type="number" value="30" min="1" max="200"></label>
-      <button id="goScan" class="primary">扫描</button>
-      <button id="curSystem" class="mini">看当前星系</button>
-      <div id="sysMsg" class="msg"></div>
-    </aside>
-    <div class="content">
-      <div id="sysInfo" class="sysinfo"></div>
-      <table id="sysTable" class="table hide">
-        <thead><tr><th>#</th><th>行星</th><th>生物群系</th><th>哨兵</th><th>地址</th><th>glyphs</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <aside class="detail" id="sysDetail"><div class="empty">星系信息与船池会显示在这里</div></aside>
-  </section>
+    <!-- ---------------- 我的船 ---------------- -->
+    <section class="page" id="page-mine">
+      <div class="pane filters">
+        <div class="field">
+          <label>存档</label>
+          <div class="row">
+            <input id="savePath" class="input" placeholder="自动检测到的存档">
+            <button id="openSave" class="btn">读取</button>
+          </div>
+          <div class="tiny" id="saveHint"></div>
+        </div>
+        <div id="saveMsg" class="msg"></div>
+        <div id="shipList" class="shiplist"></div>
+      </div>
+      <div class="pane results">
+        <div class="row results-bar"><span id="mineInfo" class="tiny">选择左侧的船</span></div>
+        <div id="mineGrid" class="grid big"></div>
+      </div>
+      <div class="pane detail" id="mineDetail">
+        <div class="empty"><div class="empty-ico">🚀</div><p>你的船会显示在这里</p></div>
+      </div>
+    </section>
 
-  <!-- ============ 设置 ============ -->
-  <section id="tab-settings" class="tab">
-    <aside class="side">
-      <label>游戏目录 <input id="gameDir" placeholder="含 Binaries/NMS.exe"></label>
-      <label>存档目录 <input id="savesDir" placeholder="含 save.hg"></label>
-      <label>数据目录 <input id="gameData" placeholder="Gagarin/GAMEDATA"></label>
-      <button id="saveSettings" class="primary">保存</button>
-      <button id="autoDetect" class="mini">自动检测路径</button>
-      <label class="check"><input id="writeChk" type="checkbox"> 允许写入（默认关闭；开启后仍需每次确认）</label>
-      <div id="setMsg" class="msg"></div>
-      <div class="blockhead" style="margin-top:14px">实时通道（可选）</div>
-      <div id="liveStatus" class="hint">检查中…</div>
-      <button id="genMod" class="mini">生成模板 Mod</button>
-      <button id="probeLive" class="mini">探测模板槽（只读）</button>
-      <div class="hint">生成后把 <code>starforge-templates</code> 复制到 <code>GAMEDATA/MODS/</code>，重启游戏生效。</div>
-    </aside>
-    <div class="content">
-      <div class="blockhead">诊断</div>
-      <button id="runDiag" class="mini">运行自检</button>
-      <pre id="diagOut" class="diag"></pre>
-    </div>
-    <aside class="detail"><div class="empty">starforge 只监听本机；不联网；写入前自动备份。</div></aside>
-  </section>
-</main>
+    <!-- ---------------- 星球 ---------------- -->
+    <section class="page" id="page-systems">
+      <div class="pane filters">
+        <div class="row"><label>当前星系</label><div class="spacer"></div>
+          <button id="reloadSystem" class="btn small">刷新</button></div>
+        <div id="sysBadge" class="sysbadge">—</div>
+        <div class="hr"></div>
+        <label>找星球</label>
+        <div class="grid2">
+          <div class="field"><label>生物群系</label><select id="biomeSel" class="input"><option value="">不限</option></select></div>
+          <div class="field"><label>哨兵</label><select id="sentSel" class="input">
+            <option value="">不限</option><option>none</option><option>low</option>
+            <option>high</option><option>aggressive</option><option>corrupted</option></select></div>
+        </div>
+        <label class="check"><input id="dissChk" type="checkbox"> 只要 dissonant（能刷拦截机）</label>
+        <div class="grid2">
+          <div class="field"><label>范围</label><select id="radius" class="input">
+            <option value="0">本 region</option><option value="1">+ 邻接 region</option></select></div>
+          <div class="field"><label>扫描系统数</label><input id="sysCount" class="input" type="number" value="200" min="20" max="767"></div>
+        </div>
+        <button id="goScan" class="btn primary block">扫描</button>
+        <div id="sysMsg" class="msg"></div>
+      </div>
+      <div class="pane results">
+        <div class="row results-bar"><span id="scanInfo" class="tiny">行星与本星系船池</span></div>
+        <div id="planetCards" class="planets"></div>
+        <div id="scanTable" class="tablewrap"></div>
+      </div>
+      <div class="pane detail" id="sysDetail">
+        <div class="empty"><div class="empty-ico">🪐</div><p>本星系的船池会显示在这里</p></div>
+      </div>
+    </section>
 
-<!-- 3D 查看器 -->
-<div id="viewerWrap" class="viewer hide">
-  <canvas id="viewerCanvas"></canvas>
-  <div class="viewerbar">
-    <span id="viewerInfo" class="muted"></span>
-    <span class="grow"></span>
-    <button id="vIso" class="mini on">等轴</button>
-    <button id="vTop" class="mini">俯视</button>
-    <button id="vSide" class="mini">侧视</button>
-    <button id="vSpin" class="mini">自动旋转</button>
-    <a id="vGlb" class="mini" href="#" download>下载 glb</a>
-  </div>
+    <!-- ---------------- 设置 ---------------- -->
+    <section class="page" id="page-settings">
+      <div class="pane filters">
+        <div class="field"><label>游戏目录</label><input id="gameDir" class="input" placeholder="含 Binaries/NMS.exe"></div>
+        <div class="field"><label>存档目录</label><input id="savesDir" class="input" placeholder="含 save.hg"></div>
+        <div class="field"><label>数据目录（可选）</label><input id="gameData" class="input" placeholder="Gagarin/GAMEDATA，留空则从游戏资源推导"></div>
+        <div class="row">
+          <button id="autoDetect" class="btn">自动检测</button>
+          <button id="saveSettings" class="btn primary">保存</button>
+        </div>
+        <div id="setMsg" class="msg"></div>
+        <div class="hr"></div>
+        <label class="check"><input id="writeChk" type="checkbox"> 允许写入（默认关闭；每次仍需确认）</label>
+        <div class="hr"></div>
+        <label>实时通道（可选，Windows）</label>
+        <div id="liveStatus" class="tiny">检查中…</div>
+        <div class="row">
+          <button id="probeLive" class="btn small">只读探测</button>
+          <button id="genMod" class="btn small">生成模板 Mod</button>
+        </div>
+      </div>
+      <div class="pane results">
+        <div class="row results-bar"><label>诊断</label><div class="spacer"></div>
+          <button id="runDiag" class="btn small">运行自检</button></div>
+        <pre id="diagOut" class="diag">点「运行自检」查看各项状态。</pre>
+      </div>
+      <div class="pane detail">
+        <div class="about">
+          <h3>starforge <span class="tiny" id="ver2"></span></h3>
+          <p class="tiny">本地运行 · 只监听 127.0.0.1 · 不联网 · 写入前自动备份</p>
+          <ul class="tiny">
+            <li>数据层来自 NMS-Shipwright（MIT，已随包内置）</li>
+            <li>部件目录/缩略图优先用 Gagarin 数据；缺失时从游戏资源推导</li>
+            <li>实时通道兼容 Super Ship Hunter 的模板槽</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
 </div>
 
-<!-- 符文浮窗（网页版，独立窗口时用于 Ctrl+Shift+G） -->
+<div id="toast" class="toast hide"></div>
+
+<!-- 符文弹层 -->
 <div id="glyphModal" class="modal hide">
   <div class="modalbox">
-    <div class="modalhead"><b>传送门符文</b><span class="grow"></span><button class="mini" id="glyphClose">关闭</button></div>
+    <div class="row"><b>传送门符文</b><div class="spacer"></div><button class="btn small" id="glyphClose">关闭</button></div>
     <img id="glyphImg" alt="12 个传送门符文">
-    <div class="glyphrow">
-      <code id="glyphDigits"></code>
-      <button class="mini" id="glyphCopy">复制符文</button>
-      <button class="mini" id="glyphPop">弹出为置顶窗口</button>
+    <div class="row">
+      <code id="glyphDigits" class="glyphcode"></code>
+      <div class="spacer"></div>
+      <button class="btn small" id="glyphCopy">复制</button>
+      <button class="btn small" id="glyphPop">独立窗口</button>
     </div>
-    <div id="glyphTarget" class="muted"></div>
+    <div id="glyphTarget" class="tiny"></div>
   </div>
 </div>
 

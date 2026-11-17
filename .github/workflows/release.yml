@@ -90,7 +90,7 @@ jobs:
           # 纯 Python 的上游包会进 PYZ（磁盘上没有目录），所以用"跑一次 selftest"来验证
           $out = & $exe selftest 2>&1 | Out-String
           $out | Out-Host
-          if ($out -match "未找到") { throw "打包产物里没有内置上游（nms_save 不可导入）" }
+          if ($out -match "Shipwright: 未找到") { throw "打包产物里没有内置上游（nms_save 不可导入）" }
           if ($out -notmatch "内置\(打包版\)") { throw "内置上游未被识别为打包版：$out" }
           Write-Host "依赖检查通过（含内置上游）"
 

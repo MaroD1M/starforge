@@ -14,10 +14,10 @@ def test_health_ok(client):
 
 
 def test_catalog_api(client, gamedata):
-    r = client.get("/api/catalog")
-    j = r.get_json()
-    assert j["ok"] and j["stats"]["ship"] == 8
-    assert "sentinel" in j["ships"]
+    j = client.get("/api/catalog").get_json()
+    assert j["ok"] and j["source"] in ("gagarin", "game")
+    assert len(j["ships"]) == 8 and "sentinel" in j["ships"]
+    assert j["ships"]["sentinel"]["parts"] > 0
 
 
 def test_catalog_ship_api(client, gamedata):
