@@ -8,6 +8,9 @@
 
 1. 从 Releases 下载 `starforge-<版本>-win64.zip`，解压到任意目录（**不要**放进游戏目录）。
 2. 双击 `starforge\starforge.exe`。
+   > **命令行在哪**：v0.11.x 的包里有独立的 `starforge-cli\starforge-cli.exe`；
+   > 更新的包会把两者合成一个 `starforge.exe`（带参数就是命令行）。下文命令按"单 exe"写，
+   > 若你的包里有 `starforge-cli` 目录，把 `starforge.exe xxx` 换成 `starforge-cli\starforge-cli.exe xxx`。
    - 黑控制台会自动隐藏，直接出现应用窗口（标题「无人深空 · 飞船猎人」）。
    - 若系统缺 WebView2，会自动改用浏览器打开，并在日志里说明。
 3. 首次启动若缺少路径，会弹**三步配置向导**：

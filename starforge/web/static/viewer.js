@@ -4,9 +4,9 @@
 (function () {
   const VS = `
     attribute vec3 aPos; attribute vec3 aNrm;
-    uniform mat4 uMvp; uniform mat4 uModel;
+    uniform mat4 uMvp; uniform mat3 uNormal;
     varying vec3 vN;
-    void main(){ vN = mat3(uModel) * aNrm; gl_Position = uMvp * vec4(aPos,1.0); }`;
+    void main(){ vN = uNormal * aNrm; gl_Position = uMvp * vec4(aPos, 1.0); }`;
   const FS = `
     precision mediump float;
     varying vec3 vN; uniform vec3 uColor; uniform vec3 uLight;
@@ -63,8 +63,15 @@
   }
 
   function mount(canvas) {
-    const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
+    let gl = canvas.getContext('webgl2', { antialias: true, alpha: false });
+    let isGles2 = !!gl;
+    if (!gl) gl = canvas.getContext('webgl', { antialias: true, alpha: false });
     if (!gl) throw new Error('浏览器不支持 WebGL');
+    let uintIndex = isGles2;
+    if (!isGles2) {
+      uintIndex = !!gl.getExtension('OES_element_index_uint');
+      if (!uintIndex) throw new Error('缺少 OES_element_index_uint（无法画高面数模型）');
+    }
     const prog = (() => {
       const p = gl.createProgram();
       [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, FS]].forEach(([t, src]) => {
@@ -76,7 +83,7 @@
       return p;
     })();
     const loc = n => gl.getUniformLocation(prog, n);
-    const U = { mvp: loc('uMvp'), model: loc('uModel'), color: loc('uColor'), light: loc('uLight') };
+    const U = { mvp: loc('uMvp'), normal: loc('uNormal'), color: loc('uColor'), light: loc('uLight') };
 
     let prims = [], radius = 3, alive = true;
     let yaw = 0.6, pitch = 0.35, dist = 1.0, spin = false, dirty = true;
@@ -124,10 +131,9 @@
           .map(v => v * radius * 2.6 * dist);
         const view = lookAt(eye, [0, 0, 0], [0, 1, 0]);
         const mvp = mat4Mul(perspective(0.9, (w / h) || 1, 0.01, 1000), view);
-        const model = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
         gl.useProgram(prog);
         gl.uniformMatrix4fv(U.mvp, false, mvp);
-        gl.uniformMatrix4fv(U.model, false, model);
+        gl.uniformMatrix3fv(U.normal, false, new Float32Array([1,0,0, 0,1,0, 0,0,1]));
         gl.uniform3fv(U.light, [0.45, 0.75, 0.5]);
         for (const p of prims) {
           gl.bindBuffer(gl.ARRAY_BUFFER, p.pos);
@@ -144,7 +150,31 @@
       }
       requestAnimationFrame(draw);
     }
-    requestAnimationFrame(draw);
+
+    // 自检：画了几帧后采样一次；若与背景色完全一致，说明没画出东西
+    let framesDrawn = 0, checked = false;
+    const origDraw = draw;
+    function drawWithCheck() {
+      origDraw();
+      framesDrawn++;
+      if (!checked && framesDrawn > 3) {
+        checked = true;
+        try {
+          const px = new Uint8Array(4 * 16);
+          gl.readPixels(0, 0, 4, 4, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          let nonBg = 0;
+          for (let i = 0; i < px.length; i += 4) {
+            if (Math.abs(px[i] - 7) > 4 || Math.abs(px[i + 1] - 9) > 4 || Math.abs(px[i + 2] - 14) > 4) nonBg++;
+          }
+          if (nonBg === 0) { throw new Error('WebGL 画布没有内容'); }
+        } catch (e) {
+          window.dispatchEvent(new CustomEvent('sf-viewer-empty', { detail: e.message }));
+        }
+      }
+    }
+    // 用带自检的循环替换
+    function loop() { if (!alive) return; drawWithCheck(); }
+    requestAnimationFrame(loop);
 
     // 交互
     let dragging = false, lx = 0, ly = 0;

@@ -70,3 +70,23 @@ def test_app_js_uses_fields_the_api_returns(client):
     assert "preview_level" in cap and "system" in cap
     st = client.get("/api/settings").get_json()
     assert "settings" in st and "resolved" in st
+
+
+def test_viewer_uses_webgl2_and_handles_uint_indices():
+    """v0.11.0 的 3D 是黑屏：WebGL1 下没启 OES_element_index_uint + GLSL 非法 mat3(mat4)。
+
+    这里守住三条：优先 webgl2、webgl1 必须取扩展、着色器不出现 mat3(uModel)。
+    """
+    src = (ROOT / "starforge" / "web" / "static" / "viewer.js").read_text("utf-8")
+    assert "getContext('webgl2'" in src
+    assert "OES_element_index_uint" in src
+    assert "mat3(uModel)" not in src
+    assert "uNormal" in src                     # 法线矩阵单独传
+
+
+def test_viewer_falls_back_when_canvas_empty():
+    """画布没内容时必须能退回服务端渲染图，不能留黑框。"""
+    viewer = (ROOT / "starforge" / "web" / "static" / "viewer.js").read_text("utf-8")
+    app = (ROOT / "starforge" / "web" / "static" / "app.js").read_text("utf-8")
+    assert "sf-viewer-empty" in viewer and "sf-viewer-empty" in app
+    assert "readPixels" in viewer

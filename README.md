@@ -61,8 +61,8 @@ starforge 把该输的 12 个符文放大置顶显示，你照着传送门点即
 - 没有 Gagarin 数据也能用：部件树从游戏 pak 自己推导
 - 3D 用**种子真实配色**渲染（从游戏数据解出主色/副色/底漆）
 
-> 同一个 exe 也是命令行：`starforge.exe serve`（浏览器调试）、`ships`、`selfcheck`、`webcheck`、
-> `glyph-overlay`、`live probe`。带子命令时会保留控制台输出。
+> 命令行：单 exe 版本用 `starforge.exe <子命令>`；v0.11.x 的包里是 `starforge-cli\starforge-cli.exe <子命令>`。
+> 可用子命令：`serve`（浏览器调试）、`ships`、`selfcheck`、`webcheck`、`glyph-overlay`、`live probe`。
 
 ## 快速开始
 

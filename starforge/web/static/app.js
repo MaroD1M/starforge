@@ -80,12 +80,17 @@
   };
 
   /* ---------------- 导航 ---------------- */
-  $$('.nav').forEach(b => b.onclick = () => {
+  function goto(tab, remember = true) {
+    const b = document.querySelector(`.nav[data-tab="${tab}"]`);
+    if (!b) return;
     $$('.nav').forEach(x => x.classList.toggle('on', x === b));
-    $$('.page').forEach(p => p.classList.toggle('on', p.id === 'page-' + b.dataset.tab));
-    if (b.dataset.tab === 'mine' && !S.mine.length) openSave();
-    if (b.dataset.tab === 'systems' && !$('#sysBadge').dataset.loaded) loadCurrentSystem();
-  });
+    $$('.page').forEach(p => p.classList.toggle('on', p.id === 'page-' + tab));
+    if (remember) location.hash = tab;
+    if (tab === 'mine' && !S.mine.length) openSave();
+    if (tab === 'systems' && !$('#sysBadge').dataset.loaded) loadCurrentSystem();
+  }
+  $$('.nav').forEach(b => b.onclick = () => goto(b.dataset.tab));
+  addEventListener('hashchange', () => goto((location.hash || '#search').slice(1), false));
 
   /* ---------------- 就绪状态 ---------------- */
   function chips(h) {
@@ -142,6 +147,8 @@
       } catch (e) { /* 忽略 */ }
       await loadShips();
       maybeOnboard(h);
+      const tab = (location.hash || '').slice(1);
+      if (['search', 'mine', 'systems', 'settings'].includes(tab)) goto(tab, false);
     } catch (e) {
       $('#searchMsg').textContent = '启动失败：' + e.message;
     }
@@ -320,7 +327,7 @@
           $$('#shipPills .pill').forEach(x => x.classList.toggle('on', x.dataset.ship === type));
           await renderParts();
           const ref = { type, seed, parts: (partsStr || '').split('|').filter(Boolean), source: 'share' };
-          $('.nav[data-tab="search"]').click();
+          goto('search');
           await showShip(ref, 'searchDetail', true);
           toast('已载入分享码');
           return true;
@@ -466,6 +473,18 @@
   };
   $('#exportResults').onclick = () => exportShips(currentGridItems(), S.favMode ? 'starforge-favs' : 'starforge-search');
   $('#exportMine').onclick = () => exportShips(S.mine, 'starforge-myships');
+
+  window.addEventListener('sf-viewer-empty', e => {
+    const host = $('#searchDetail canvas')?.closest('.pane') || $('#mineDetail canvas')?.closest('.pane') || $('#sysDetail');
+    const ref = S.selected;
+    if (!host || !ref) return;
+    const wrap = host.querySelector('.viewerWrap');
+    if (!wrap || wrap.dataset.fellback) return;
+    wrap.dataset.fellback = '1';
+    const parts = ref.parts || [];
+    wrap.innerHTML = `<img src="/api/thumb/${ref.type}/${ref.seed}.png?size=520${parts.length ? '&parts=' + encodeURIComponent(parts.join(',')) : ''}" style="width:100%;display:block">
+      <div class="viewerbar"><span class="tiny">WebGL 未渲染出内容（${esc(e.detail || '')}），已用服务端渲染图代替</span></div>`;
+  });
 
   /* ---------------- 3D ---------------- */
   function ensureViewer(host) {

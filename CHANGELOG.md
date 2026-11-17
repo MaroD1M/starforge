@@ -1,5 +1,12 @@
 # 更新记录
 
+## v0.11.1-beta
+- **修复 3D 黑屏**（v0.11.0 的核心功能回归）：改用 WebGL2 上下文；WebGL1 下强制启用
+  `OES_element_index_uint`（否则 `drawElements(UNSIGNED_INT)` 静默失败）；
+  着色器不再使用非法的 `mat3(mat4)`，法线矩阵单独传
+- 新增**画布自检**：画 3 帧后采样像素，若与背景完全一致则自动退回服务端渲染图（永不出现黑框）
+- 用无头 Chromium + SwiftShader 做过真实渲染验证（截图见 docs/img）
+
 ## v0.11.0-beta
 - 真机修复：pywebview 内部参数导致的控制台报错、`BIOSHIP_PROC` 被误判成异星、
   未知类型缩略图 400、游戏目录大小写不匹配、设置页无校验反馈
