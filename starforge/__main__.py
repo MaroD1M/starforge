@@ -181,12 +181,14 @@ def cmd_webcheck(a) -> int:
     c = app.test_client()
     checks = []
     for path in ("/", "/static/app.js", "/static/app.css", "/static/viewer.js",
-                 "/api/health", "/api/catalog", "/api/settings", "/api/capabilities"):
+                 "/api/health", "/api/settings", "/api/capabilities"):
         r = c.get(path)
         ok = r.status_code == 200 and len(r.data) > 50
         checks.append((path, r.status_code, len(r.data), ok))
     html = c.get("/").data.decode("utf-8", "replace")
     checks.append(("首页含 page-search", 200, len(html), "page-search" in html))
+    cat = c.get("/api/catalog")                      # 没游戏/没数据时 404 属正常，只报告
+    print(f"· /api/catalog {cat.status_code}（无游戏数据时为 404，属正常）")
     bad = [c_ for c_ in checks if not c_[3]]
     for path, code, size, ok in checks:
         print(f"{'✓' if ok else '✗'} {path:22s} {code} {size:>8d}B")

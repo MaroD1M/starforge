@@ -127,3 +127,18 @@ def test_webcheck_command_passes(monkeypatch, tmp_path):
     out = buf.getvalue()
     assert rc == 0
     assert "网页自检通过" in out and "page-search" in out
+
+
+def test_static_dir_resolution_finds_assets():
+    from starforge.web.app import _find_static_dir
+    d = _find_static_dir()
+    assert d.endswith("static")
+    assert __import__("os").path.exists(__import__("os").path.join(d, "index.html"))
+
+
+def test_cli_build_has_static_assets():
+    """CI 里 CLI 包曾漏了 --add-data 静态资源；这里守住工作流配置。"""
+    from pathlib import Path
+    wf = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text("utf-8")
+    cli = wf.split("name starforge-cli")[1].split("冒烟测试")[0]
+    assert "starforge/web/static;starforge/web/static" in cli

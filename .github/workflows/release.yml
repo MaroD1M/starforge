@@ -76,6 +76,8 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --name starforge-cli --onedir `
             --paths . --paths build/vendor `
+            --collect-submodules starforge `
+            --add-data "starforge/web/static;starforge/web/static" `
             --collect-all hgpaktool --collect-all numpy --collect-all flask `
             --collect-all texture2ddecoder --collect-all webview --collect-all pythonnet `
             --hidden-import clr --hidden-import tkinter `

@@ -22,6 +22,30 @@ log = log.get("web")
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
+def _find_static_dir() -> str:
+    """找网页静态资源目录。
+
+    打包后 `__file__` 可能位于 PYZ 归档里（路径不存在），所以按优先级试几个候选：
+      1. 包目录旁边的 static（源码/onedir 都有）
+      2. `sys._MEIPASS`（PyInstaller 运行时解包目录）
+      3. 可执行文件旁边的 `_internal/starforge/web/static`
+    """
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = [os.path.join(here, "static")]
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        cands += [os.path.join(meipass, "starforge", "web", "static"),
+                  os.path.join(meipass, "static")]
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    cands += [os.path.join(exe_dir, "_internal", "starforge", "web", "static"),
+              os.path.join(exe_dir, "starforge", "web", "static")]
+    for c in cands:
+        if os.path.exists(os.path.join(c, "index.html")):
+            return c
+    return cands[0]                        # 都不行就返回首选，由 404 兜底页提示
+
+
 def _host_only(value: str) -> str:
     if not value:
         return ""
@@ -83,7 +107,7 @@ def create_app() -> Flask:
         from .. import warm
         warm.start(background=True)          # 后台预热：pak 元数据 / 单船几何 / 系统生成
 
-    static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+    static_dir = _find_static_dir()
 
     @app.get("/")
     def index():                                      # noqa: ANN202
