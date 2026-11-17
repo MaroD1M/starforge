@@ -165,7 +165,9 @@ def ship_png(type_: str, seed: str, parts: list[str] | None = None,
 # ---------------------------------------------------------------- 三角光栅化（比点云像"建模"）
 
 def rasterize(groups: dict, views=("iso",), size=(640, 640), colours: dict | None = None,
-              ss: int = 1, ambient: float = 0.28, fill: float = 0.62) -> np.ndarray:
+              ss: int = 1, ambient: float = 0.28, fill: float = 0.62,
+              spec_amount: float = 0.0, jitter_amount: float = 0.0,
+              textures: dict | None = None) -> np.ndarray:
     """把三角面真正填充出来（z-buffer + Lambert 面着色）。
 
     点云渲染只在顶点处落点，看起来"散"；光栅化会把面填满，观感接近正常建模软件。
@@ -191,10 +193,19 @@ def rasterize(groups: dict, views=("iso",), size=(640, 640), colours: dict | Non
     span = float(np.percentile(np.abs(rel), 99.5)) * 2 or 1.0
     P = rel
 
+    uv_all = np.concatenate([g[2] for g in groups.values()]).astype(np.float32)
+    glow_mask = np.repeat(
+        np.array([1.0 if (k[0] if isinstance(k, tuple) else k) == "glow" else 0.0 for k in groups],
+                 np.float32),
+        [len(g[3]) // 3 for g in groups.values()])
     W, H = size[0] * ss, size[1] * ss
     out = np.zeros((H, len(views) * W, 3), np.float32) + np.array([0.043, 0.055, 0.075], np.float32)
     light = np.array([0.42, 0.78, 0.46], np.float32)
     light /= np.linalg.norm(light)
+    fill_light = np.array([-0.55, 0.15, -0.35], np.float32)
+    fill_light /= np.linalg.norm(fill_light)
+    rim_light = np.array([0.0, 0.35, -1.0], np.float32)
+    rim_light /= np.linalg.norm(rim_light)
 
     for k, vname in enumerate(views):
         yaw, pitch = VIEWS.get(vname, (35, 18))
@@ -207,6 +218,10 @@ def rasterize(groups: dict, views=("iso",), size=(640, 640), colours: dict | Non
         zbuf = np.full((H, W), -1e9, np.float32)
         tile = out[:, k * W:(k + 1) * W]
 
+        tri_tex = None
+        if textures:
+            tri_tex = np.concatenate([np.full(len(g[3]) // 3, (k[1] if isinstance(k, tuple) else ""), dtype=object)
+                                      for k, g in groups.items()])
         a, b, c = scr[T[:, 0]], scr[T[:, 1]], scr[T[:, 2]]
         za, zb, zc = z[T[:, 0]], z[T[:, 1]], z[T[:, 2]]
         area = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1])
@@ -215,8 +230,22 @@ def rasterize(groups: dict, views=("iso",), size=(640, 640), colours: dict | Non
         fn = np.cross(wp[:, 1] - wp[:, 0], wp[:, 2] - wp[:, 0])
         ln = np.linalg.norm(fn, axis=1, keepdims=True)
         fn = fn / np.where(ln == 0, 1, ln)
-        shade = ambient + (1 - ambient) * np.clip(fn @ (R.T @ light), 0, 1)
-        fcol = np.clip(C * shade[:, None], 0, 1)
+        L = R.T @ light
+        F = R.T @ fill_light
+        RIM = R.T @ rim_light
+        d_main = np.clip(fn @ L, 0, 1)
+        d_fill = np.clip(fn @ F, 0, 1)
+        d_rim = np.clip(fn @ RIM, 0, 1) ** 3
+        shade = ambient + (1.0 - ambient) * d_main
+        # 高光：半角向量的高次幂（面法线近似）
+        Half = (L + np.array([0, 0, 1], np.float32)); Half /= np.linalg.norm(Half)
+        spec = np.clip(fn @ Half, 0, 1) ** 22
+        # glow 类：自发光（灯/推进器），不吃环境光
+        # 漫反射为主；高光/轮廓都很轻，避免整体发白
+        jitter = 1.0 + jitter_amount * np.sin(d_main * 233.0)   # 逐面微差（可选）
+        lit = shade * jitter + spec_amount * spec
+        fcol = np.clip(C * np.clip(lit, 0, 1.02)[:, None]
+                       + glow_mask[:, None] * C * 0.85, 0, 1)
 
         # 背面剔除（法线朝外的才画）
         fn_view = fn @ R.T
@@ -229,7 +258,19 @@ def rasterize(groups: dict, views=("iso",), size=(640, 640), colours: dict | Non
             cy = ((a[small_idx, 1] + b[small_idx, 1] + c[small_idx, 1]) / 3).astype(np.int32)
             np.clip(cx, 0, W - 1, out=cx); np.clip(cy, 0, H - 1, out=cy)
             order = np.argsort(za[small_idx])          # 远的先画
-            tile[cy[order], cx[order]] = fcol[small_idx][order]
+            colors_small = fcol[small_idx]
+            if textures and tri_tex is not None:
+                from . import tex as tex_mod
+                sel = small_idx
+                for tkey, img_t in textures.items():
+                    m = np.array([tri_tex[j] == tkey for j in sel], bool) if len(sel) else None
+                    if m is None or not m.any():
+                        continue
+                    idxs = sel[m]
+                    uu = uv_all[T[idxs, 0], 0] * 0.34 + uv_all[T[idxs, 1], 0] * 0.33 + uv_all[T[idxs, 2], 0] * 0.33
+                    vv = uv_all[T[idxs, 0], 1] * 0.34 + uv_all[T[idxs, 1], 1] * 0.33 + uv_all[T[idxs, 2], 1] * 0.33
+                    colors_small[m] = tex_mod.sample(img_t, uu, vv) * np.clip(shade[idxs], 0.15, 1.2)[:, None]
+            tile[cy[order], cx[order]] = colors_small[order]
         # (b) 大三角：包围盒 + 重心坐标填充（数量少）
         for i in np.nonzero(big)[0]:
             ax, ay = a[i]; bx, by = b[i]; cx_, cy_ = c[i]
@@ -254,7 +295,17 @@ def rasterize(groups: dict, views=("iso",), size=(640, 640), colours: dict | Non
             if not upd.any():
                 continue
             sub[upd] = depth[upd]
-            tile[miny:maxy + 1, minx:maxx + 1][upd] = fcol[i]
+            tri_col = fcol[i]
+            tkey = tri_tex[i] if tri_tex is not None else ""
+            if tkey and tkey in (textures or {}):
+                img_t = (textures or {})[tkey]
+                uu = w2 * uv_all[T[i, 0], 0] + w0 * uv_all[T[i, 1], 0] + w1 * uv_all[T[i, 2], 0]
+                vv = w2 * uv_all[T[i, 0], 1] + w0 * uv_all[T[i, 1], 1] + w1 * uv_all[T[i, 2], 1]
+                from . import tex as tex_mod
+                samp = tex_mod.sample(img_t, uu, vv) * float(np.clip(shade[i], 0.15, 1.2))
+                tile[miny:maxy + 1, minx:maxx + 1][upd] = samp[upd]
+            else:
+                tile[miny:maxy + 1, minx:maxx + 1][upd] = tri_col
 
     if ss > 1:
         out = out.reshape(size[1], ss, len(views) * size[0], ss, 3).mean(axis=(1, 3))

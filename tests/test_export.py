@@ -46,3 +46,39 @@ def test_export_api(client, game_env):
 
 def test_export_api_needs_items(client):
     assert client.post("/api/export", json={}).status_code == 400
+
+
+# ---------------------------------------------------------------- 贴图采样
+
+def test_tex_sample_maps_uv_to_pixels():
+    import numpy as np
+    from starforge import tex
+    img = np.zeros((2, 2, 4), np.uint8)
+    img[0, 0] = [255, 0, 0, 255]
+    img[0, 1] = [0, 255, 0, 255]
+    img[1, 0] = [0, 0, 255, 255]
+    img[1, 1] = [255, 255, 0, 255]
+    got = tex.sample(img, np.array([0.1, 0.9, 0.1, 0.9]), np.array([0.1, 0.1, 0.9, 0.9]))
+    assert got[0].tolist() == [1.0, 0.0, 0.0]
+    assert got[1].tolist() == [0.0, 1.0, 0.0]
+    assert got[2].tolist() == [0.0, 0.0, 1.0]
+    assert got[3].tolist() == [1.0, 1.0, 0.0]
+
+
+def test_rasterize_uses_texture_when_given():
+    """给了贴图就必须真的采样（否则贴图管线等于没接）。"""
+    import numpy as np
+    from starforge import render
+    # 一个朝向相机的大三角，UV 覆盖整张贴图
+    pos = np.array([[-1, -1, 0], [1, -1, 0], [0, 1, 0]], np.float32)
+    nrm = np.tile([0, 0, 1], (3, 1)).astype(np.float32)
+    uv = np.array([[0, 0], [1, 0], [0, 1]], np.float32)
+    idx = np.array([0, 1, 2], np.uint32)
+    groups = {("paint", "TEX/A.dds"): (pos, nrm, uv, idx)}
+    tex_img = np.zeros((8, 8, 4), np.uint8)
+    tex_img[:, :] = [200, 40, 40, 255]                 # 纯红贴图
+    # ambient=1 让光照不再压暗，直接看贴图颜色是否被用上
+    out = render.rasterize(groups, ("iso",), (64, 64), ss=1, ambient=1.0,
+                           textures={"TEX/A.dds": tex_img})
+    red = (out[:, :, 0] > 150) & (out[:, :, 1] < 100)
+    assert red.sum() > 20                              # 有像素被贴图染红
