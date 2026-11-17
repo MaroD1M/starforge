@@ -63,9 +63,9 @@ def test_write_gate_opens_then_needs_confirm(client):
     settings_mod.update(write_enabled=True)
     r = client.post("/api/saves/apply", json={})
     assert r.status_code == 400                     # 缺 confirm
-    r = client.post("/api/saves/apply", json={"confirm": True})
-    assert r.status_code == 500                     # S4 未实现（NotImplementedError）
-    assert "S4" in r.get_json()["error"]["message"]
+    # 有 confirm 但没配置存档路径 → 明确 404，而不是静默成功
+    r = client.post("/api/saves/apply", json={"confirm": True, "type": "sentinel", "seed": "0x1"})
+    assert r.status_code == 404
 
 
 def test_bad_origin_refused(client):

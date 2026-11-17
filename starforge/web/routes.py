@@ -118,12 +118,32 @@ def api_ships():
 
 @bp.post("/saves/apply")
 def api_apply():
-    """写回存档。S4 实现；现在只负责把安全闸门立起来。"""
-    settings.require_write()                              # 未开启 -> 403 write_disabled
+    """同型换种子写回存档（F05）。写开关关闭 -> 403；缺确认 -> 400；跨型 -> 400。"""
+    from ..data.shipref import ShipRef
+    from ..save import writer
+    settings.require_write()                       # 闸门最先：未开启就 403，不泄露任何路径信息
     body = request.get_json(silent=True) or {}
     if not body.get("confirm"):
         raise BadRequest("缺少 confirm=true（写操作必须二次确认）")
-    raise NotImplementedError("写回存档将在 S4 实现")
+    path = body.get("path") or str(library.resolve(None))
+    src = ShipRef(type=(body.get("type") or ""), seed=(body.get("seed") or ""),
+                  parts=body.get("parts") or None, source="search")
+    return ok(**writer.apply_seed(path, int(body.get("slot", -1)), src, confirm=True))
+
+
+@bp.get("/saves/backups")
+def api_backups():
+    from ..save import writer
+    path = request.args.get("path") or str(library.resolve(None))
+    return ok(path=path, backups=writer.backups(path))
+
+
+@bp.post("/saves/restore")
+def api_restore():
+    from ..save import writer
+    body = request.get_json(silent=True) or {}
+    path = body.get("path") or str(library.resolve(None))
+    return ok(**writer.restore(path, body.get("backup") or "", confirm=bool(body.get("confirm"))))
 
 
 # ---------------------------------------------------------------- 搜索 / 任务（M1）

@@ -1,0 +1,96 @@
+"""F05 写回存档：备份 / 原子写 / 读回校验 / 回滚 / 跨型拒绝。全部在**存档副本**上做。"""
+import os
+import shutil
+
+import pytest
+
+from starforge.core import settings as settings_mod
+from starforge.core.errors import BadRequest, WriteDisabled, WriteRefused
+from starforge.data.shipref import ShipRef
+from starforge.save import library, writer
+
+
+@pytest.fixture()
+def save_copy(saves_dir, tmp_path, game_env):
+    src = saves_dir / "save.hg"
+    dst = tmp_path / "save.hg"
+    shutil.copy2(src, dst)
+    return dst
+
+
+def test_write_disabled_is_403(save_copy):
+    settings_mod.update(write_enabled=False)
+    with pytest.raises(WriteDisabled):
+        writer.apply_seed(str(save_copy), 1, ShipRef(type="sentinel", seed="0x992C8A47F60A6B10"), confirm=True)
+
+
+def test_needs_confirm(save_copy):
+    settings_mod.update(write_enabled=True)
+    with pytest.raises(BadRequest):
+        writer.apply_seed(str(save_copy), 1, ShipRef(type="sentinel", seed="0x992C8A47F60A6B10"), confirm=False)
+
+
+def test_cross_type_refused(save_copy):
+    settings_mod.update(write_enabled=True)
+    # 槽位 0 是 fighter，源是 sentinel → 必须拒绝，并解释"跨型不可移植"
+    with pytest.raises(BadRequest) as e:
+        writer.apply_seed(str(save_copy), 0, ShipRef(type="sentinel", seed="0x992C8A47F60A6B10"), confirm=True)
+    assert "跨型" in str(e.value)
+
+
+def test_apply_same_type_writes_and_verifies(save_copy):
+    settings_mod.update(write_enabled=True)
+    before, _ = library.open_ships(save_copy)
+    target_slot = next(s.slot for s in before if s.type == "sentinel")
+    src = ShipRef(type="sentinel", seed="0x1111222233334444")
+
+    res = writer.apply_seed(str(save_copy), target_slot, src, confirm=True)
+    assert res["verified"] is True and res["after"].upper() == "0X1111222233334444"
+    assert os.path.exists(res["backup"])
+
+    after, warns = library.open_ships(save_copy)
+    assert len(after) == len(before)                      # 船数量不变
+    assert after[target_slot].seed.upper() == "0X1111222233334444"
+    assert not warns
+
+
+def test_backup_can_restore(save_copy):
+    settings_mod.update(write_enabled=True)
+    ships, _ = library.open_ships(save_copy)
+    slot = next(s.slot for s in ships if s.type == "sentinel")
+    original = ships[slot].seed
+    res = writer.apply_seed(str(save_copy), slot, ShipRef(type="sentinel", seed="0xAAAABBBBCCCCDDDD"), confirm=True)
+
+    out = writer.restore(str(save_copy), res["backup"], confirm=True)
+    assert out["ok"]
+    restored, _ = library.open_ships(save_copy)
+    assert restored[slot].seed.upper() == original.upper()
+    assert os.path.exists(out["safety_copy"])
+
+
+def test_failed_verification_rolls_back(save_copy, monkeypatch):
+    settings_mod.update(write_enabled=True)
+    original_bytes = save_copy.read_bytes()
+
+    from nms_save import ships as nms_ships
+    real_set = nms_ships.set_ship_seed
+
+    def liar(json_tree, index, new_seed):
+        real_set(json_tree, index, "0xDEADBEEFDEADBEEF")   # 写进去的和要求的不一样
+
+    monkeypatch.setattr(nms_ships, "set_ship_seed", liar)
+    ships, _ = library.open_ships(save_copy)
+    slot = next(s.slot for s in ships if s.type == "sentinel")
+    with pytest.raises(WriteRefused) as e:
+        writer.apply_seed(str(save_copy), slot, ShipRef(type="sentinel", seed="0x1111222233334444"), confirm=True)
+    assert "回滚" in str(e.value)
+    assert save_copy.read_bytes() == original_bytes       # 字节级还原
+
+
+def test_backups_listed(save_copy):
+    settings_mod.update(write_enabled=True)
+    ships, _ = library.open_ships(save_copy)
+    slot = next(s.slot for s in ships if s.type == "sentinel")
+    writer.apply_seed(str(save_copy), slot, ShipRef(type="sentinel", seed="0x1234"), confirm=True)
+    got = writer.backups(str(save_copy))
+    assert got and got[0]["path"].endswith(".bak")
