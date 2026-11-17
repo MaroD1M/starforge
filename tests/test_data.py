@@ -99,3 +99,14 @@ def test_save_ships_are_typed(saves_dir):
         assert s.type != "unknown", f"槽位 {s.slot} 类型未识别"
         if not s.procedural:
             assert s.can_preview is False
+
+
+def test_icons_lazy_decode_still_works(gamedata):
+    """懒解码后，png() 仍要给出合法 PNG，且重复取用缓存。"""
+    from starforge.data import load_icons
+    ics = load_icons(gamedata)
+    a = ics.png("_PIT_A", "sentinel")
+    assert a and a[:8] == b"\x89PNG\r\n\x1a\n"
+    b = ics.png("_PIT_A", "sentinel")
+    assert b is a                                   # 命中缓存，不重复解码
+    assert ics.png("_NO_SUCH_", "sentinel") is None

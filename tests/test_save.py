@@ -87,3 +87,22 @@ def test_missing_file(saves_dir):
     from starforge.core.errors import SaveNotFound
     with pytest.raises(SaveNotFound):
         library.probe(saves_dir / "nope.hg")
+
+
+def test_open_ships_cache_hits_and_invalidates(saves_dir, tmp_path, monkeypatch):
+    """读存档有缓存；写入后必须失效（否则界面会显示旧数据）。"""
+    import shutil
+    from starforge.core import settings as settings_mod
+    dst = tmp_path / "save.hg"
+    shutil.copy2(saves_dir / "save.hg", dst)
+    settings_mod.update(write_enabled=True)
+    a, _ = library.open_ships(dst)
+    b, _ = library.open_ships(dst)
+    assert a is b                                   # 同一对象 = 命中缓存
+    slot = next(s.slot for s in a if s.can_preview)
+    from starforge.data.shipref import ShipRef
+    from starforge.save import writer
+    writer.apply_seed(str(dst), slot, ShipRef(type=a[0].type if a[0].type != "unknown" else "sentinel",
+                                              seed="0xABCDEF0123456789"), confirm=True)
+    c, _ = library.open_ships(dst)
+    assert c is not a                               # 写入后缓存失效

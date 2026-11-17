@@ -24,6 +24,18 @@ MANIFEST_RE = re.compile(r"^mf_", re.I)
 CHUNK_MAGIC = b"\xe5\xa1\xed\xfe"
 
 
+_SHIPS_CACHE: dict[tuple, tuple[list, list]] = {}      # (路径, mtime, 大小) -> (船, 警告)
+
+
+def _cache_key(p: Path) -> tuple:
+    st = p.stat()
+    return (str(p.resolve()), int(st.st_mtime), st.st_size)
+
+
+def clear_cache() -> None:
+    _SHIPS_CACHE.clear()
+
+
 def _nms():
     """延迟导入 Shipwright，避免它在 import 期就要求游戏目录。"""
     paths.ensure_shipwright_importable()
@@ -62,6 +74,12 @@ def classify(path: Path) -> str:
     return "unknown"
 
 
+def _non_player_reason(kind: str) -> str:
+    return {"account": "这是账号数据，不是玩家存档（没有飞船列表）",
+            "manifest": "这是游戏的清单文件（mf_ 前缀），不含飞船数据",
+            "unknown": "无法识别的文件类型"}.get(kind, "这不是玩家存档")
+
+
 def probe(path: str | Path) -> SaveFile:
     p = Path(path).expanduser()
     if not p.exists():
@@ -69,9 +87,7 @@ def probe(path: str | Path) -> SaveFile:
     kind = classify(p)
     sf = SaveFile(path=p, kind=kind, size=p.stat().st_size)
     if kind != "player":
-        sf.error = {"account": "这是账号数据，不是玩家存档（没有飞船列表）",
-                    "manifest": "这是游戏的清单文件（mf_ 前缀），不含飞船数据",
-                    "unknown": "无法识别的文件类型"}[kind]
+        sf.error = _non_player_reason(kind)
         return sf
     try:
         nms_save, nms_ships, _ = _nms()
@@ -95,13 +111,20 @@ def scan_dir(folder: str | Path | None = None) -> dict:
 
 
 def open_ships(path: str | Path) -> tuple[list[ShipRef], list[str]]:
-    """-> (ShipRef 列表, 警告列表)。"""
+    """-> (ShipRef 列表, 警告列表)。只解码一次（原来 probe 里还会再开一遍）。"""
     p = Path(path).expanduser()
-    sf = probe(p)
-    if not sf.ok:
-        raise SaveFormatError(sf.error or "无法解析该存档")
+    if not p.exists():
+        raise SaveNotFound(f"文件不存在：{p}")
+    if classify(p) != "player":
+        raise SaveFormatError(_non_player_reason(classify(p)))
+    key = _cache_key(p)
+    if key in _SHIPS_CACHE:
+        return _SHIPS_CACHE[key]
     nms_save, nms_ships, _ = _nms()
-    opened = nms_save.open_save(str(p))
+    try:
+        opened = nms_save.open_save(str(p))
+    except Exception as e:                                 # noqa: BLE001
+        raise SaveFormatError(f"{type(e).__name__}: {e}")
     raw = nms_ships.list_ships(opened.readable)
     try:
         stats_by_slot = {}
@@ -131,22 +154,28 @@ def open_ships(path: str | Path) -> tuple[list[ShipRef], list[str]]:
             warns.append(f"槽位 {ref.slot} 声称程序化但模型与类型不符（{ref.model}）")
         out.append(ref)
     log.info("读取存档 %s：%d 艘船", p.name, len(out))
+    _SHIPS_CACHE[key] = (out, warns)
     return out, warns
 
 
 def default_save_path() -> Path:
+    """挑一个玩家存档：优先 save.hg / save2.hg。
+
+    这里**不做 probe()**（那会把整个存档解码一遍）——只看文件名和头 4 字节，
+    真正能不能读由后面的 open_ships 决定，失败会抛明确的 SaveFormatError。
+    """
     from ..core import settings
     d = settings.current().saves_dir_resolved()
     if not d:
         raise SaveNotFound("没有找到存档目录")
     for name in ("save.hg", "save2.hg"):
         cand = Path(d) / name
-        if cand.exists() and classify(cand) == "player" and probe(cand).ok:
+        if cand.exists() and classify(cand) == "player":
             return cand
-    players = [p for p in Path(d).glob("*.hg") if classify(p) == "player" and probe(p).ok]
+    players = [p for p in Path(d).glob("*.hg") if classify(p) == "player"]
     if players:
         return sorted(players)[0]
-    raise SaveNotFound(f"目录 {d} 里没有可解析的玩家存档")
+    raise SaveNotFound(f"目录 {d} 里没有玩家存档（只有账号数据/清单文件）")
 
 
 def resolve(path: str | None = None) -> Path:

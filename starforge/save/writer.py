@@ -134,6 +134,12 @@ def apply_seed(save_path: str, slot: int, source: ShipRef, confirm: bool = False
     before = target.seed
     original = open(save_path, "rb").read()
     backup = _backup(save_path)
+    library_clear = None
+    try:
+        from . import library as _lib
+        library_clear = _lib.clear_cache
+    except Exception:                                      # noqa: BLE001
+        pass
     log.info("写回：%s 槽位 %d（%s）%s → %s；备份 %s",
              os.path.basename(save_path), slot, tgt_type, before, src.seed, backup)
 
@@ -147,6 +153,8 @@ def apply_seed(save_path: str, slot: int, source: ShipRef, confirm: bool = False
         again = [s for s in nms_ships.list_ships(reread.readable) if s.index == slot]
         if not again or again[0].seed.upper() != src.seed.upper():
             raise WriteRefused("写后校验失败：种子与预期不符")
+        if library_clear:
+            library_clear()
         return {"ok": True, "path": save_path, "slot": slot, "type": tgt_type,
                 "before": before, "after": again[0].seed, "backup": backup,
                 "bytes": len(data), "verified": True}
@@ -154,6 +162,8 @@ def apply_seed(save_path: str, slot: int, source: ShipRef, confirm: bool = False
         # 回滚：先原子写回原始字节，再保留备份
         try:
             _atomic_write(save_path, original)
+            if library_clear:
+                library_clear()
             log.error("写入失败已回滚：%s（备份 %s）", e, backup)
         except Exception as e2:                             # noqa: BLE001
             log.error("回滚也失败！请手工把 %s 复制回 %s（%s）", backup, save_path, e2)
@@ -174,6 +184,11 @@ def restore(save_path: str, backup_path: str, confirm: bool = False) -> dict:
     safety = _backup(save_path)                             # 恢复前也留一份当前状态
     data = open(backup_path, "rb").read()
     _atomic_write(save_path, data)
+    try:
+        from . import library as _lib
+        _lib.clear_cache()
+    except Exception:                                      # noqa: BLE001
+        pass
     nms_save = _nms()[2]
     nms_save.open_save(save_path)                           # 能打开就算恢复成功
     log.info("已从备份恢复 %s（恢复前快照 %s）", backup_path, safety)

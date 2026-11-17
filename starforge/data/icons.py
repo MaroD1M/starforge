@@ -14,13 +14,33 @@ _LOCK = threading.RLock()
 
 
 class IconSet:
+    """图标集：**懒解码**。
+
+    容器里 1900+ 张图，全都解一遍要 ~4 秒；但一次页面通常只看十几张。
+    所以这里只建"名字 → 数据切片"的索引，真正用到才解码并缓存 PNG。
+    """
+
     def __init__(self):
-        self.ships: dict[str, dict[str, bytes]] = {}   # 船型 -> 部件 -> png
-        self.flat: dict[str, bytes] = {}               # 部件 -> png（跨船型唯一时才有意义）
+        self.ships: dict[str, dict[str, tuple]] = {}    # 船型 -> 部件 -> (ver,w,h,data)
+        self.flat: dict[str, tuple] = {}
         self.ambiguous: set[str] = set()
-        self.parts: dict[str, bytes] = {}              # 建筑部件
+        self.parts: dict[str, tuple] = {}               # 建筑部件
         self.versions: dict[str, int] = {}
         self.counts: dict[str, int] = {}
+        self._png: dict[tuple, bytes] = {}
+
+    def _decode(self, slot: tuple) -> bytes | None:
+        ver, w, h, data = slot
+        key = (ver, w, h, id(data))
+        hit = self._png.get(key)
+        if hit is not None:
+            return hit
+        try:
+            png = gshi.png_bytes(w, h, gshi.decode(ver, w, h, data))
+        except ValueError:
+            return None
+        self._png[key] = png
+        return png
 
     # --- 加载 ---
     @classmethod
@@ -43,15 +63,12 @@ class IconSet:
         for name, w, h, data in ents:
             ship, _, part = name.partition("/")
             key = (part or name).upper()
-            try:
-                png = gshi.png_bytes(w, h, gshi.decode(ver, w, h, data))
-            except ValueError:
-                continue
-            self.ships.setdefault(ship, {})[key] = png
+            slot = (ver, w, h, data)
+            self.ships.setdefault(ship, {})[key] = slot
             if key in self.flat:
                 self.ambiguous.add(key)
             else:
-                self.flat[key] = png
+                self.flat[key] = slot
             n += 1
         self.counts["ships"] = n
 
@@ -61,23 +78,19 @@ class IconSet:
         n = 0
         for name, w, h, data in ents:
             key = name.split("/")[-1].upper()
-            try:
-                self.parts[key] = gshi.png_bytes(w, h, gshi.decode(ver, w, h, data))
-            except ValueError:
-                continue
+            self.parts[key] = (ver, w, h, data)
             n += 1
         self.counts["parts"] = n
 
     # --- 查询 ---
     def png(self, part: str, ship: str | None = None) -> bytes | None:
         key = part.upper()
+        slot = None
         if ship:
-            got = self.ships.get(ship, {}).get(key)
-            if got:
-                return got
-        if key in self.flat:
-            return self.flat[key]
-        return self.parts.get(key) or self.parts.get(key.replace("_", ""))
+            slot = self.ships.get(ship, {}).get(key)
+        if slot is None:
+            slot = self.flat.get(key) or self.parts.get(key) or self.parts.get(key.replace("_", ""))
+        return self._decode(slot) if slot else None
 
     def where(self, part: str) -> list[str]:
         key = part.upper()

@@ -287,6 +287,34 @@
     } catch (e) { toast('示例失败：' + e.message); }
   }
   $('#demoBtn').onclick = runDemo;
+
+  // 导入分享码：nsh1:<base64(type;seed;parts)>
+  $('#importBtn').onclick = () => {
+    dialog({
+      title: '导入分享码', okText: '载入',
+      body: `<p>粘贴别人发来的 <code>nsh1:…</code> 分享码。</p>
+             <div class="field" style="margin-top:10px">
+               <input id="shareInput" class="input" placeholder="nsh1:...">
+             </div>`,
+      onOk: async () => {
+        const raw = ($('#shareInput')?.value || '').trim();
+        if (!raw) return false;
+        try {
+          const payload = raw.startsWith('nsh1:') ? raw.slice(5) : raw;
+          const [type, seed, partsStr] = atob(payload).split(';');
+          if (!type || !seed) throw new Error('格式不对');
+          S.ship = type;
+          $$('#shipPills .pill').forEach(x => x.classList.toggle('on', x.dataset.ship === type));
+          await renderParts();
+          const ref = { type, seed, parts: (partsStr || '').split('|').filter(Boolean), source: 'share' };
+          $('.nav[data-tab="search"]').click();
+          await showShip(ref, 'searchDetail', true);
+          toast('已载入分享码');
+          return true;
+        } catch (e) { toast('分享码无效：' + e.message); return false; }
+      },
+    });
+  };
   const obFix = $('#obFix'); if (obFix) obFix.onclick = () => $('#fixAll').click();
   const obDemo = $('#obDemo'); if (obDemo) obDemo.onclick = runDemo;
 
