@@ -72,6 +72,56 @@ def _still_valid(proc, slot: Slot, entry: dict) -> bool:
     return struct.pack("<I", entry["slots"]) in win
 
 
+TAG7 = exml.TAG            # b"STARFOR"：一次扫描就能把 8 种模板全找出来
+
+
+def scan_all(proc, entries: list[dict] | None = None, fresh: bool = False,
+             max_per_type: int = 32) -> dict[str, list[tuple[int, float]]]:
+    """**只读**、单次遍历内存，返回 {type: [(addr, score), ...]}。
+
+    一次扫描找公共 7 字节前缀，再用第 8 字节（0xA0+i）区分船型——
+    比"每种船型各扫一遍"省 8 倍 IO，也让远程诊断只需一次遍历。
+    """
+    entries = entries or exml.manifest()
+    by_index = {e["index"]: e for e in entries}
+    cache = getattr(proc, "_sf_scan", None)
+    if cache is not None and not fresh:
+        return cache
+
+    found: dict[str, list[tuple[int, float]]] = {e["type"]: [] for e in entries}
+    total_hits = 0
+    for region in proc.regions(min_size=MIN_REGION):
+        try:
+            buf = proc.read(region.base, region.size)
+        except mem_mod.LiveUnsupported:
+            continue
+        start = 0
+        while True:
+            i = buf.find(TAG7, start)
+            if i < 0:
+                break
+            start = i + 1
+            if i + 8 > len(buf):
+                break
+            idx = buf[i + 7]
+            entry = by_index.get(idx - 0xA0) if 0xA0 <= idx <= 0xAF else None
+            if entry is None:
+                continue
+            addr = region.base + i
+            score = _score(proc, addr, entry)
+            bucket = found[entry["type"]]
+            if len(bucket) < max_per_type:
+                bucket.append((addr, score))
+            total_hits += 1
+    try:
+        setattr(proc, "_sf_scan", found)
+    except Exception:                                       # noqa: BLE001
+        pass
+    log.info("模板槽扫描：%d 处命中，覆盖 %d 种船型", total_hits,
+             sum(1 for v in found.values() if v))
+    return found
+
+
 def locate(proc, type_: str, entries: list[dict] | None = None, fresh: bool = False) -> Slot:
     """在进程内存里找到 type_ 对应模板槽的种子地址（优先用缓存）。"""
     entries = entries or exml.manifest()
@@ -83,27 +133,8 @@ def locate(proc, type_: str, entries: list[dict] | None = None, fresh: bool = Fa
     if not fresh and type_ in cache and _still_valid(proc, cache[type_], entry):
         return cache[type_]
 
-    pat = struct.pack("<Q", entry["factory_seed"])
-    candidates: list[int] = []
-    for region in proc.regions(min_size=MIN_REGION):
-        try:
-            buf = proc.read(region.base, region.size)
-        except mem_mod.LiveUnsupported:
-            continue
-        start = 0
-        while True:
-            i = buf.find(pat, start)
-            if i < 0:
-                break
-            candidates.append(region.base + i)
-            start = i + 1
-            if len(candidates) > 32:
-                break
-        if len(candidates) > 32:
-            break
-
-    scored = [(addr, _score(proc, addr, entry)) for addr in candidates]
-    scored = [(a, s) for a, s in scored if s >= 0.6]          # 至少要有 Slots 佐证
+    scanned = scan_all(proc, entries, fresh=fresh)
+    scored = [(a, s) for a, s in scanned.get(type_, []) if s >= 0.6]   # 至少要有 Slots 佐证
     if not scored:
         raise LocateError(
             f"没找到 {type_} 的模板槽。可能原因：① 没装 starforge-templates 数据 Mod；"
@@ -134,6 +165,37 @@ def push(proc, type_: str, seed: str | int, entries: list[dict] | None = None) -
     log.info("写入 %s 模板槽：0x%X 0x%016X → 0x%016X", type_, slot.seed_addr, before, after)
     return {"ok": True, "address": slot.seed_addr, "type": type_,
             "before": before, "after": after, "seed": value, "score": slot.score}
+
+
+def probe(proc, entries: list[dict] | None = None) -> dict:
+    """**只读**诊断：每种船型找到几个候选、哪个最可信、为什么不可信。绝不写入。
+
+    用途：你在 Windows 上跑 E 段失败时，把这份 JSON 发我，我就能判断是
+    模板没装、内存被归一化、还是多份模板冲突。
+    """
+    entries = entries or exml.manifest()
+    scanned = scan_all(proc, entries, fresh=True)
+    out = []
+    for e in entries:
+        cands = sorted(scanned.get(e["type"], []), key=lambda x: (-x[1], x[0]))
+        good = [c for c in cands if c[1] >= 0.6]
+        if not cands:
+            reason = "没有命中：模板 Mod 可能没装/没生效"
+        elif not good:
+            reason = f"命中 {len(cands)} 处但都缺少 Slots 佐证（得分最高 {cands[0][1]:.2f}）"
+        elif len(good) > 1 and abs(good[0][1] - good[1][1]) < 1e-9:
+            reason = f"命中 {len(good)} 处同样可信的候选，写入会被拒绝（保护机制）"
+        else:
+            reason = "可写入"
+        ambiguous = len(good) > 1 and abs(good[0][1] - good[1][1]) < 1e-9
+        out.append({"type": e["type"], "label": e["label"], "slots": e["slots"],
+                    "factory_seed": hex(e["factory_seed"]),
+                    "candidates": [{"addr": hex(a), "score": round(sc, 3)} for a, sc in cands[:8]],
+                    "chosen": (hex(good[0][0]) if (good and not ambiguous) else None),
+                    "confidence": round(good[0][1], 3) if good and not ambiguous else 0.0,
+                    "reason": reason})
+    return {"ok": True, "platform": "windows" if mem_mod.IS_WINDOWS else "other",
+            "types": out, "hint": "本接口只读：不写任何内存"}
 
 
 def status() -> dict:

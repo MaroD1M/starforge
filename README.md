@@ -59,6 +59,14 @@ python -m starforge selftest     # 自检：上游 / 数据 / 存档 / 游戏
 python -m starforge serve        # 打开本地网页（127.0.0.1，随机端口）
 ```
 
+常用命令：
+
+```bash
+python -m starforge ships --path save.hg      # 列存档里的船
+python -m starforge glyph-overlay 1043FEE69929 --click-through   # 符文置顶条
+python -m starforge live probe                # 只读探测模板槽（Windows）
+```
+
 `STARFORGE_HOME`（默认 `~/.starforge`）存放设置、日志与缓存，可整目录删。
 
 ---

@@ -75,10 +75,26 @@
       const p = el.dataset.part;
       if (S.mode === 'want') { S.want.has(p) ? S.want.delete(p) : (S.want.add(p), S.avoid.delete(p)); }
       else { S.avoid.has(p) ? S.avoid.delete(p) : (S.avoid.add(p), S.want.delete(p)); }
-      renderParts();
+      renderParts(); scheduleEstimate();
     });
   }
   $('#partFilter').oninput = () => renderParts();
+
+  // 选完部件后，问一下"大约 1/N 的种子满足、预计多久"（300ms 防抖）
+  let estTimer = null;
+  function scheduleEstimate() {
+    clearTimeout(estTimer);
+    estTimer = setTimeout(async () => {
+      if (!S.want.size && !S.avoid.size) { $('#etaInfo').textContent = ''; return; }
+      const q = new URLSearchParams({ ship: S.ship, want: [...S.want].join(','), avoid: [...S.avoid].join(',') });
+      try {
+        const e = await api('/api/search/estimate?' + q.toString());
+        const odds = e.one_in ? `约 1 / ${e.one_in.toLocaleString()} 的种子满足` : '难以估计';
+        const secs = e.estimate_seconds != null ? ` · 预计 ${e.estimate_seconds} 秒` : '';
+        $('#etaInfo').textContent = odds + secs;
+      } catch (err) { $('#etaInfo').textContent = ''; }
+    }, 300);
+  }
   $('#modeWant').onclick = () => { S.mode = 'want'; $('#modeWant').classList.add('on'); $('#modeAvoid').classList.remove('on'); };
   $('#modeAvoid').onclick = () => { S.mode = 'avoid'; $('#modeAvoid').classList.add('on'); $('#modeWant').classList.remove('on'); };
 
@@ -363,6 +379,17 @@
       const r = await post('/api/live/template-mod', dest ? { dest } : {});
       $('#setMsg').textContent = `已生成：${r.path}`;
     } catch (e) { $('#setMsg').textContent = e.message; }
+  };
+  $('#probeLive').onclick = async () => {
+    $('#diagOut').textContent = '探测中（只读，不写内存）…';
+    try {
+      const r = await api('/api/live/probe');
+      const lines = r.types.map(t => {
+        const cands = t.candidates.map(c => `${c.addr}(${c.score})`).join(' ') || '—';
+        return `${t.type.padEnd(9)} 槽位${t.slots}  ${t.chosen ? '✓ ' + t.chosen : '✗'}  ${t.reason}\n          候选: ${cands}`;
+      });
+      $('#diagOut').textContent = lines.join('\n') + '\n\n（把这段发给我可定位问题）';
+    } catch (e) { $('#diagOut').textContent = '探测失败：' + e.message; }
   };
   $('#runDiag').onclick = async () => {
     $('#diagOut').textContent = '自检中…';

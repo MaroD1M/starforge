@@ -258,3 +258,61 @@ def test_overlay_without_display_degrades_cleanly():
         assert "tkinter" in str(e) or "图形" in str(e)
     else:                                    # 有显示环境时不该抛错（测试机上一般走不到）
         pytest.skip("当前环境有可用显示")
+
+
+# ---------------------------------------------------------------- 单次扫描 + 只读诊断
+
+def test_scan_all_finds_all_types_in_one_pass():
+    entries = exml.manifest()
+    images, base = _image(entries)                      # 同一块内存里放全部 8 种
+    proc = mem_mod.FakeProcess(images)
+    found = writer.scan_all(proc, entries, fresh=True)
+    assert set(found) == {e["type"] for e in entries}
+    assert all(len(v) == 1 for v in found.values()), {k: len(v) for k, v in found.items()}
+    # 每种都应有 Slots 佐证（score 1.0）
+    assert all(score >= 0.99 for v in found.values() for _a, score in v)
+
+
+def test_scan_all_is_cached_per_process():
+    entries = exml.manifest()
+    images, _ = _image(entries[:2])
+    proc = mem_mod.FakeProcess(images)
+    writer.scan_all(proc, entries, fresh=True)
+    reads_before = len(proc.images)
+    found2 = writer.scan_all(proc, entries)             # 第二次走缓存
+    assert found2 is writer.scan_all(proc, entries) and len(proc.images) == reads_before
+
+
+def test_probe_reports_reasons_without_writing():
+    entries = exml.manifest()
+    images, _ = _image(entries[:1])                     # 只有 sentinel
+    proc = mem_mod.FakeProcess(images)
+    rep = writer.probe(proc, entries)
+    assert rep["ok"] and len(rep["types"]) == 8
+    sent = next(t for t in rep["types"] if t["type"] == "sentinel")
+    miss = next(t for t in rep["types"] if t["type"] == "fighter")
+    assert sent["chosen"] and sent["reason"] == "可写入"
+    assert miss["chosen"] is None and "没装" in miss["reason"]
+    assert proc.writes == []                            # 只读：绝不能有写入
+
+
+def test_probe_flags_ambiguity():
+    import struct
+    entries = exml.manifest()
+    buf = bytearray(0x8000)
+    for off in (0x1000, 0x2000):
+        buf[off:off + 8] = struct.pack("<Q", entries[0]["factory_seed"])
+        buf[off + 0x20:off + 0x24] = struct.pack("<I", entries[0]["slots"])
+    proc = mem_mod.FakeProcess([(0x10000000, buf)])
+    rep = writer.probe(proc, entries)
+    sent = next(t for t in rep["types"] if t["type"] == "sentinel")
+    assert sent["chosen"] is None and "同样可信" in sent["reason"]
+
+
+def test_probe_api_requires_windows(client):
+    r = client.get("/api/live/probe")
+    from starforge.live import mem as mem_mod
+    if mem_mod.IS_WINDOWS:
+        assert r.status_code in (200, 409)
+    else:
+        assert r.status_code == 503

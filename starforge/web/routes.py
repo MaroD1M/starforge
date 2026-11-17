@@ -408,6 +408,20 @@ def api_live_template_mod():
     return ok(**out, hint="把 starforge-templates 文件夹复制到 游戏目录/GAMEDATA/MODS/ 即可")
 
 
+@bp.get("/live/probe")
+def api_live_probe():
+    """只读诊断：报告每种船型找到几个模板槽候选（不写任何内存）。"""
+    from ..live import mem, writer
+    if not mem.IS_WINDOWS:
+        raise GameFilesMissing("实时通道仅支持 Windows", hint="存档写回与符文浮窗在其它平台可用")
+    try:
+        proc = mem.attach("NMS.exe")
+    except mem.LiveUnsupported as e:
+        raise WriteRefused(str(e))
+    with proc:
+        return ok(**writer.probe(proc))
+
+
 @bp.post("/live/push")
 def api_live_push():
     from ..live import mem, writer

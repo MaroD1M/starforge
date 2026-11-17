@@ -129,6 +129,23 @@ def cmd_settings(a) -> int:
     return 0
 
 
+def cmd_live_probe(a) -> int:
+    import json as _json
+    from .live import mem, writer
+    if not mem.IS_WINDOWS:
+        print("实时通道仅支持 Windows；存档写回与符文浮窗在其它平台可用。", file=sys.stderr)
+        return 3
+    try:
+        proc = mem.attach("NMS.exe")
+    except mem.LiveUnsupported as e:
+        print(f"连不上游戏：{e}", file=sys.stderr)
+        return 4
+    with proc:
+        rep = writer.probe(proc)
+    print(_json.dumps(rep, ensure_ascii=False, indent=1))
+    return 0
+
+
 def cmd_glyph_overlay(a) -> int:
     from . import glyphs as glyph_mod, overlay
     try:
@@ -218,6 +235,10 @@ def main(argv=None) -> int:
     p.add_argument("--scale", type=float, default=1.0)
     p.add_argument("--click-through", action="store_true", help="鼠标穿透（不挡游戏点击）")
     p.set_defaults(func=cmd_glyph_overlay)
+
+    p = sub.add_parser("live", help="实时通道（只读诊断）")
+    p.add_argument("action", choices=["probe"], nargs="?", default="probe")
+    p.set_defaults(func=lambda a: cmd_live_probe(a))
 
     p = sub.add_parser("selftest", help="自检")
     p.set_defaults(func=cmd_selftest)
