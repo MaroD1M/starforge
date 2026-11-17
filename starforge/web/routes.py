@@ -136,7 +136,8 @@ def api_apply():
     path = body.get("path") or str(library.resolve(None))
     src = ShipRef(type=(body.get("type") or ""), seed=(body.get("seed") or ""),
                   parts=body.get("parts") or None, source="search")
-    return ok(**writer.apply_seed(path, int(body.get("slot", -1)), src, confirm=True))
+    return ok(**writer.apply_seed(path, int(body.get("slot", -1)), src, confirm=True,
+                                  copy=bool(body.get("copy"))))
 
 
 @bp.get("/saves/backups")

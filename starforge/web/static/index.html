@@ -98,6 +98,7 @@
         <div class="row results-bar">
           <span id="resultInfo" class="tiny">还没有结果</span>
           <div class="spacer"></div>
+          <button id="favToggle" class="btn small" title="只看收藏">★ 收藏夹</button>
           <button id="exportResults" class="btn small hide">导出全部</button>
           <span id="resultSort" class="tiny"></span>
         </div>
@@ -130,7 +131,9 @@
       </div>
       <div class="pane results">
         <div class="row results-bar"><span id="mineInfo" class="tiny">选择左侧的船</span>
-          <div class="spacer"></div><button id="exportMine" class="btn small hide">导出全部</button></div>
+          <div class="spacer"></div>
+          <label class="check" style="margin:0"><input id="onlyPreview" type="checkbox"> 只看能预览的</label>
+          <button id="exportMine" class="btn small hide">导出全部</button></div>
         <div id="mineGrid" class="grid big"></div>
       </div>
       <div class="pane detail" id="mineDetail">

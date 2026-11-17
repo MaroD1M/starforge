@@ -245,3 +245,9 @@ td code{color:#a9bcd6}
 .stat .bar i{display:block;height:100%;background:linear-gradient(90deg,#3a7ce0,#6aa9ff);border-radius:99px}
 .stat b{width:44px;text-align:right;color:#cfe0ff;font-weight:600}
 .planet.here{border-color:#2f8b62;box-shadow:0 0 0 1px rgba(73,209,154,.25)}
+
+/* 收藏星标 */
+.card .star{position:absolute;top:6px;right:8px;font-size:15px;color:#39445a;cursor:pointer;
+  text-shadow:0 1px 3px rgba(0,0,0,.6);transition:color .12s,transform .12s}
+.card .star:hover{color:#f2b45c;transform:scale(1.15)}
+.card .star.on{color:#f2d15c}

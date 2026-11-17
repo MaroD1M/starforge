@@ -105,8 +105,13 @@ def _backup(path: str) -> str:
 # ---------------------------------------------------------------- 主操作
 
 
-def apply_seed(save_path: str, slot: int, source: ShipRef, confirm: bool = False) -> dict:
-    """把 source 的外观（seed）写到 save_path 的第 slot 艘船（必须同型）。"""
+def apply_seed(save_path: str, slot: int, source: ShipRef, confirm: bool = False,
+               copy: bool = False) -> dict:
+    """把 source 的外观（seed）写到 save_path 的第 slot 艘船（必须同型）。
+
+    copy=True 时不动原档：先复制一份 `<存档>.edited.hg`，改那份。
+    想进游戏验证就把它改名成 save.hg / save2.hg（原档永远在）。
+    """
     settings.require_write()                                # 写开关未开 -> 403 write_disabled
     if not confirm:
         raise BadRequest("缺少 confirm=true（写操作必须二次确认）")
@@ -119,6 +124,14 @@ def apply_seed(save_path: str, slot: int, source: ShipRef, confirm: bool = False
         raise BadRequest(f"{src.type} 的模型不是 _PROC，改种子不会改变外观")
     if not os.path.exists(save_path):
         raise BadRequest(f"存档不存在：{save_path}")
+
+    original_path = save_path
+    if copy:
+        if not save_path.endswith(".edited.hg"):
+            base = save_path[:-3] if save_path.lower().endswith(".hg") else save_path
+            save_path = base + ".edited.hg"          # save.hg → save.edited.hg
+        shutil.copy2(original_path, save_path)
+        log.info("写回使用副本：%s（原档 %s 不动）", save_path, original_path)
 
     opened = nms_save.open_save(save_path)
     ships = nms_ships.list_ships(opened.readable)
@@ -155,7 +168,8 @@ def apply_seed(save_path: str, slot: int, source: ShipRef, confirm: bool = False
             raise WriteRefused("写后校验失败：种子与预期不符")
         if library_clear:
             library_clear()
-        return {"ok": True, "path": save_path, "slot": slot, "type": tgt_type,
+        return {"ok": True, "path": save_path, "original": original_path, "copy": bool(copy),
+                "slot": slot, "type": tgt_type,
                 "before": before, "after": again[0].seed, "backup": backup,
                 "bytes": len(data), "verified": True}
     except Exception as e:                                  # noqa: BLE001

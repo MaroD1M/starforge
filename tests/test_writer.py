@@ -97,3 +97,21 @@ def test_backups_listed(save_copy):
     writer.apply_seed(str(save_copy), slot, ShipRef(type="sentinel", seed="0x1234"), confirm=True)
     got = writer.backups(str(save_copy))
     assert got and got[0]["path"].endswith(".bak")
+
+
+def test_apply_to_copy_leaves_original_untouched(save_copy):
+    """copy=True：原档一字节不动，改动写在 .edited.hg 上。"""
+    settings_mod.update(write_enabled=True)
+    ships, _ = library.open_ships(save_copy)
+    slot = next(s.slot for s in ships if s.can_preview)
+    seed_before = next(s.seed for s in ships if s.slot == slot)
+    bytes_before = save_copy.read_bytes()
+
+    res = writer.apply_seed(str(save_copy), slot, ShipRef(type=next(s.type for s in ships if s.slot == slot),
+                                                          seed="0xFEDCBA9876543210"),
+                            confirm=True, copy=True)
+    assert res["copy"] is True and res["path"].endswith(".edited.hg")
+    assert save_copy.read_bytes() == bytes_before          # 原档未动
+    edited, _ = library.open_ships(res["path"])
+    assert next(s for s in edited if s.slot == slot).seed.upper() == "0XFEDCBA9876543210"
+    assert next(s for s in ships if s.slot == slot).seed == seed_before

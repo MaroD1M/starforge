@@ -17,7 +17,7 @@ from ..data import ShipRef
 
 log = log.get("save")
 
-PLAYER_SAVE_RE = re.compile(r"^(save|save\d+)\.hg$", re.I)
+PLAYER_SAVE_RE = re.compile(r"^(save|save\d+)(\.edited|\.copy)?\.hg$", re.I)
 ACCOUNT_RE = re.compile(r"^accountdata\.hg$", re.I)
 MANIFEST_RE = re.compile(r"^mf_", re.I)
 

@@ -4,6 +4,17 @@
   const $$ = s => [...document.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const nf = n => (n ?? 0).toLocaleString();
+  const favKey = r => `${r.type}:${r.seed}`;
+  function saveFavs() { localStorage.setItem('sf.favs', JSON.stringify(S.favs)); }
+  function isFav(r) { return S.favs.some(f => favKey(f) === favKey(r)); }
+  function toggleFav(r) {
+    const k = favKey(r);
+    if (isFav(r)) S.favs = S.favs.filter(f => favKey(f) !== k);
+    else S.favs.push({ type: r.type, seed: r.seed, parts: r.parts || null, name: r.name || '' });
+    saveFavs();
+    toast(isFav(r) ? '已收藏' : '已取消收藏');
+    renderGrid();
+  }
 
   async function api(path, opts) {
     const r = await fetch(path, opts);
@@ -65,6 +76,7 @@
   const S = {
     ship: 'sentinel', catalog: null, want: new Set(), avoid: new Set(), mode: 'want',
     results: [], mine: [], viewer: null, jobTimer: null, glyphs: '', live: {},
+    favs: JSON.parse(localStorage.getItem('sf.favs') || '[]'), favMode: false,
   };
 
   /* ---------------- 导航 ---------------- */
@@ -138,7 +150,8 @@
   function maybeOnboard(h) {
     const need = !h.saves_ready || !h.data_ready || !h.game_dir;
     $('#onboard').classList.toggle('hide', !need);
-    if (need && !sessionStorage.getItem('sf.wizard.shown')) {
+    if (!need) return;                          // 自动检测已搞定 → 不打扰
+    if (!sessionStorage.getItem('sf.wizard.shown')) {
       sessionStorage.setItem('sf.wizard.shown', '1');
       openWizard();
     }
@@ -367,6 +380,38 @@
     }, 450);
   }
 
+  function currentGridItems() {
+    return S.favMode ? S.favs : S.results;
+  }
+
+  function renderGrid() {
+    const items = currentGridItems();
+    $('#resultInfo').textContent = S.favMode ? `收藏 ${items.length} 个` : `${S.results.length} 个结果`;
+    $('#exportResults').classList.toggle('hide', !items.length);
+    if (!items.length) {
+      $('#grid').innerHTML = '';
+      $('#gridEmpty').classList.remove('hide');
+      $('#gridEmpty').querySelector('p').innerHTML = S.favMode
+        ? '还没有收藏。搜到喜欢的船，点卡片右上角 ★'
+        : '没有命中：放宽条件，或把「搜索预算」调大';
+      return;
+    }
+    $('#gridEmpty').classList.add('hide');
+    $('#grid').innerHTML = items.map((r, i) => `
+      <div class="card" data-i="${i}">
+        <img loading="lazy" src="/api/thumb/${r.type}/${r.seed}.png?size=340" alt="${esc(r.seed)}"
+             onerror="this.style.visibility='hidden'">
+        <span class="star ${isFav(r) ? 'on' : ''}" data-star="${i}" title="收藏">★</span>
+        <div class="cap"><span class="seed">…${r.seed.slice(-8)}</span><span class="badge ok">3D</span></div>
+      </div>`).join('');
+    $$('#grid .card').forEach(el => el.onclick = e => {
+      if (e.target.dataset.star !== undefined) { toggleFav(items[+e.target.dataset.star]); return; }
+      $$('#grid .card').forEach(x => x.classList.remove('on')); el.classList.add('on');
+      showShip(items[+el.dataset.i], 'searchDetail', true);
+    });
+    if (!S.favMode) $$('#grid .card')[0]?.click();
+  }
+
   function onSearchDone(j) {
     if (j.status === 'failed') { $('#searchMsg').textContent = '搜索失败：' + j.error; return; }
     S.results = j.result || [];
@@ -377,16 +422,7 @@
       $('#gridEmpty').querySelector('p').textContent = '没有命中：放宽条件，或把「搜索预算」调大';
       return;
     }
-    $('#grid').innerHTML = S.results.map((r, i) => `
-      <div class="card" data-i="${i}">
-        <img loading="lazy" src="/api/thumb/${r.type}/${r.seed}.png?size=340" alt="${esc(r.seed)}">
-        <div class="cap"><span class="seed">…${r.seed.slice(-8)}</span><span class="badge ok">3D</span></div>
-      </div>`).join('');
-    $$('#grid .card').forEach(el => el.onclick = () => {
-      $$('#grid .card').forEach(x => x.classList.remove('on')); el.classList.add('on');
-      showShip(S.results[+el.dataset.i], 'searchDetail', true);
-    });
-    $$('#grid .card')[0].click();
+    renderGrid();
   }
 
   function statsLine(st) {
@@ -423,7 +459,12 @@
       toast(`已导出 ${n} 艘（含 glb 与 png）`);
     } catch (e) { toast('导出失败：' + e.message); }
   }
-  $('#exportResults').onclick = () => exportShips(S.results, 'starforge-search');
+  $('#favToggle').onclick = () => {
+    S.favMode = !S.favMode;
+    $('#favToggle').classList.toggle('on', S.favMode);
+    renderGrid();
+  };
+  $('#exportResults').onclick = () => exportShips(currentGridItems(), S.favMode ? 'starforge-favs' : 'starforge-search');
   $('#exportMine').onclick = () => exportShips(S.mine, 'starforge-myships');
 
   /* ---------------- 3D ---------------- */
@@ -507,9 +548,8 @@
     try {
       const r = await api('/api/ships' + (path ? '?path=' + encodeURIComponent(path) : ''));
       S.mine = r.ships;
-      $('#saveMsg').textContent = '';
+      $('#saveMsg').textContent = r.warnings?.length ? r.warnings.join('；') : '';
       $('#saveHint').textContent = `${r.path} · ${r.count} 艘`;
-      $('#mineInfo').textContent = `${r.count} 艘船`;
       $('#exportMine').classList.toggle('hide', !r.count);
       $('#shipList').innerHTML = r.ships.map((s, i) => `
         <div class="row-item" data-i="${i}">
@@ -519,24 +559,39 @@
             <div>${esc(s.type_label || s.type)}${s.ship_class ? ' · ' + esc(s.ship_class) + ' 级' : ''}${s.can_preview ? '' : ' · 固定模型'}</div>
             <div>${statsLine(s.stats)}</div></div>
         </div>`).join('') || '<div class="tiny">这个存档里没有船</div>';
-      $('#mineGrid').innerHTML = S.mine.map((s, i) => `
-        <div class="card" data-i="${i}">
-          <img loading="lazy" src="/api/thumb/${s.type}/${s.seed}.png?size=340" alt="">
-          <div class="cap"><span class="seed">${esc(s.type_label || s.type)}</span>
-            <span class="badge ${s.can_preview ? 'ok' : ''}">${s.can_preview ? '可预览' : '固定模型'}</span></div>
-        </div>`).join('');
-      const pick = i => { showShip(S.mine[i], 'mineDetail', false); };
       $$('#shipList .row-item').forEach(el => el.onclick = () => {
-        $$('#shipList .row-item').forEach(x => x.classList.remove('on')); el.classList.add('on'); pick(+el.dataset.i);
+        $$('#shipList .row-item').forEach(x => x.classList.remove('on'));
+        el.classList.add('on');
+        showShip(S.mine[+el.dataset.i], 'mineDetail', false);
       });
-      $$('#mineGrid .card').forEach(el => el.onclick = () => pick(+el.dataset.i));
+      renderMine();
       if (S.mine.length) $$('#shipList .row-item')[0].click();
-      if (r.warnings?.length) $('#saveMsg').textContent = r.warnings.join('；');
     } catch (e) {
       $('#saveMsg').textContent = e.message;
       $('#shipList').innerHTML = '<div class="tiny">读取失败。可在设置页确认存档目录，或点右上角「一键配置」。</div>';
+      $('#mineGrid').innerHTML = '';
     }
   }
+
+  function renderMine() {
+    const only = $('#onlyPreview')?.checked;
+    const rows = only ? S.mine.filter(s => s.can_preview) : S.mine;
+    $('#mineInfo').textContent = `${rows.length} / ${S.mine.length} 艘`;
+    $('#mineGrid').innerHTML = rows.map(s => `
+        <div class="card" data-slot="${s.slot}">
+          <img loading="lazy" src="/api/thumb/${s.type}/${s.seed}.png?size=340" alt=""
+               onerror="this.style.visibility='hidden'">
+          <span class="star ${isFav(s) ? 'on' : ''}" data-star="${s.slot}" title="收藏">★</span>
+          <div class="cap"><span class="seed">${esc(s.type_label || s.type)}</span>
+            <span class="badge ${s.can_preview ? 'ok' : ''}">${s.can_preview ? '可预览' : '固定模型'}</span></div>
+        </div>`).join('') || '<div class="tiny">没有符合条件的船</div>';
+    $$('#mineGrid .card').forEach(el => el.onclick = e => {
+      const s = rows.find(x => String(x.slot) === el.dataset.slot);
+      if (e.target.dataset.star !== undefined) { toggleFav(s); return; }
+      showShip(s, 'mineDetail', false);
+    });
+  }
+  document.addEventListener('change', e => { if (e.target.id === 'onlyPreview') renderMine(); });
   $('#openSave').onclick = openSave;
 
   function openApply(src) {
