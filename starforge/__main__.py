@@ -209,8 +209,29 @@ def _ok(fn) -> bool:
         return False
 
 
+def _strip_internal_args(argv: list[str]) -> list[str]:
+    """丢掉 pywebview / WebView2 之类的内部参数（它们用同名 exe 启子进程）。
+
+    实测：打包后 pywebview 会带 `parent_pid=<n>` 重新执行本程序，
+    若当成子命令解析就会刷 `invalid choice: 'parent_pid=...'`。
+    """
+    out, skip_next = [], False
+    for a in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if a in ("--parent-pid", "--pid", "--hwnd"):
+            skip_next = True
+            continue
+        if a.startswith("parent_pid=") or a.startswith("--parent_pid=") or a.startswith("-pid="):
+            continue
+        out.append(a)
+    return out
+
+
 def main(argv=None) -> int:
     console.setup_console()          # Windows cp1252 下 print 中文不再崩（CI 首跑踩过）
+    argv = _strip_internal_args(list(sys.argv[1:] if argv is None else argv))
     ap = argparse.ArgumentParser(prog="starforge", description=strings.APP_TITLE)
     sub = ap.add_subparsers(dest="cmd")
 

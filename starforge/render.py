@@ -96,6 +96,18 @@ def render(groups: dict, views=("iso",), size=(420, 420), splat: int = 2, ss: in
     return (out * 255).astype(np.uint8)
 
 
+def placeholder_png(size: int = 256, label: str = "") -> bytes:
+    """占位图：深色底 + 斜纹，用于"固定模型/无种子"这类没有 3D 的船。"""
+    h = w = size
+    yy, xx = np.mgrid[0:h, 0:w]
+    base = np.zeros((h, w, 3), np.float32) + np.array([0.055, 0.065, 0.085], np.float32)
+    stripe = ((xx + yy) % 24) < 2
+    base[stripe] = np.array([0.085, 0.10, 0.13], np.float32)
+    border = 3
+    base[:border, :] = base[-border:, :] = base[:, :border] = base[:, -border:] = np.array([0.12, 0.15, 0.2], np.float32)
+    return png_bytes((np.clip(base, 0, 1) * 255).astype(np.uint8))
+
+
 def _cache_png(key: str, builder) -> bytes:
     d = paths.cache_dir() / "thumbs"
     d.mkdir(parents=True, exist_ok=True)

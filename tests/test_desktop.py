@@ -61,3 +61,39 @@ def test_probe_reports_reason_when_unavailable():
 def test_probe_api(client):
     j = client.get("/api/desktop").get_json()
     assert j["ok"] and "available" in j and "reason" in j
+
+
+# ---------------------------------------------------------------- 找游戏目录
+
+def test_looks_like_game(tmp_path):
+    from starforge import locate_game
+    fake = tmp_path / "No Man's Sky"
+    (fake / "Binaries").mkdir(parents=True)
+    (fake / "Binaries" / "NMS.exe").write_bytes(b"MZ")
+    (fake / "GAMEDATA" / "PCBANKS").mkdir(parents=True)
+    assert locate_game.looks_like_game(str(fake)) is True
+    assert locate_game.looks_like_game(str(tmp_path)) is False
+    assert locate_game.looks_like_game(None) is False
+
+
+def test_library_paths_parses_vdf(tmp_path):
+    from starforge import locate_game
+    steam = tmp_path / "Steam"
+    (steam / "steamapps").mkdir(parents=True)
+    other = tmp_path / "Library2"
+    other.mkdir()
+    (steam / "steamapps" / "libraryfolders.vdf").write_text(
+        '"libraryfolders"\n{\n "1"\n {\n  "path"\t\t"%s"\n }\n}\n' % str(other).replace("\\", "\\\\"),
+        encoding="utf-8")
+    got = locate_game._library_paths(str(steam))
+    assert str(steam) in got and str(other) in got
+
+
+def test_find_prefers_env(tmp_path, monkeypatch):
+    from starforge import locate_game
+    fake = tmp_path / "nms"
+    (fake / "Binaries").mkdir(parents=True)
+    (fake / "Binaries" / "NMS.exe").write_bytes(b"MZ")
+    (fake / "GAMEDATA" / "PCBANKS").mkdir(parents=True)
+    monkeypatch.setenv("NMS_DIR", str(fake))
+    assert locate_game.find() == str(fake)

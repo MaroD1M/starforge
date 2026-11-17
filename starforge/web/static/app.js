@@ -44,6 +44,24 @@
   }
   window.addEventListener('pywebviewready', bindDesktop);
 
+  function dialog({ title, body, okText = '确定', cancelText = '取消', onOk }) {
+    $('#dlgTitle').textContent = title;
+    $('#dlgBody').innerHTML = body;
+    $('#dlgOk').textContent = okText;
+    $('#dlgCancel').textContent = cancelText;
+    $('#dlg').classList.remove('hide');
+    const close = () => { $('#dlg').classList.add('hide'); $('#dlgOk').onclick = null; };
+    $('#dlgClose').onclick = close;
+    $('#dlgCancel').onclick = close;
+    $('#dlgOk').onclick = async () => {
+      try {
+        const r = onOk ? await onOk() : true;
+        if (r !== false) close();
+      } catch (e) { toast(String(e.message || e)); }
+    };
+    return close;
+  }
+
   const S = {
     ship: 'sentinel', catalog: null, want: new Set(), avoid: new Set(), mode: 'want',
     results: [], mine: [], viewer: null, jobTimer: null, glyphs: '', live: {},
@@ -362,15 +380,16 @@
       $('#mineInfo').textContent = `${r.count} 艘船`;
       $('#shipList').innerHTML = r.ships.map((s, i) => `
         <div class="row-item" data-i="${i}">
-          <img loading="lazy" src="/api/thumb/${s.type}/${s.seed}.png?size=120" alt="">
+          <img loading="lazy" src="/api/thumb/${s.type}/${s.seed}.png?size=120" alt=""
+               onerror="this.style.visibility='hidden'">
           <div class="meta"><b>${esc(s.name || '(未命名)')}</b>
-            <div>${esc(s.type)} · ${esc(s.seed)}</div></div>
+            <div>${esc(s.type_label || s.type)}${s.can_preview ? '' : ' · 固定模型'} · ${esc(s.seed)}</div></div>
         </div>`).join('') || '<div class="tiny">这个存档里没有船</div>';
       $('#mineGrid').innerHTML = S.mine.map((s, i) => `
         <div class="card" data-i="${i}">
-          <img loading="lazy" src="/api/thumb/${s.type}/${s.seed}.png?size=340">
-          <div class="cap"><span class="seed">${esc(s.type)}</span>
-            <span class="badge ${s.procedural ? 'ok' : ''}">${s.procedural ? '可换' : '固定'}</span></div>
+          <img loading="lazy" src="/api/thumb/${s.type}/${s.seed}.png?size=340" alt="">
+          <div class="cap"><span class="seed">${esc(s.type_label || s.type)}</span>
+            <span class="badge ${s.can_preview ? 'ok' : ''}">${s.can_preview ? '可预览' : '固定模型'}</span></div>
         </div>`).join('');
       const pick = i => { showShip(S.mine[i], 'mineDetail', false); };
       $$('#shipList .row-item').forEach(el => el.onclick = () => {
@@ -387,27 +406,73 @@
   $('#openSave').onclick = openSave;
 
   function openApply(src) {
+    if (!S.mine.length) { toast('先在「我的船」里读取存档'); return; }
     const same = S.mine.filter(m => m.type === src.type);
     if (!same.length) {
-      alert(`存档里没有 ${src.type} 的船，无法同型换种子。\n（不同船型的部件树不同，种子不能跨型移植）`);
+      dialog({
+        title: '无法写回',
+        body: `<p>存档里没有 <code>${esc(src.type)}</code> 的船。</p>
+               <div class="warnbox">不同船型的部件树不同，<b>种子不能跨型移植</b>。<br>
+               想要这个外观：先买/找一艘 ${esc(src.type)}，或改用「按部件搜索」找一艘相近的。</div>`,
+        okText: '知道了', cancelText: '关闭', onOk: () => true,
+      });
       return;
     }
-    const slot = prompt(`把 ${src.type} ${src.seed} 写到哪个槽？\n可选：` +
-      same.map(m => `${m.slot}(${m.seed})`).join(' / '), String(same[0].slot));
-    if (slot === null) return;
-    if (!confirm(`将把槽位 ${slot} 的外观换成 ${src.seed}\n会先自动备份存档。继续？`)) return;
-    post('/api/saves/apply', { slot: +slot, type: src.type, seed: src.seed, parts: src.parts, confirm: true })
-      .then(r => { toast('已写入并通过读回校验'); alert(`写入成功。\n备份：${r.backup}`); openSave(); })
-      .catch(e => alert('写入失败：' + e.message + '\n（已自动回滚，备份保留）'));
+    let slot = same[0].slot;
+    const body = `
+      <p>把 <code>${esc(src.seed)}</code> 的外观写到哪一艘？</p>
+      <div class="opt-list">${same.map(m => `
+        <label class="pick ${m.slot === slot ? 'on' : ''}" data-slot="${m.slot}">
+          <input type="radio" name="slot" ${m.slot === slot ? 'checked' : ''}>
+          <span>槽位 ${m.slot} · ${esc(m.type)}</span>
+          <span class="spacer"></span><code>${esc(m.seed)}</code>
+        </label>`).join('')}</div>
+      <div class="warnbox">写入前会自动备份存档；写完会重新解码核对，不符即自动回滚。</div>`;
+    dialog({
+      title: '写回存档', body, okText: '写入并校验',
+      onOk: async () => {
+        const r = await post('/api/saves/apply',
+          { slot, type: src.type, seed: src.seed, parts: src.parts, confirm: true });
+        toast('已写入并通过读回校验');
+        dialog({
+          title: '写入成功',
+          body: `<p>槽位 ${r.slot} 的外观已更新。</p>
+                 <p class="tiny">备份：<code>${esc(r.backup)}</code></p>
+                 <p class="tiny">回到游戏重新载入存档即可看到。</p>`,
+          okText: '好', cancelText: '关闭', onOk: () => true,
+        });
+        openSave();
+        return true;
+      },
+    });
+    $$('#dlgBody label.pick').forEach(el => el.onclick = () => {
+      slot = +el.dataset.slot;
+      $$('#dlgBody label.pick').forEach(x => x.classList.toggle('on', x === el));
+    });
   }
 
-  async function pushLive(ref) {
-    if (!S.live.running) { alert('游戏没在运行。先启动游戏并载入存档。'); return; }
-    if (!confirm(`把这艘 ${ref.type} 的外观写进游戏内模板槽？\n只改模板里的 8 字节种子，不动你的船。`)) return;
-    try {
-      const r = await post('/api/live/push', { type: ref.type, seed: ref.seed, confirm: true });
-      alert(`已写入模板槽：0x${r.address.toString(16)}`);
-    } catch (e) { alert('失败：' + e.message); }
+  function pushLive(ref) {
+    if (!S.live.running) {
+      dialog({ title: '游戏未运行', okText: '知道了', cancelText: '关闭',
+        body: '<p>实时通道要求游戏已启动并载入存档。</p>',
+        onOk: () => true });
+      return;
+    }
+    dialog({
+      title: '送进游戏', okText: '写入模板槽',
+      body: `<p>把 <code>${esc(ref.seed)}</code> 写进 <code>${esc(ref.type)}</code> 的模板槽。</p>
+             <div class="warnbox">只改写模板里的 8 字节种子，<b>不会动你的船和存档</b>。
+             写入后立刻回读校验；若游戏版本不匹配会拒绝写入。</div>`,
+      onOk: async () => {
+        const r = await post('/api/live/push', { type: ref.type, seed: ref.seed, confirm: true });
+        toast('已写入模板槽');
+        dialog({ title: '已写入', okText: '好', cancelText: '关闭',
+          body: `<p>模板槽地址 <code>0x${r.address.toString(16)}</code></p>
+                 <p class="tiny">在游戏里用对应的领取方式即可看到效果。</p>`,
+          onOk: () => true });
+        return true;
+      },
+    });
   }
 
   /* ---------------- 星球 ---------------- */
@@ -498,12 +563,28 @@
   };
 
   /* ---------------- 设置 ---------------- */
+  function showChecks(checks) {
+    const map = { game_dir: '#gameDir', saves_dir: '#savesDir', gamedata_dir: '#gameData' };
+    Object.entries(map).forEach(([k, sel]) => {
+      const el = $(sel); if (!el || !checks?.[k]) return;
+      const c = checks[k];
+      el.style.borderColor = c.ok ? '#2f8b62' : '#8b3a2f';
+      el.title = c.detail || '';
+      const label = el.closest('.field')?.querySelector('label');
+      if (label) {
+        label.textContent = label.textContent.replace(/\s*[✓✗].*$/, '') + (c.ok ? '  ✓' : '  ✗');
+        label.title = c.detail || '';
+      }
+    });
+  }
+
   async function loadSettings() {
     const s = await api('/api/settings');
     $('#gameDir').value = s.settings.game_dir || '';
     $('#savesDir').value = s.settings.saves_dir || '';
     $('#gameData').value = s.settings.gamedata_dir || '';
     $('#writeChk').checked = !!s.settings.write_enabled;
+    showChecks(s.checks);
     try {
       const c = await api('/api/capabilities');
       $('#biomeSel').innerHTML = '<option value="">不限</option>' +
@@ -557,11 +638,26 @@
   };
 
   $('#genMod').onclick = async () => {
-    const dest = prompt('生成到哪个目录？（留空 = 缓存目录）', '');
-    try {
-      const r = await post('/api/live/template-mod', dest ? { dest } : {});
-      $('#setMsg').textContent = '已生成：' + r.path;
-    } catch (e) { $('#setMsg').textContent = e.message; }
+    const run = async dest => {
+      try {
+        const r = await post('/api/live/template-mod', dest ? { dest } : {});
+        $('#setMsg').textContent = '已生成：' + r.path;
+        toast('模板 Mod 已生成');
+      } catch (e) { $('#setMsg').textContent = e.message; }
+    };
+    if (DESKTOP.ready) {
+      const dest = await window.pywebview.api.pick_folder('any');
+      run(dest || '');
+    } else {
+      dialog({
+        title: '生成模板 Mod', okText: '生成',
+        body: `<p>生成到哪个目录？留空则放到缓存目录，生成后手动复制到
+               <code>GAMEDATA/MODS/</code>。</p>
+               <div class="field" style="margin-top:10px"><input id="modDest" class="input"
+                 placeholder="留空 = 缓存目录"></div>`,
+        onOk: async () => { await run(($('#modDest')?.value || '').trim()); return true; },
+      });
+    }
   };
 
   boot();

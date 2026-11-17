@@ -78,3 +78,24 @@ def test_parts_fall_back_to_game_assets(nms_dir, monkeypatch):
     tree = parts.tree("sentinel")
     assert len(tree) >= 20 and sum(len(g["options"]) for g in tree) >= 100
     assert parts.source() == "game"
+
+
+def test_type_from_model_prefers_basename():
+    """路径里含 S-CLASS 的 BIOSHIP 不能误判成异星。"""
+    from starforge.data.shipref import type_from_model
+    assert type_from_model("MODELS/COMMON/SPACECRAFT/S-CLASS/BIOPARTS/BIOSHIP_PROC.SCENE.MBIN") == "living"
+    assert type_from_model("MODELS/COMMON/SPACECRAFT/S-CLASS/S-CLASS_PROC.SCENE.MBIN") == "exotic"
+    assert type_from_model("MODELS/X/BIGGS.SCENE.MBIN") == "corvette"
+    assert type_from_model("MODELS/X/VINTAGEINTERCEPTOR.SCENE.MBIN") == "sentinel"
+    assert type_from_model("MODELS/X/NOPE.SCENE.MBIN") == "unknown"
+
+
+def test_save_ships_are_typed(saves_dir):
+    """真实存档里的每艘船都必须落到已知类型，且固定模型不能被当成可预览。"""
+    from starforge.save import library
+    ships, _ = library.open_ships(saves_dir / "save.hg")
+    assert ships
+    for s in ships:
+        assert s.type != "unknown", f"槽位 {s.slot} 类型未识别"
+        if not s.procedural:
+            assert s.can_preview is False

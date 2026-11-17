@@ -29,6 +29,20 @@ def gamedata():
     return gd
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _global_game_env():
+    """有游戏目录就全局设置 NMS_DIR：`nms_save.gamepath.find` 带 lru_cache，
+    首次调用若没有环境变量会把空结果缓存下来，导致后续测试莫名失败。"""
+    cand = Path("/workspace/nms/No Man's Sky")
+    if (cand / "Binaries" / "NMS.exe").exists():
+        os.environ.setdefault("NMS_DIR", str(cand))
+        try:
+            from nms_save import gamepath
+            gamepath.find.cache_clear()
+        except Exception:
+            pass
+
+
 @pytest.fixture(scope="session")
 def nms_dir():
     """真实游戏目录（缺它就跳过需要 pak/exe 的测试）。"""

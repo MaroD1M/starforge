@@ -118,25 +118,12 @@ def autodetect(apply: bool = True) -> dict:
     cur = current()
     changed: dict[str, str] = {}
 
-    # 游戏目录
-    game = cur.game_dir
-    if not game:
-        cands = []
-        env = os.environ.get("NMS_DIR")
-        if env:
-            cands.append(env)
-        try:
-            paths.ensure_shipwright_importable()
-            from nms_save import gamepath
-            hit = gamepath.find()
-            if hit:
-                cands.append(hit)
-        except Exception as e:                             # noqa: BLE001
-            log.debug("gamepath 自动发现不可用：%s", e)
-        for c in cands:
-            if c and os.path.exists(os.path.join(c, "Binaries", "NMS.exe")):
-                found["game_dir"] = c
-                break
+    # 游戏目录（含 Steam 注册表/多磁盘兜底）
+    if not cur.game_dir:
+        from .. import locate_game
+        hit = locate_game.find()
+        if hit:
+            found["game_dir"] = hit
 
     # 存档目录
     if not cur.saves_dir:

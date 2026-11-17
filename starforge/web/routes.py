@@ -116,8 +116,12 @@ def api_ships():
     path = request.args.get("path")
     p = library.resolve(path)
     ships, warns = library.open_ships(p)
-    return ok(path=str(p), count=len(ships),
-              ships=[s.to_dict() for s in ships], warnings=warns)
+    rows = []
+    for s in ships:
+        d = s.to_dict()
+        d.update(type_label=s.type_label, can_preview=s.can_preview)
+        rows.append(d)
+    return ok(path=str(p), count=len(ships), ships=rows, warnings=warns)
 
 
 @bp.post("/saves/apply")
@@ -332,20 +336,54 @@ def api_system_scan():
 @bp.get("/thumb/<ship>/<seed>.png")
 def api_thumb(ship: str, seed: str):
     from .. import preview, render
+    from ..data.shipref import PROC_MODELS
     parts = [p for p in (request.args.get("parts") or "").split(",") if p]
     views = tuple(v for v in (request.args.get("views") or "iso").split(",") if v in render.VIEWS)
     size = max(160, min(int(request.args.get("size") or 420), 900))
+    if ship not in PROC_MODELS or int(str(seed), 16) == 0:
+        return Response(render.placeholder_png(size), mimetype="image/png",
+                        headers={"Cache-Control": "public, max-age=3600"})
     try:
         from .. import paint as paint_mod
         cols = paint_mod.look(seed, ship) if request.args.get("paint", "1") != "0" else None
         data = render.ship_png(ship, seed, parts or None, views or ("iso",), (size, size), colours=cols)
-    except Exception as e:                     # noqa: BLE001 - 没有游戏数据时退 L0 部件图
-        from ..glyphs import panel_png
-        raise BadRequest(f"无法渲染：{type(e).__name__}: {e}")
+    except Exception:                          # noqa: BLE001 - 没有游戏数据：给占位图，别让界面出现坏图
+        data = render.placeholder_png(size)
     return Response(data, mimetype="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ---------------------------------------------------------------- 设置 / 诊断
+
+def _path_checks() -> dict:
+    """设置页用：逐个路径判断是否真的可用（Windows 上大小写/斜杠都可能不一致）。"""
+    import os
+    s = settings.current()
+    out = {}
+    game = s.game_dir
+    if game:
+        exe = next((p for p in (os.path.join(game, "Binaries", "NMS.exe"),
+                                os.path.join(game, "binaries", "nms.exe")) if os.path.exists(p)), None)
+        banks = os.path.join(game, "GAMEDATA", "PCBANKS")
+        out["game_dir"] = {"ok": bool(exe) and os.path.isdir(banks),
+                           "detail": "找到 NMS.exe 与 PCBANKS" if exe and os.path.isdir(banks)
+                           else "目录里没有 Binaries/NMS.exe 或 GAMEDATA/PCBANKS"}
+    else:
+        out["game_dir"] = {"ok": False, "detail": "未设置（3D 只能用部件图）"}
+    sd = s.saves_dir_resolved()
+    if sd:
+        n = len(list(sd.glob("*.hg")))
+        out["saves_dir"] = {"ok": n > 0, "detail": f"{n} 个 .hg 文件" if n else "目录里没有 .hg 存档"}
+    else:
+        out["saves_dir"] = {"ok": False, "detail": "未找到（可自动检测或手选）"}
+    gd = s.gamedata_resolved()
+    if gd:
+        ok = os.path.exists(os.path.join(str(gd), "Gagarin", "ships", "catalog.txt"))
+        out["gamedata_dir"] = {"ok": True, "detail": "含 Gagarin 目录数据" if ok
+                               else "没有 Gagarin 数据，将改为从游戏资源推导部件树"}
+    else:
+        out["gamedata_dir"] = {"ok": True, "detail": "不设置也可以（从游戏资源推导）"}
+    return out
+
 
 @bp.get("/settings")
 def api_settings_get():
@@ -356,6 +394,7 @@ def api_settings_get():
                         "game_dir": s.game_dir, "backup_keep": s.backup_keep},
               resolved={"saves_dir": str(s.saves_dir_resolved() or ""),
                         "gamedata_dir": str(s.gamedata_resolved() or "")},
+              checks=_path_checks(),
               preview_level=preview.level(), system_available=system.available())
 
 

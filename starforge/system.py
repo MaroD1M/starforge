@@ -28,9 +28,17 @@ def _prepare_env() -> None:
     paths.ensure_shipwright_importable()
 
 
+def _has_exe(folder: str | None) -> bool:
+    if not folder:
+        return False
+    for name in ("Binaries/NMS.exe", "binaries/nms.exe", "Binaries/nms.exe"):
+        if os.path.exists(os.path.join(folder, *name.split("/"))):
+            return True
+    return False
+
+
 def available() -> bool:
-    s = settings.current()
-    return bool(s.game_dir) and os.path.exists(os.path.join(s.game_dir, "Binaries", "NMS.exe"))
+    return _has_exe(settings.current().game_dir)
 
 
 def _require() -> None:

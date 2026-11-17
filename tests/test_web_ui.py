@@ -92,3 +92,13 @@ def test_autodetect_api(client, monkeypatch, tmp_path):
     monkeypatch.setattr(paths_mod, "default_save_dirs", lambda: [fake])
     j = client.get("/api/autodetect").get_json()
     assert j["ok"] and j["found"]["saves_dir"] == str(fake)
+
+
+def test_settings_reports_path_checks(client, game_env, saves_dir):
+    from starforge.core import settings as settings_mod
+    settings_mod.update(saves_dir=str(saves_dir))
+    j = client.get("/api/settings").get_json()
+    assert "checks" in j
+    assert j["checks"]["game_dir"]["ok"] is True
+    assert j["checks"]["saves_dir"]["ok"] is True
+    assert "detail" in j["checks"]["gamedata_dir"]

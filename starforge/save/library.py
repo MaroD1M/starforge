@@ -111,9 +111,9 @@ def open_ships(path: str | Path) -> tuple[list[ShipRef], list[str]]:
             warns.append(f"槽位 {getattr(sh, 'index', '?')} 无法转换：{e}")
             continue
         if not ref.procedural:
-            warns.append(f"槽位 {ref.slot} 是固定模型，改种子不会改变外观")
-        if not ref.proc_model_matches():
-            warns.append(f"槽位 {ref.slot} 的模型与类型不匹配（{ref.model}）")
+            warns.append(f"槽位 {ref.slot} 是固定模型（{ref.type_label}），外观不由种子决定")
+        elif not ref.proc_model_matches():
+            warns.append(f"槽位 {ref.slot} 声称程序化但模型与类型不符（{ref.model}）")
         out.append(ref)
     log.info("读取存档 %s：%d 艘船", p.name, len(out))
     return out, warns

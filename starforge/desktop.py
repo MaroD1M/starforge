@@ -62,7 +62,7 @@ class _Api:
             return ""
         path = res[0] if isinstance(res, (list, tuple)) else str(res)
         # 选完顺手写进设置，省得用户再点保存
-        key = {"game": "game_dir", "saves": "saves_dir", "gamedata": "gamedata_dir"}.get(kind)
+        key = {"game": "game_dir", "saves": "saves_dir", "gamedata": "gamedata_dir"}.get(kind)  # "any" → 不写设置
         if key:
             settings.update(**{key: path})
         return path

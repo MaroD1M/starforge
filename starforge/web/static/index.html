@@ -217,6 +217,19 @@
 
 <div id="toast" class="toast hide"></div>
 
+<!-- 通用模态（写回/送进游戏等） -->
+<div id="dlg" class="modal hide">
+  <div class="modalbox" style="max-width:640px">
+    <div class="row"><b id="dlgTitle"></b><div class="spacer"></div>
+      <button class="btn small" id="dlgClose">关闭</button></div>
+    <div id="dlgBody" class="dlgbody"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button class="btn" id="dlgCancel">取消</button>
+      <button class="btn primary" id="dlgOk">确定</button>
+    </div>
+  </div>
+</div>
+
 <!-- 符文弹层 -->
 <div id="glyphModal" class="modal hide">
   <div class="modalbox">

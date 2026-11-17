@@ -20,12 +20,12 @@ log = log.get("preview")
 
 
 def level() -> str:
+    from .system import _has_exe
     s = settings.current()
     if not s.game_dir:
         return "L0"
-    exe = os.path.join(s.game_dir, "Binaries", "NMS.exe")
     banks = os.path.join(s.game_dir, "GAMEDATA", "PCBANKS")
-    return "L1" if (os.path.exists(exe) and os.path.isdir(banks)) else "L0"
+    return "L1" if (_has_exe(s.game_dir) and os.path.isdir(banks)) else "L0"
 
 
 def _cache_key(ref: ShipRef, level_: str) -> str:
@@ -56,10 +56,18 @@ def part_icons(ship: str, parts: list[str] | None) -> list[dict]:
 def build(ref: ShipRef, want_glb: bool = True) -> dict:
     """返回预览描述；L1 时顺带产出 glb 文件（缓存）。"""
     ref = ref.normalized()
+    if not ref.can_preview:
+        return {"key": "-", "level": "L0", "type": ref.type, "type_label": ref.type_label,
+                "seed": ref.seed, "parts": ref.parts, "glb": None, "verts": 0, "tris": 0,
+                "degraded": True, "can_preview": False,
+                "reason": ("这是固定模型（如护卫舰/复古拦截机），外观不由种子决定，无法生成 3D。"
+                           if not ref.procedural else "种子为 0 或类型不支持，无法生成 3D。"),
+                "part_icons": part_icons(ref.type, ref.parts)}
     lvl = level()
     key = _cache_key(ref, lvl)
     glb_path = os.path.join(_out_dir(), f"{key}.glb")
-    info = {"key": key, "level": lvl, "type": ref.type, "seed": ref.seed,
+    info = {"key": key, "level": lvl, "type": ref.type, "type_label": ref.type_label,
+            "seed": ref.seed, "can_preview": True,
             "parts": ref.parts, "glb": None, "verts": 0, "tris": 0,
             "degraded": lvl == "L0", "reason": "" if lvl == "L1" else strings.PREVIEW_L0}
 
