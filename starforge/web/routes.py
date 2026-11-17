@@ -124,3 +124,126 @@ def api_apply():
     if not body.get("confirm"):
         raise BadRequest("缺少 confirm=true（写操作必须二次确认）")
     raise NotImplementedError("写回存档将在 S4 实现")
+
+
+# ---------------------------------------------------------------- 搜索 / 任务（M1）
+
+def _query_from_request(data: dict):
+    from ..search import SearchQuery
+    return SearchQuery(ship=(data.get("ship") or "fighter"),
+                       want=list(data.get("want") or []),
+                       avoid=list(data.get("avoid") or []),
+                       look=data.get("look") or None,
+                       limit=int(data.get("limit") or 12),
+                       max_seeds=int(data.get("max_seeds") or 50_000_000),
+                       time_limit=float(data.get("time_limit") or 20),
+                       workers=int(data.get("workers") or 1))
+
+
+@bp.post("/search")
+def api_search_start():
+    from .. import jobs, search
+    body = request.get_json(silent=True) or {}
+    q = _query_from_request(body)
+    try:
+        search.validate(q)                       # 提前失败：400 而不是跑到一半才炸
+    except search.QueryError as e:
+        raise BadRequest(str(e))
+    job = jobs.REGISTRY.create("search")
+    job.progress.update(q.to_dict())
+
+    def work(j):
+        return search.run(q, job=j)
+
+    jobs.run_in_thread(job, work)
+    return ok(job_id=job.id, query=q.to_dict())
+
+
+@bp.get("/search/estimate")
+def api_search_estimate():
+    from .. import search
+    body = {k: request.args.get(k) for k in ("ship",)}
+    want = [p for p in (request.args.get("want") or "").split(",") if p]
+    avoid = [p for p in (request.args.get("avoid") or "").split(",") if p]
+    q = _query_from_request({"ship": body["ship"], "want": want, "avoid": avoid})
+    try:
+        return ok(**search.explain(q))
+    except search.QueryError as e:
+        raise BadRequest(str(e))
+
+
+@bp.get("/jobs")
+def api_jobs():
+    from .. import jobs
+    return ok(jobs=[j.to_dict(include_result=False) for j in jobs.REGISTRY.all()])
+
+
+@bp.get("/jobs/<job_id>")
+def api_job(job_id: str):
+    from .. import jobs
+    job = jobs.REGISTRY.get(job_id) or (_ for _ in ()).throw(NotFound(f"没有这个任务：{job_id}"))
+    return ok(**job.to_dict())
+
+
+@bp.delete("/jobs/<job_id>")
+def api_job_cancel(job_id: str):
+    from .. import jobs
+    job = jobs.REGISTRY.get(job_id)
+    if not job:
+        raise NotFound(f"没有这个任务：{job_id}")
+    job.cancel()
+    return ok(cancelled=True, id=job_id)
+
+
+# ---------------------------------------------------------------- 预览（M2）
+
+@bp.get("/preview/<ship>/<seed>")
+def api_preview(ship: str, seed: str):
+    from .. import preview
+    from ..data.shipref import ShipRef
+    parts = [p for p in (request.args.get("parts") or "").split(",") if p]
+    ref = ShipRef(type=ship, seed=seed, parts=parts or None)
+    try:
+        return ok(**preview.build(ref, want_glb=request.args.get("glb") != "0"))
+    except Exception as e:                            # noqa: BLE001
+        raise BadRequest(f"{type(e).__name__}: {e}")
+
+
+@bp.get("/model/<ship>/<seed>.glb")
+def api_model(ship: str, seed: str):
+    from .. import preview
+    from ..data.shipref import ShipRef
+    parts = [p for p in (request.args.get("parts") or "").split(",") if p]
+    path = preview.glb_for(ShipRef(type=ship, seed=seed, parts=parts or None))
+    return Response(open(path, "rb").read(), mimetype="model/gltf-binary",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ---------------------------------------------------------------- 符文（M4.5）
+
+@bp.get("/glyphs/<name>.png")
+def api_glyphs_png(name: str):
+    from .. import glyphs as glyph_mod
+    try:
+        if len(name) == 1:
+            data = glyph_mod.icon_png(name) or glyph_mod.panel_png(name, tile=160)
+        else:
+            data = glyph_mod.panel_png(name)
+    except ValueError as e:
+        raise BadRequest(str(e))
+    return Response(data, mimetype="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@bp.post("/glyph-panel")
+def api_glyph_panel():
+    from .. import glyphs as glyph_mod
+    body = request.get_json(silent=True) or {}
+    text = body.get("glyphs") or body.get("ua") or request.args.get("glyphs")
+    if not text:
+        raise BadRequest("需要 glyphs 或 ua")
+    try:
+        payload = glyph_mod.panel_payload(str(text))
+    except ValueError as e:
+        raise BadRequest(str(e))
+    payload.update(target=body.get("target"), pinned=bool(body.get("pinned")))
+    return ok(**payload)

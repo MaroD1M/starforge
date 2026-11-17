@@ -30,6 +30,23 @@ def gamedata():
 
 
 @pytest.fixture(scope="session")
+def nms_dir():
+    """真实游戏目录（缺它就跳过需要 pak/exe 的测试）。"""
+    cand = Path("/workspace/nms/No Man's Sky")
+    if not (cand / "Binaries" / "NMS.exe").exists():
+        pytest.skip("没有游戏目录")
+    return cand
+
+
+@pytest.fixture()
+def game_env(nms_dir, monkeypatch):
+    monkeypatch.setenv("NMS_DIR", str(nms_dir))
+    from starforge.core import settings as settings_mod
+    settings_mod.update(game_dir=str(nms_dir))
+    return nms_dir
+
+
+@pytest.fixture(scope="session")
 def saves_dir():
     from starforge.core import paths
     for cand in [Path("/workspace/nms/NMS存档"), *paths.default_save_dirs()]:
@@ -45,3 +62,7 @@ def client():
     app.testing = True
     with app.test_client() as c:
         yield c
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: 需要真实游戏数据的耗时测试")
