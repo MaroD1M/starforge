@@ -122,8 +122,8 @@ label.check{display:flex;gap:8px;align-items:center;color:var(--text);font-size:
 
 /* 结果网格 */
 .results-bar{padding-bottom:10px;border-bottom:1px solid var(--line);margin-bottom:12px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px}
-.grid.big{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.grid.big{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
 .card{
   position:relative;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
   overflow:hidden;cursor:pointer;transition:transform .14s,border-color .14s,box-shadow .14s;

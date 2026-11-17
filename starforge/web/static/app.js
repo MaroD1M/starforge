@@ -149,6 +149,14 @@
       maybeOnboard(h);
       const tab = (location.hash || '').slice(1);
       if (['search', 'mine', 'systems', 'settings'].includes(tab)) goto(tab, false);
+      // URL 参数直达某个状态：?demo=search / ?glyph=1043FEE69929 / ?demo=mine
+      const qs = new URLSearchParams(location.search);
+      if (qs.get('demo') === 'search') setTimeout(runDemo, 300);
+      if (qs.get('demo') === 'mine') setTimeout(openSave, 300);
+      if (qs.get('glyph')) setTimeout(() => {
+        goto('systems', false);
+        showGlyphs(qs.get('glyph'), qs.get('target') || '');
+      }, 600);
     } catch (e) {
       $('#searchMsg').textContent = '启动失败：' + e.message;
     }
@@ -158,6 +166,9 @@
     const need = !h.saves_ready || !h.data_ready || !h.game_dir;
     $('#onboard').classList.toggle('hide', !need);
     if (!need) return;                          // 自动检测已搞定 → 不打扰
+    // 只有"没法用"时才强制弹向导；缺一项（例如只缺存档）就用横幅提示，别挡结果
+    const blocked = !h.data_ready || (!h.game_dir && !h.saves_ready);
+    if (!blocked) return;
     if (!sessionStorage.getItem('sf.wizard.shown')) {
       sessionStorage.setItem('sf.wizard.shown', '1');
       openWizard();
