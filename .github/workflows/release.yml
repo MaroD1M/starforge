@@ -27,7 +27,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
-          pip install -e .
+          pip install .
 
       - name: 验证打包内含 tkinter（符文置顶窗口需要）
         shell: pwsh
@@ -46,6 +46,7 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --name starforge --onedir `
+            --paths . `
             --collect-all hgpaktool --collect-all numpy --collect-all flask `
             --collect-submodules starforge --hidden-import tkinter `
             packaging/entry.py
