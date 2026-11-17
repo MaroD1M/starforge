@@ -240,6 +240,10 @@ def main(argv=None) -> int:
     p.add_argument("action", choices=["probe"], nargs="?", default="probe")
     p.set_defaults(func=lambda a: cmd_live_probe(a))
 
+    p = sub.add_parser("selfcheck", help="端到端自检（写入只在存档副本上）")
+    p.add_argument("--no-write", action="store_true")
+    p.set_defaults(func=lambda a: __import__("starforge.selfcheck", fromlist=["main"]).main())
+
     p = sub.add_parser("selftest", help="自检")
     p.set_defaults(func=cmd_selftest)
 

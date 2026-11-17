@@ -44,6 +44,10 @@ starforge 把该输的 12 个符文放大置顶显示，你照着传送门点即
 
 > 左：拦截机（sentinel）· 中：战斗机（fighter）· 右：运输舰（hauler）。浏览器里是可旋转的真 3D（WebGL），这张是服务端渲染的兜底图。
 
+传送门符文直接取自游戏（`textures/ui/frontend/icons/update3/portalsymbol.*.dds`，BC7 解码）：
+
+![游戏原版符文](docs/img/glyphs.png)
+
 ## 快速开始
 
 ```bash
@@ -57,6 +61,13 @@ export STARFORGE_GAMEDATA=/path/to/NoMansSky/GAMEDATA
 
 python -m starforge selftest     # 自检：上游 / 数据 / 存档 / 游戏
 python -m starforge serve        # 打开本地网页（127.0.0.1，随机端口）
+```
+
+**一条命令自检**（写入只在存档副本上发生）：
+
+```bash
+python -m starforge selfcheck
+# ✓ 部件目录  ✓ 读存档  ✓ 搜索  ✓ 3D+glb  ✓ 缩略图  ✓ 符文  ✓ 星系  ✓ 写入(副本)  ✓ 实时通道状态
 ```
 
 常用命令：

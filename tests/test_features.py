@@ -163,3 +163,18 @@ def test_cli_survives_cp1252_console(tmp_path):
                        capture_output=True, env=env, timeout=120,
                        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]))
     assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-800:]
+
+
+def test_glyph_icons_from_game_when_available(nms_dir):
+    """有游戏 pak + texture2ddecoder 时，符文应是游戏原图（不是位图字体）。"""
+    from starforge import glyphs
+    from starforge.core import settings as settings_mod
+    settings_mod.update(game_dir=str(nms_dir))
+    rgb = glyphs.icon_rgb("1", 96)
+    try:
+        import texture2ddecoder  # noqa: F401
+    except Exception:
+        pytest.skip("没有 texture2ddecoder，走位图字体（预期降级）")
+    assert rgb is not None and rgb.shape == (96, 96, 3)
+    assert rgb.max() > 0.3                       # 有真实像素，不是全黑
+    assert glyphs.panel_payload("1043FEE69929")["source"] == "game"

@@ -93,48 +93,89 @@ def _icon_dir() -> str:
     return str(d)
 
 
+def _pak_path() -> str | None:
+    """定位 NMSARC.TexUI.pak（含 portalsymbol.<0-f>.dds）。"""
+    from .core import settings
+    cands = []
+    s = settings.current()
+    if s.game_dir:
+        cands.append(os.path.join(s.game_dir, "GAMEDATA", "PCBANKS", "NMSARC.TexUI.pak"))
+    gd = s.gamedata_resolved()
+    if gd:
+        cands += [os.path.join(os.path.dirname(str(gd)), "PCBANKS", "NMSARC.TexUI.pak"),
+                  os.path.join(str(gd), "PCBANKS", "NMSARC.TexUI.pak")]
+    env = os.environ.get("NMS_DIR")
+    if env:
+        cands.append(os.path.join(env, "GAMEDATA", "PCBANKS", "NMSARC.TexUI.pak"))
+    for c in cands:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+def _decode_dds(data: bytes) -> tuple[int, int, bytes]:
+    """DDS → (w, h, RGBA)。DX10/BC7 走 texture2ddecoder；DXT1/3/5 走自带解码器。"""
+    h = struct.unpack_from("<I", data, 12)[0]
+    w = struct.unpack_from("<I", data, 16)[0]
+    fourcc = data[84:88]
+    if fourcc == b"DX10":
+        dxgi = struct.unpack_from("<I", data, 128)[0]
+        if dxgi in (98, 99):                       # BC7 / BC7_SRGB
+            import texture2ddecoder
+            return w, h, texture2ddecoder.decode_bc7(data[148:], w, h)
+        raise NotImplementedError(f"DXGI {dxgi}")
+    from . import dds as dds_mod
+    w2, h2, rgba = dds_mod.decode_dds(data)
+    return w2, h2, rgba.tobytes()
+
+
+@lru_cache(maxsize=32)
+def icon_rgb(digit: str, size: int = 96) -> np.ndarray | None:
+    """游戏原版符文 → (size,size,3) float32；缺依赖/缺 pak 返回 None。"""
+    digit = str(digit).upper()
+    pak = _pak_path()
+    if not pak or len(digit) != 1 or digit not in HEX:
+        return None
+    try:
+        from hgpaktool import HGPAKFile
+        want = f"textures/ui/frontend/icons/update3/portalsymbol.{digit.lower()}.dds"
+        with HGPAKFile(pak) as f:
+            blob = dict(f.extract(filters=[want]))
+        data = next(iter(blob.values()))
+        w, h, rgba_bytes = _decode_dds(data)
+        rgba = np.frombuffer(rgba_bytes, np.uint8).reshape(h, w, 4).astype(np.float32) / 255.0
+        rgb = rgba[..., [2, 1, 0]] * rgba[..., 3:4] + np.array([0.04, 0.05, 0.07], np.float32) * (1 - rgba[..., 3:4])
+        # 缩放到目标尺寸：能整除就面积平均（更平滑），否则最近邻采样（保证尺寸精确）
+        k = h // size
+        if k > 1 and h % size == 0 and w % size == 0:
+            rgb = rgb.reshape(size, k, size, k, 3).mean(axis=(1, 3))
+        elif rgb.shape[0] != size or rgb.shape[1] != size:
+            yi = np.clip((np.arange(size) * (h / size)).astype(int), 0, h - 1)
+            xi = np.clip((np.arange(size) * (w / size)).astype(int), 0, w - 1)
+            rgb = rgb[yi][:, xi]
+        return np.clip(rgb, 0, 1).astype(np.float32)
+    except Exception as e:                          # noqa: BLE001
+        log.debug("符文图标解码不可用（%s: %s），退回位图字体", type(e).__name__, e)
+        return None
+
+
 def icon_png(digit: str) -> bytes | None:
-    """游戏原图（BC7 DDS 解码）。没有解码器/没有游戏文件时返回 None。"""
-    digit = digit.upper()
-    if digit not in HEX:
+    """游戏原版符文图标（BC7 DDS 解码，结果缓存）。缺依赖/缺 pak 时返回 None。"""
+    digit = str(digit).upper()
+    if len(digit) != 1 or digit not in HEX:
         return None
     out = os.path.join(_icon_dir(), f"{digit}.png")
     if os.path.exists(out):
         return open(out, "rb").read()
-    gd = None
-    try:
-        from .core import settings
-        gd = settings.current().gamedata_resolved()
-    except Exception:                       # noqa: BLE001
-        gd = None
-    if not gd:
+    rgb = icon_rgb(digit, 256)
+    if rgb is None:
         return None
-    dds = os.path.join(str(gd), "Gagarin", "..", "..", "GAMEDATA", "PCBANKS")  # 仅当 gamedata 在游戏目录内
-    pak = os.path.normpath(os.path.join(str(gd), "..", "..", "GAMEDATA", "PCBANKS", "NMSARC.TexUI.pak"))
-    if not os.path.exists(pak):
-        return None
-    try:
-        from hgpaktool import HGPAKFile
-        with HGPAKFile(pak) as f:
-            blob = dict(f.extract(filters=[f"textures/ui/frontend/icons/update3/portalsymbol.{digit.lower()}.dds"]))
-        data = next(iter(blob.values()))
-        import texture2ddecoder  # 可选依赖：BC7 解码
-        dxgi = struct.unpack_from("<I", data, 128)[0]
-        if dxgi not in (98, 99):
-            raise NotImplementedError(f"DXGI {dxgi}")
-        w = struct.unpack_from("<I", data, 16)[0]
-        h = struct.unpack_from("<I", data, 12)[0]
-        raw = texture2ddecoder.decode_bc7(data[148:], w, h)
-        rgba = np.frombuffer(raw, np.uint8).reshape(h, w, 4)
-        rgb = (rgba[..., :3].astype(np.float32) / 255.0
-               * (rgba[..., 3:4].astype(np.float32) / 255.0)
-               + np.array([0.05, 0.06, 0.08], np.float32) * (1 - rgba[..., 3:4].astype(np.float32) / 255.0))
-        png = png_bytes((np.clip(rgb, 0, 1) * 255).astype(np.uint8))
-        open(out, "wb").write(png)
-        return png
-    except Exception as e:                  # noqa: BLE001 - 缺依赖/缺文件都退位图字体
-        log.debug("图标解码不可用（%s），退回位图字体", type(e).__name__)
-        return None
+    png = png_bytes((np.clip(rgb, 0, 1) * 255).astype(np.uint8))
+    tmp = out + ".part"
+    with open(tmp, "wb") as f:
+        f.write(png)
+    os.replace(tmp, out)
+    return png
 
 
 @lru_cache(maxsize=256)
@@ -143,17 +184,8 @@ def panel_png(glyphs: str, tile: int = TILE, gap: int = GAP) -> bytes:
     digits = digits_for(glyphs)
     tiles = []
     for ch in digits:
-        png = icon_png(ch)
-        if png:                                        # 原图：解码到 numpy 再缩放不便，这里重绘占位
-            try:
-                from PIL import Image  # 可选：有 Pillow 就直接用原图
-                import io
-                im = Image.open(io.BytesIO(png)).convert("RGB").resize((tile, tile))
-                tiles.append(np.asarray(im, np.float32) / 255.0)
-                continue
-            except Exception:                          # noqa: BLE001
-                pass
-        tiles.append(_draw_char(ch, scale=max(4, tile // 9)))
+        rgb = icon_rgb(ch, tile)
+        tiles.append(rgb if rgb is not None else _draw_char(ch, scale=max(4, tile // 9)))
     h = max(t.shape[0] for t in tiles)
     w = sum(t.shape[1] for t in tiles) + gap * (len(tiles) - 1)
     canvas = np.zeros((h, w, 3), np.float32) + np.array([0.03, 0.035, 0.05], np.float32)

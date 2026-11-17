@@ -12,6 +12,10 @@ import numpy  # noqa: F401
 import flask  # noqa: F401
 import lz4.block  # noqa: F401
 import hgpaktool  # noqa: F401
+try:                         # 可选：解码游戏内 BC7 符文图标
+    import texture2ddecoder  # noqa: F401
+except Exception:            # noqa: BLE001
+    pass
 
 # 本项目里"延迟导入"的模块（网页、渲染、系统生成、实时通道、置顶窗口）
 import starforge.web.app  # noqa: F401

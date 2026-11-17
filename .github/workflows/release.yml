@@ -48,6 +48,7 @@ jobs:
           pyinstaller --noconfirm --clean --name starforge --onedir `
             --paths . `
             --collect-all hgpaktool --collect-all numpy --collect-all flask `
+            --collect-all texture2ddecoder `
             --collect-submodules starforge --hidden-import tkinter `
             packaging/entry.py
 
@@ -63,7 +64,7 @@ jobs:
           & $exe selftest | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "打包产物 selftest 失败（exit $LASTEXITCODE）" }
           # 关键依赖必须在包内
-          foreach ($p in @("numpy", "flask", "_tkinter", "lz4", "hgpaktool")) {
+          foreach ($p in @("numpy", "flask", "_tkinter", "lz4", "hgpaktool", "texture2ddecoder")) {
             $hit = Get-ChildItem -Recurse -Path "dist/starforge/_internal" -Filter "*$p*" -ErrorAction SilentlyContinue
             if (-not $hit) { throw "打包缺少依赖：$p" }
           }
