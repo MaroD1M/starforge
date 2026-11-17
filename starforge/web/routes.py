@@ -472,6 +472,14 @@ def api_settings_set():
                         "gamedata_dir": s.gamedata_dir, "game_dir": s.game_dir})
 
 
+@bp.get("/textures/status")
+def api_textures_status():
+    """贴图可用性（材质描述符能否解析、能否解出一张图）。"""
+    from .. import tex
+    ship = request.args.get("ship") or "sentinel"
+    return ok(ship=ship, **tex.status(ship))
+
+
 @bp.get("/warm")
 def api_warm():
     """预热状态；?start=1 时后台启动。"""

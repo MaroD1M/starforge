@@ -1,5 +1,20 @@
 # 更新记录
 
+## v0.12.0-beta（重构 v2）
+中文化 + 更接近真实建模的渲染 + 部件级预览 + 贴图管线 + 零配置自愈。
+详见 [docs/PLAN-V2.md](docs/PLAN-V2.md)。
+
+- **中文化**：插槽组与部件词根中英映射（编号保留、重名加序号），群系/哨兵/种族/船池类别
+  全部中文；原名保留在 tooltip
+- **渲染**：点云 → 三角光栅化（z-buffer + 背面剔除 + 漫反射）；网格 340px、详情 520px；
+  搜索结果后台预取，缓存命中 0ms
+- **部件级 3D 预览**：`/api/part-thumb`，与固定件求差集单独取部件几何；
+  失败三级兜底（3D → 游戏图标 → 占位图）
+- **贴图管线**：`tex` 模块取 DDS/解码/UV 采样；`/api/texture`；`/api/textures/status`
+  诊断（报告材质描述符是否可用）
+- **零配置**：路径自愈（GAMEDATA/Binaries/Steam 根）、注册表与 libraryfolders 检测
+- 界面：卡片网格、属性条、收藏夹、URL 直达（`?demo=search` / `?glyph=`）、应用内对话框
+
 ## v0.11.1-beta
 - **修复 3D 黑屏**（v0.11.0 的核心功能回归）：改用 WebGL2 上下文；WebGL1 下强制启用
   `OES_element_index_uint`（否则 `drawElements(UNSIGNED_INT)` 静默失败）；

@@ -93,3 +93,46 @@ def sample(img: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
     x = np.clip((u % 1.0) * w, 0, w - 1).astype(np.int32)
     y = np.clip((v % 1.0) * h, 0, h - 1).astype(np.int32)
     return img[y, x, :3].astype(np.float32) / 255.0
+
+
+def status(ship: str = "sentinel") -> dict:
+    """贴图可用性自检：能不能读到材质描述符、能不能解出一张图。
+
+    返回 {ok, reason, materials, textures, sampled}，供诊断页/selfcheck 显示。
+    """
+    out = {"ok": False, "reason": "", "materials": 0, "textures": 0,
+           "sampled": "", "bytes": 0}
+    try:
+        st = _shiptex()
+    except Exception as e:                                 # noqa: BLE001
+        out["reason"] = f"上游模块不可用：{type(e).__name__}: {e}"
+        return out
+    try:
+        mdir = str(st._materials_dir())
+        import glob
+        files = glob.glob(mdir.rstrip("\\/") + "/**/*.MBIN", recursive=True)
+        out["materials"] = len(files)
+    except Exception as e:                                 # noqa: BLE001
+        out["reason"] = f"取材质目录失败：{type(e).__name__}: {e}"
+        return out
+    if not out["materials"]:
+        out["reason"] = ("材质描述符为空（游戏 pak 里没解出 *.MATERIAL.MBIN）："
+                         "贴图会退回种子配色，功能不受影响")
+        return out
+    try:
+        paths.ensure_shipwright_importable()
+        from nms_procgen import model3d
+        model = model3d.ship_model("0x884609884CD21A5C", ship, None, True, False)
+        texs = sorted({k[1] for k in model["groups"] if isinstance(k, tuple) and k[1]})
+        out["textures"] = len(texs)
+        if not texs:
+            out["reason"] = "材质解析成功，但这艘船没有可用贴图"
+            return out
+        img = rgba(texs[0])
+        out["sampled"] = texs[0]
+        out["bytes"] = int(img.shape[0] * img.shape[1] * 4)
+        out["ok"] = True
+        out["reason"] = f"{len(texs)} 张贴图可用（示例 {texs[0].split('/')[-1]}）"
+    except Exception as e:                                 # noqa: BLE001
+        out["reason"] = f"贴图解码失败：{type(e).__name__}: {e}"
+    return out

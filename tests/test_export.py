@@ -106,3 +106,26 @@ def test_dds_pipeline_parses_and_decodes(tmp_path):
     img = np.frombuffer(decode_bc1(raw[info["offset"]:], 16, 16), np.uint8).reshape(16, 16, 4)
     corner = img[2, 2, [2, 1, 0]]                # BGRA → RGB
     assert abs(int(corner[0]) - 220) < 16 and abs(int(corner[1]) - 40) < 16
+
+
+def test_texture_status_endpoint(client):
+    j = client.get("/api/textures/status").get_json()
+    assert j["ok"] is False or j["ok"] is True
+    assert "reason" in j and "materials" in j
+    if not j["ok"]:
+        assert j["reason"]                     # 必须说明为什么不可用
+
+
+def test_texture_status_reports_missing_materials(monkeypatch):
+    """没有材质描述符时要明确说原因，而不是静默返回空。"""
+    from starforge import tex
+    st = tex.status()
+    assert isinstance(st["materials"], int)
+    if st["materials"] == 0:
+        assert "材质" in st["reason"] or "不可用" in st["reason"] or "失败" in st["reason"]
+
+
+def test_selfcheck_has_texture_step():
+    import inspect
+    from starforge import selfcheck
+    assert "_textures" in inspect.getsource(selfcheck)

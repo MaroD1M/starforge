@@ -32,6 +32,12 @@ def _step(name: str, fn, critical: bool = True) -> dict:
                 "detail": f"{type(e).__name__}: {e}", "critical": critical}
 
 
+def _textures() -> str:
+    from . import tex
+    st = tex.status()
+    return st["reason"]
+
+
 def run(include_write: bool = True) -> dict:
     from . import glyphs, preview, render, search, system
     from .data import load_catalog, load_icons
