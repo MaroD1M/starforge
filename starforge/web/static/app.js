@@ -257,6 +257,8 @@
     try { cat = await api('/api/catalog/' + S.ship); }
     catch (e) { $('#partTree').innerHTML = `<div class="msg">${esc(e.message)}</div>`; return; }
     const q = ($('#partFilter').value || '').toLowerCase();
+    S.groupsOf = {};
+    (cat.groups || []).forEach(g => g.options.forEach(o => { S.groupsOf[o.part] = g.group; }));
     S.labels = {};
     (cat.groups || []).forEach(g => {
       const seen = {};
@@ -280,8 +282,20 @@
     }).join('') || '<div class="tiny">没有匹配的部件</div>';
     $$('#partTree .opt').forEach(el => el.onclick = () => {
       const p = el.dataset.part;
-      if (S.mode === 'want') { S.want.has(p) ? S.want.delete(p) : (S.want.add(p), S.avoid.delete(p)); }
-      else { S.avoid.has(p) ? S.avoid.delete(p) : (S.avoid.add(p), S.want.delete(p)); }
+      if (S.mode === 'want') {
+        if (S.want.has(p)) { S.want.delete(p); }
+        else {
+          // 同一个插槽组只能出一个部件：自动替换，避免搜不到东西
+          const g = S.groupsOf?.[p];
+          const clash = [...S.want].filter(q => g && S.groupsOf?.[q] === g);
+          clash.forEach(q => S.want.delete(q));
+          S.want.add(p); S.avoid.delete(p);
+          if (clash.length) toast(`同组互斥：已用「${S.labels?.[p] || p}」替换「${S.labels?.[clash[0]] || clash[0]}」`);
+        }
+      } else {
+        if (S.avoid.has(p)) { S.avoid.delete(p); }
+        else { S.avoid.add(p); S.want.delete(p); }
+      }
       renderParts(); renderSelected(); scheduleEstimate();
     });
     renderSelected();
@@ -488,12 +502,59 @@
       toast(`已导出 ${n} 艘（含 glb 与 png）`);
     } catch (e) { toast('导出失败：' + e.message); }
   }
+  function exportFavList() {
+    if (!S.favs.length) { toast('收藏夹是空的'); return; }
+    const payload = { format: 'starforge-favs', version: 1, items: S.favs };
+    const blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'starforge-收藏.json'; a.click();
+    URL.revokeObjectURL(a.href);
+    toast(`已导出 ${S.favs.length} 个收藏`);
+  }
+
+  function importFavList() {
+    dialog({
+      title: '导入收藏清单', okText: '导入',
+      body: `<p>粘贴别人分享的收藏清单（.json 内容），或每行一个 <code>nsh1:…</code> 分享码。</p>
+             <div class="field" style="margin-top:10px">
+               <textarea id="favInput" class="input" rows="6" placeholder='{"format":"starforge-favs","items":[…]}"'></textarea>
+             </div>`,
+      onOk: async () => {
+        const raw = ($('#favInput')?.value || '').trim();
+        if (!raw) return false;
+        let items = [];
+        try {
+          const j = JSON.parse(raw);
+          items = Array.isArray(j) ? j : (j.items || []);
+        } catch (e) {
+          items = raw.split(/\s+/).filter(Boolean).map(code => {
+            const payload = code.startsWith('nsh1:') ? code.slice(5) : code;
+            const [type, seed, partsStr] = atob(payload).split(';');
+            return { type, seed, parts: (partsStr || '').split('|').filter(Boolean) };
+          }).filter(x => x.type && x.seed);
+        }
+        const before = S.favs.length;
+        items.forEach(it => {
+          if (!it?.type || !it?.seed) return;
+          if (!S.favs.some(f => favKey(f) === favKey(it))) S.favs.push(it);
+        });
+        saveFavs(); renderGrid();
+        toast(`导入完成：新增 ${S.favs.length - before} 个`);
+        return true;
+      },
+    });
+  }
+
   $('#favToggle').onclick = () => {
     S.favMode = !S.favMode;
     $('#favToggle').classList.toggle('on', S.favMode);
+    $('#favExport').classList.toggle('hide', !S.favMode);
+    $('#favImport').classList.toggle('hide', !S.favMode);
     renderGrid();
   };
   $('#exportResults').onclick = () => exportShips(currentGridItems(), S.favMode ? 'starforge-favs' : 'starforge-search');
+  $('#favExport').onclick = exportFavList;
+  $('#favImport').onclick = importFavList;
   $('#exportMine').onclick = () => exportShips(S.mine, 'starforge-myships');
 
   window.addEventListener('sf-viewer-empty', e => {

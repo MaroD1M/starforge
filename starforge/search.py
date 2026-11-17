@@ -45,9 +45,23 @@ def validate(q: SearchQuery) -> SearchQuery:
         raise QueryError(f"不支持搜索的船型：{q.ship!r}（可选：{', '.join(SEARCHABLE)}）")
     from . import parts as parts_mod
     try:
-        allowed = {p.upper() for p in parts_mod.parts_of(q.ship)}
+        tree = parts_mod.tree(q.ship)
     except Exception as e:                                 # noqa: BLE001
         raise QueryError(f"取不到 {q.ship} 的部件表：{e}（需要游戏目录或 Gagarin 的 GAMEDATA）")
+    allowed = {o["part"].upper() for g in tree for o in g["options"]}
+    # 同一个插槽组只能出一个部件，否则组合永远不成立：直接给出可读错误
+    group_of = {o["part"].upper(): g["group"] for g in tree for o in g["options"]}
+    label_of = {o["part"].upper(): (o.get("label") or o["part"]) for g in tree for o in g["options"]}
+    by_group = {}
+    for p in q.want:
+        gid = group_of.get(p.upper())
+        if gid:
+            by_group.setdefault(gid, []).append(p)
+    clash = {g: ps for g, ps in by_group.items() if len(ps) > 1}
+    if clash:
+        gid, ps = next(iter(clash.items()))
+        names = " / ".join(label_of.get(p.upper(), p) for p in ps)
+        raise QueryError(f"同一个插槽组只能选一个：{names}（{gid}）——请去掉一个再搜")
     if not allowed:
         raise QueryError(f"部件目录里没有船型 {q.ship!r} 的数据")
     for key in ("want", "avoid"):
