@@ -174,6 +174,29 @@ def cmd_glyph_overlay(a) -> int:
     return 0
 
 
+def cmd_webcheck(a) -> int:
+    """打包后验证网页可用（不占端口、不起子进程）：首页 + 静态资源 + 关键接口。"""
+    from .web.app import create_app
+    app = create_app()
+    c = app.test_client()
+    checks = []
+    for path in ("/", "/static/app.js", "/static/app.css", "/static/viewer.js",
+                 "/api/health", "/api/catalog", "/api/settings", "/api/capabilities"):
+        r = c.get(path)
+        ok = r.status_code == 200 and len(r.data) > 50
+        checks.append((path, r.status_code, len(r.data), ok))
+    html = c.get("/").data.decode("utf-8", "replace")
+    checks.append(("首页含 page-search", 200, len(html), "page-search" in html))
+    bad = [c_ for c_ in checks if not c_[3]]
+    for path, code, size, ok in checks:
+        print(f"{'✓' if ok else '✗'} {path:22s} {code} {size:>8d}B")
+    if bad:
+        print(f"网页自检失败：{len(bad)} 项", file=sys.stderr)
+        return 1
+    print("网页自检通过")
+    return 0
+
+
 def cmd_selftest(a) -> int:
     from .data import load_catalog, load_icons
     gd = settings.current().gamedata_resolved()
@@ -281,6 +304,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("live", help="实时通道（只读诊断）")
     p.add_argument("action", choices=["probe"], nargs="?", default="probe")
     p.set_defaults(func=lambda a: cmd_live_probe(a))
+
+    p = sub.add_parser("webcheck", help="验证网页与静态资源（打包后必跑）")
+    p.set_defaults(func=cmd_webcheck)
 
     p = sub.add_parser("selfcheck", help="端到端自检（写入只在存档副本上）")
     p.add_argument("--no-write", action="store_true")

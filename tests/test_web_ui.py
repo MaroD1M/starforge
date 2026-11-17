@@ -113,3 +113,17 @@ def test_ships_include_class_and_stats(client, game_env, saves_dir):
     with_stats = [r for r in rows if r.get("stats")]
     assert with_stats and "damage" in with_stats[0]["stats"]
     assert all("type_label" in r and "can_preview" in r for r in rows)
+
+
+def test_webcheck_command_passes(monkeypatch, tmp_path):
+    """打包后用它验证网页：进程内跑，不依赖端口。"""
+    import io
+    import sys
+    from starforge.__main__ import cmd_webcheck
+    monkeypatch.setenv("STARFORGE_NO_WARM", "1")
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    rc = cmd_webcheck(None)
+    out = buf.getvalue()
+    assert rc == 0
+    assert "网页自检通过" in out and "page-search" in out

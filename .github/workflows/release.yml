@@ -97,9 +97,12 @@ jobs:
           & $exe selftest | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "打包产物 selftest 失败（exit $LASTEXITCODE）" }
           # 关键依赖必须在包内
-          foreach ($p in @("numpy", "flask", "_tkinter", "lz4", "hgpaktool", "texture2ddecoder", "webview", "mapping.json")) {
-            $hit = Get-ChildItem -Recurse -Path "dist/starforge/_internal" -Filter "*$p*" -ErrorAction SilentlyContinue
-            if (-not $hit) { throw "打包缺少依赖：$p" }
+          foreach ($bundle in @("dist/starforge/_internal", "dist/starforge-cli/_internal")) {
+            foreach ($p in @("numpy", "flask", "werkzeug", "_tkinter", "lz4", "hgpaktool",
+                             "texture2ddecoder", "webview", "mapping.json")) {
+              $hit = Get-ChildItem -Recurse -Path $bundle -Filter "*$p*" -ErrorAction SilentlyContinue
+              if (-not $hit) { throw "打包缺少依赖：$p（$bundle）" }
+            }
           }
           # 纯 Python 的上游包会进 PYZ（磁盘上没有目录），所以用"跑一次 selftest"来验证
           $out = & $exe selftest 2>&1 | Out-String
@@ -108,25 +111,39 @@ jobs:
           if ($out -notmatch "内置\(打包版\)") { throw "内置上游未被识别为打包版：$out" }
           Write-Host "依赖检查通过（含内置上游）"
 
-      - name: 网页冒烟（起服务 → 请求首页与静态资源 → 关掉）
+      - name: 网页冒烟（进程内自检，不依赖端口）
         shell: pwsh
         env:
           STARFORGE_HOME: ${{ runner.temp }}/sfhome-web
         run: |
           $exe = "dist/starforge-cli/starforge-cli.exe"
-          $p = Start-Process -FilePath $exe -ArgumentList "serve","--port","8899","--no-browser" -PassThru
+          & $exe webcheck
+          if ($LASTEXITCODE -ne 0) { throw "网页自检失败（exit $LASTEXITCODE）" }
+
+      - name: 起服务冒烟（失败时打印子进程日志）
+        shell: pwsh
+        env:
+          STARFORGE_HOME: ${{ runner.temp }}/sfhome-serve
+        run: |
+          $exe = "dist/starforge-cli/starforge-cli.exe"
+          $out = Join-Path $env:RUNNER_TEMP "serve.out.log"
+          $err = Join-Path $env:RUNNER_TEMP "serve.err.log"
+          $p = Start-Process -FilePath $exe -ArgumentList "serve","--port","8899","--no-browser" `
+                -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
           try {
             $ok = $false
-            for ($i = 0; $i -lt 30; $i++) {
+            for ($i = 0; $i -lt 40; $i++) {
               Start-Sleep -Milliseconds 500
-              try { $r = Invoke-WebRequest -Uri "http://127.0.0.1:8899/" -UseBasicParsing -TimeoutSec 3; $ok = $true; break } catch {}
+              try { $r = Invoke-WebRequest -Uri "http://127.0.0.1:8899/api/health" -UseBasicParsing -TimeoutSec 3; $ok = $true; break } catch {}
             }
-            if (-not $ok) { throw "网页没起来（端口 8899）" }
-            if ($r.StatusCode -ne 200) { throw "首页状态码 $($r.StatusCode)" }
-            if ($r.Content -notmatch "page-search") { throw "首页内容不对（可能没打到静态资源）" }
-            $a = Invoke-WebRequest -Uri "http://127.0.0.1:8899/static/app.js" -UseBasicParsing -TimeoutSec 5
-            if ($a.StatusCode -ne 200 -or $a.RawContentLength -lt 1000) { throw "静态资源 app.js 异常" }
-            Write-Host "网页冒烟通过（首页 + app.js）"
+            if (-not $ok) {
+              Write-Host "----- serve stdout -----"; if (Test-Path $out) { Get-Content $out | Out-Host }
+              Write-Host "----- serve stderr -----"; if (Test-Path $err) { Get-Content $err | Out-Host }
+              throw "服务没起来（端口 8899）"
+            }
+            $r2 = Invoke-WebRequest -Uri "http://127.0.0.1:8899/" -UseBasicParsing -TimeoutSec 5
+            if ($r2.Content -notmatch "page-search") { throw "首页内容不对" }
+            Write-Host "起服务冒烟通过"
           } finally {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           }
