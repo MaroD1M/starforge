@@ -118,8 +118,11 @@ def bootstrap_runtime(out=None) -> dict:
         pth = next(iter(d.glob("python*._pth")), None)
         if pth:
             text = pth.read_text("utf-8")
-            if "import site" not in text:
+            lines = text.splitlines()
+            if not any(line.strip() == "import site" for line in lines):
                 text += "\nLib\\site-packages\nimport site\n"
+            elif not any(line.strip().lower() == "lib\\site-packages" for line in lines):
+                text += "\nLib\\site-packages\n"
             pth.write_text(text, "utf-8")
         say("下载 get-pip.py")
         get_pip = d / "get-pip.py"
