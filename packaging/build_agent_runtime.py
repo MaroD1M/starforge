@@ -16,7 +16,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-VERSION = "3.12.8"
+VERSION = "3.11.9"
 NMSpy_VERSION = os.environ.get("STARFORGE_NMSPY_VERSION", "185034.0")
 DEST = Path("build/agent-runtime")
 
@@ -43,12 +43,12 @@ def main() -> int:
         text += "\nLib\\site-packages\nimport site\n"
     pth.write_text(text, "utf-8")
     py = DEST / "python.exe"
-    get_pip = DEST / "get-pip.py"
-    print("下载 get-pip")
-    with urllib.request.urlopen("https://bootstrap.pypa.io/get-pip.py", timeout=180) as r:
-        get_pip.write_bytes(r.read())
-    subprocess.run([str(py), str(get_pip)], check=True)
-    subprocess.run([str(py), "-m", "pip", "install",
+    site_packages = DEST / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True, exist_ok=True)
+    # 不在 embeddable Python 里 bootstrap pip（它的 _pth 容易把 pip 装丢）；
+    # 直接用构建机的 Python 把依赖装进 runtime 的 site-packages。
+    print("安装 NMSpy + pymhf 到 runtime")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--target", str(site_packages),
                     f"NMSpy=={NMSpy_VERSION}", "pymhf[http_api]>=0.2.5"], check=True)
     subprocess.run([str(py), "-c", "import nmspy,pymhf,fastapi,uvicorn;print('runtime ok')"], check=True)
     print("agent runtime ->", DEST.resolve())
