@@ -8,7 +8,7 @@ import sys
 import traceback
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication, QSurfaceFormat
+from PySide6.QtGui import QGuiApplication, QIcon, QSurfaceFormat
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from ..core import log, paths
@@ -17,6 +17,21 @@ from .theme import apply as apply_theme
 
 log = log.get("app")
 _CRASH_FILE = None
+
+
+def _icon_path():
+    from pathlib import Path
+    import sys
+    cands = []
+    if getattr(sys, "_MEIPASS", ""):
+        cands.append(Path(sys._MEIPASS) / "assets" / "starforge.png")
+    cands.append(Path(__file__).resolve().parents[2] / "assets" / "starforge.png")
+    exe = Path(sys.executable).resolve().parent
+    cands += [exe / "assets" / "starforge.png", exe / "_internal" / "assets" / "starforge.png"]
+    for c in cands:
+        if c.exists():
+            return c
+    return None
 
 
 def _enable_crash_log() -> None:
@@ -60,7 +75,10 @@ def run(argv: list[str] | None = None) -> int:
     app = QApplication(list(sys.argv if argv is None else argv))
     app.setApplicationName("starforge")
     app.setOrganizationName("starforge")
-    app.setApplicationDisplayName("无人深空 · 飞船猎人")
+    app.setApplicationDisplayName("Starforge · 无人深空情报台")
+    icon = _icon_path()
+    if icon:
+        app.setWindowIcon(QIcon(str(icon)))
     apply_theme(app)
     sys.excepthook = _excepthook
     try:

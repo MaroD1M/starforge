@@ -254,12 +254,7 @@ def _font() -> QFont:
 
 
 def apply(app: QApplication) -> None:
-    from ..core import settings as settings_mod
-
+    """统一使用无人深空氛围；不再提供单独的界面切换项。"""
     app.setStyle("Fusion")
     app.setFont(_font())
-    try:
-        on = bool(settings_mod.current().atmosphere)
-    except Exception:                                        # noqa: BLE001
-        on = bool(settings_mod.DEFAULTS.get("atmosphere", False))
-    set_atmosphere(on)
+    set_atmosphere(True)

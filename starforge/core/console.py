@@ -60,6 +60,12 @@ def hide_console_window() -> bool:
         if not hwnd:
             return False
         ctypes.windll.user32.ShowWindow(hwnd, 0)      # SW_HIDE
+        # 打包版双击启动时彻底释放控制台，避免窗口残留；命令行版不走这里。
+        if getattr(sys, "frozen", False):
+            try:
+                ctypes.windll.kernel32.FreeConsole()
+            except Exception:                          # noqa: BLE001
+                pass
         return True
     except Exception:                                  # noqa: BLE001
         return False

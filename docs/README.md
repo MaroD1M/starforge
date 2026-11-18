@@ -9,6 +9,7 @@
 | [INGAME-SCAN-FEASIBILITY.md](INGAME-SCAN-FEASIBILITY.md) | **游戏内扫描可行性**：矿物/动植物/POI/传送门的字段、函数与实机边界 |
 | [UI-TERMS.md](UI-TERMS.md) | **界面术语表**：中文/英文/使用场景，避免中英混用 |
 | [SAVE-API-INVENTORY.md](SAVE-API-INVENTORY.md) | **存档 API 盘点**：读写能力、风险分级、写事务缺口与接入顺序 |
+| [CREATURE-MODELING.md](CREATURE-MODELING.md) | **同伴/生物建模研究**：数据链、社区项目、3D 预览路线与边界 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **架构研究与重构方案**：分层、AppContext、任务模型、Strangler 迁移、测试与打包 |
 | [UI-REDESIGN.md](UI-REDESIGN.md) | **界面重构设计**：Command Deck 布局、设计令牌、组件库、六个页面与迁移计划 |
 | [CLEANUP-AUDIT.md](CLEANUP-AUDIT.md) | **过时资源清理审计**：旧 Web/desktop/文档/依赖盘点与安全删除顺序 |

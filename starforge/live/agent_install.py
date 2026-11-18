@@ -26,6 +26,8 @@ from .agent_client import AgentClient, AgentError
 
 log = log.get("agent")
 
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+
 
 def mod_source() -> Path:
     """源码 / PyInstaller onedir / _MEIPASS 三种布局都能找到 agent 文件。"""
@@ -142,7 +144,7 @@ def bootstrap_runtime(out=None) -> dict:
             get_pip.write_bytes(r.read())
         say("安装 pip")
         r = subprocess.run([str(py), str(get_pip)], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=300)
+                           encoding="utf-8", errors="replace", timeout=300, creationflags=_NO_WINDOW)
         logs.append((r.stdout or "") + (r.stderr or ""))
         if r.returncode != 0:
             return {"ok": False, "error": "pip 安装失败", "output": "\n".join(logs)}
@@ -194,7 +196,8 @@ def _runtime_info() -> dict:
         env["PYTEST_VERSION"] = "1"       # 同 launch：避免 pymhf import 时弹 questionary
         env["PYTHONUTF8"] = "1"
         r = subprocess.run([str(py), "-c", code], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=30, env=env)
+                           encoding="utf-8", errors="replace", timeout=30, env=env,
+                           creationflags=_NO_WINDOW)
         import json
         data = json.loads((r.stdout or "{}").strip().splitlines()[-1] or "{}")
         data["python"] = str(py)
@@ -311,7 +314,7 @@ def install_deps(version: str | None = None, timeout: int = 600) -> dict:
     log.info("安装游戏内组件：%s", " ".join(cmd))
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              encoding="utf-8", errors="replace")
+                              encoding="utf-8", errors="replace", creationflags=_NO_WINDOW)
     except subprocess.TimeoutExpired as e:
         return {"ok": False, "cmd": cmd, "error": f"安装超时（{timeout}s）", "output": str(e)}
     return {"ok": proc.returncode == 0, "cmd": cmd, "code": proc.returncode,
@@ -376,7 +379,7 @@ def launch(attach: bool = True) -> dict:
         [str(py), "-c", code, str(installed_mod()), __import__("json").dumps(overrides)],
         cwd=str(agent_dir()), stdout=log_file, stderr=subprocess.STDOUT,
         env=env, close_fds=True,
-        creationflags=0x00000008 if os.name == "nt" else 0,   # DETACHED_PROCESS
+        creationflags=(_NO_WINDOW | 0x00000008) if os.name == "nt" else 0,   # NO_WINDOW | DETACHED
     )
     return {"ok": True, "pid": _LAUNCH.pid, "log": str(log_path),
             "build_id": build.build_id(fp), "attach": attach}

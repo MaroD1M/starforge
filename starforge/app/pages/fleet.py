@@ -190,6 +190,12 @@ class FleetPage(QWidget):
         self.viewer = ShipViewer()
         self.viewer.setMinimumHeight(300)
         rv.addWidget(self.viewer, 1)
+        self.pets_note = QLabel("同伴 3D 预览需要生物生成器；当前只展示描述符与种子。")
+        self.pets_note.setWordWrap(True)
+        self.pets_note.setAlignment(Qt.AlignCenter)
+        self.pets_note.setMinimumHeight(300)
+        self.pets_note.hide()
+        rv.addWidget(self.pets_note, 1)
         self.detail = muted("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
         rv.addWidget(self.detail)
         row2 = QHBoxLayout()
@@ -298,9 +304,20 @@ class FleetPage(QWidget):
         return self._exporting or self._editing or self._restoring or self._loading
 
     def _tab_changed(self, index: int) -> None:
-        if self.tabs.widget(index) is self.pets and self._loaded_path:
-            self.pets.set_save_path(self._loaded_path)
-            self.pets.ensure_loaded()
+        is_pets = self.tabs.widget(index) is self.pets
+        if is_pets:
+            self.title.setText("同伴")
+            self.viewer.hide()
+            self.pets_note.show()
+            self.detail.setText("同伴目前只读：描述符、种子、群系；3D 需要生物生成器。")
+            if self._loaded_path:
+                self.pets.set_save_path(self._loaded_path)
+                self.pets.ensure_loaded()
+        else:
+            self.title.setText("飞船详情" if hasattr(self, "title") else "飞船详情")
+            self.pets_note.hide()
+            self.viewer.show()
+            self.detail.setText("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
 
     def _status(self, text: str) -> None:
         window = self.window()

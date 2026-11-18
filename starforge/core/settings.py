@@ -23,7 +23,6 @@ DEFAULTS = {
     "backup_keep": 0,                # 0 = 永不删备份（与 Shipwright 一致）
     "port": 0,                       # 0 = 随机空闲端口
     "theme": "dark",
-    "atmosphere": False,             # 可选无人深空氛围；默认中性深色，需显式开启
     "allow_unverified_agent": False, # 显式允许未验证 build 的实验性 agent 写命令
 }
 
@@ -57,7 +56,6 @@ class Settings:
     backup_keep: int = 0
     port: int = 0
     theme: str = "dark"
-    atmosphere: bool = False
     allow_unverified_agent: bool = False
 
     @classmethod
@@ -70,8 +68,6 @@ class Settings:
             except (OSError, ValueError, TypeError):
                 pass
         known = {k: v for k, v in data.items() if k in DEFAULTS}
-        if "atmosphere" in known:
-            known["atmosphere"] = _as_bool(known["atmosphere"], DEFAULTS["atmosphere"])
         return cls(**known)
 
     def save(self) -> None:

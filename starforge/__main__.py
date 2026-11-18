@@ -20,6 +20,9 @@ from pathlib import Path
 
 from .core import console, lock, log, paths, settings, strings
 
+if __name__ == "__main__" and len(sys.argv) <= 1:
+    console.hide_console_window()
+
 log = log.get("cli")
 
 

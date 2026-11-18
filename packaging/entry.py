@@ -7,6 +7,17 @@
 """
 from __future__ import annotations
 
+import sys as _sys
+
+# 双击启动时尽早隐藏控制台；带子命令（CLI）则保留。
+try:
+    from starforge.core import console as _console
+
+    if len(_sys.argv) <= 1:
+        _console.hide_console_window()
+except Exception:                                            # noqa: BLE001
+    pass
+
 # 关键第三方依赖（显式导入，防止被漏）。
 # 这里用 try 包住：若用户机器上的 numpy DLL 被拦/损坏，至少让主程序进入
 # 诊断/降级界面，而不是在 PyInstaller 引导阶段直接崩掉。

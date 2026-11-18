@@ -96,14 +96,6 @@ class SettingsPage(QWidget):
         safety.add(muted("写入流程：备份 → 原子写入 → 读回校验 → 失败回滚。"))
         root.addWidget(safety)
 
-        look = Card("界面氛围", "无人深空风格 / 中性")
-        self.atmosphere = QCheckBox("无人深空风格（深空渐变 · 琥珀/青点缀）")
-        self.atmosphere.setToolTip("取消勾选即回到中性深色主题")
-        self.atmosphere.toggled.connect(self._atmosphere_changed)
-        look.add(self.atmosphere)
-        look.add(muted("可选，不影响数据可读性。"))
-        root.addWidget(look)
-
         diag = Card("诊断", "可复制/导出的诊断数据（JSON 格式）")
         row2 = QHBoxLayout()
         doctor = QPushButton("运行体检")
@@ -155,8 +147,6 @@ class SettingsPage(QWidget):
                 self.game.setText(s.get("game_dir") or r.get("game_dir") or "")
                 self.saves.setText(s.get("saves_dir") or r.get("saves_dir") or "")
                 self.write.setChecked(bool(s.get("write_enabled")))
-                self.atmosphere.setChecked(bool(s.get("atmosphere",
-                                                      settings_core.current().atmosphere)))
             finally:
                 self._syncing = False
             self._update_path_empty()
@@ -186,35 +176,15 @@ class SettingsPage(QWidget):
 
     def _save(self) -> None:
         try:
-            atmosphere = self.atmosphere.isChecked()
             self.svc.update_settings(game_dir=self.game.text().strip(),
                                      saves_dir=self.saves.text().strip(),
-                                     write_enabled=self.write.isChecked(),
-                                     atmosphere=atmosphere)
-            theme.set_atmosphere(atmosphere)
+                                     write_enabled=self.write.isChecked())
             self._update_path_empty()
             self.error_banner.clear()
             self._log("设置已保存")
             notify.success("设置已保存。")
         except Exception as e:                              # noqa: BLE001
             text = f"保存失败：{type(e).__name__}: {e}"
-            self._log(text)
-            self.error_banner.show_error(text)
-            notify.error(text)
-
-    def _atmosphere_changed(self, on: bool) -> None:
-        if getattr(self, "_syncing", False):
-            return
-        try:
-            self.svc.update_settings(atmosphere=bool(on))
-            theme.set_atmosphere(bool(on))
-            self._log("界面氛围已切换为无人深空风格。" if on
-                      else "界面氛围已切换为中性深色主题。")
-            self.error_banner.clear()
-            notify.success("已切换为无人深空风格。" if on
-                           else "已切换为中性深色主题。")
-        except Exception as e:                              # noqa: BLE001
-            text = f"切换氛围失败：{type(e).__name__}: {e}"
             self._log(text)
             self.error_banner.show_error(text)
             notify.error(text)

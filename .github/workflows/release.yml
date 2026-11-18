@@ -84,16 +84,17 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --name starforge --onedir `
-            --paths . --paths build/vendor `
+            --paths . --paths build/vendor --icon assets/starforge.ico `
             --collect-submodules nms_save --collect-submodules nms_procgen `
             --add-data "build/vendor/data;data" `
             --add-data "build/vendor/THIRD_PARTY_SHIPWRIGHT_LICENSE.txt;." `
             --collect-all hgpaktool --collect-all numpy --collect-all flask `
             --collect-all texture2ddecoder `
-            --collect-all unicorn --collect-all pefile `
+            --collect-all unicorn --collect-all pefile --hidden-import pkg_resources `
             --collect-submodules starforge `
             --add-data "starforge/agent;starforge/agent" `
             --add-data "starforge/live/builds;starforge/live/builds" `
+            --add-data "assets;assets" `
             --exclude-module numpy.f2py --exclude-module numpy.distutils `
             --exclude-module pymhf --exclude-module nmspy `
             --exclude-module starforge.agent.starforge_agent `

@@ -1,5 +1,29 @@
 # 更新记录
 
+## v0.14.6
+
+### 启动与视觉
+- 子进程统一 `CREATE_NO_WINDOW`，减少启动时控制台/多窗口闪烁；冻结版更早隐藏并释放控制台。
+- 新增 `assets/starforge.ico` / `.png`，设置应用图标；标题改为「Starforge · 无人深空情报台」。
+- 移除独立的“界面氛围”开关，默认统一使用无人深空风格（深空渐变、扫描线、琥珀/青、原版符文）。
+
+### 飞船实验室/设计器
+- 搜索固定 `workers=1`，修复 Windows 冻结包下 `fast_search` 多进程卡在 0 种子的问题。
+- 部件图标 26px → 40px，行高提升；新增部件大图/组信息详情；无效结构件不再反复报错。
+- 设计器增加部件预览与大图详情，搜索固定 `workers=1`。
+
+### 船队/同伴
+- 同伴标签不再错误显示飞船 3D；明确“3D 需要生物生成器”，只展示描述符/种子/群系。
+- 新增 `docs/CREATURE-MODELING.md`：NMSCD Creature-Builder、NMSE、Creature Builder+ 的建模路线与边界。
+
+### 星图 / 游戏内代理
+- 固定 `unicorn==2.0.1.post1`（补 `setuptools<81` / `pkg_resources`），解决 Windows `0xC0000409` 子进程崩溃。
+- agent 所有游戏内存读写改为排队到游戏主线程执行，避免 HTTP 线程并发访问导致游戏闪退。
+- 继续保留 build/多人闸门、未验证写实验开关、`planet.scan`、实验 `teleport.portal`。
+
+### 质量
+- 全量测试 333 项通过；发布自检 0 error / 0 warning。
+
 ## v0.14.5
 
 ### 原生界面与交互

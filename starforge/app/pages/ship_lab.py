@@ -122,11 +122,26 @@ class ShipLabPage(QWidget):
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["部件", "组"])
-        self.tree.setColumnWidth(0, 180)
-        self.tree.setIconSize(QSize(26, 26))
+        self.tree.setColumnWidth(0, 200)
+        self.tree.setIconSize(QSize(40, 40))
+        self.tree.setStyleSheet("QTreeWidget::item { height: 38px; }")
         self.tree.itemChanged.connect(self._update_chips)
         self.tree.itemClicked.connect(self._lazy_part_icon)
         v.addWidget(self.tree, 1)
+
+        panel = QFrame()
+        panel.setObjectName("card")
+        ph = QHBoxLayout(panel)
+        ph.setContentsMargins(8, 8, 8, 8)
+        self.part_thumb = QLabel()
+        self.part_thumb.setFixedSize(72, 72)
+        self.part_thumb.setAlignment(Qt.AlignCenter)
+        ph.addWidget(self.part_thumb)
+        self.part_text = QLabel("点击部件查看预览与详情")
+        self.part_text.setObjectName("muted")
+        self.part_text.setWordWrap(True)
+        ph.addWidget(self.part_text, 1)
+        v.addWidget(panel)
 
         self.chips = QPushButton("未选择条件")
         self.chips.setFlat(True)
@@ -365,41 +380,55 @@ class ShipLabPage(QWidget):
 
     def _lazy_part_icon(self, item: QTreeWidgetItem, _column: int) -> None:
         part = item.data(0, Qt.UserRole)
-        if part:
-            self._load_part_3d_icon(item, self.ship.currentData(), part)
+        if not part:
+            return
+        gid = item.data(0, Qt.UserRole + 1) or item.text(1)
+        self.part_text.setText(f"{part}  ·  组 {gid}\n读取预览…")
+        ship = self.ship.currentData()
+
+        def done(data: bytes | None) -> None:
+            if data:
+                pix = QPixmap()
+                pix.loadFromData(data, "PNG")
+                if not pix.isNull():
+                    self.part_thumb.setPixmap(pix)
+                    self.part_text.setText(f"{part}  ·  组 {gid}")
+                    return
+            self.part_text.setText(f"{part}  ·  组 {gid}\n该部件没有可渲染的几何（结构件/空槽）")
+
+        run_worker(self.svc.part_icon, done, lambda m: self.part_text.setText(f"{part} 预览失败：{m}"),
+                   ship, part, 96)
+        self._load_part_3d_icon(item, ship, part)
 
     def _next_part_icon(self) -> None:
         if not self._part_icon_queue:
             return
-        item, ship, part, allow_3d = self._part_icon_queue.pop(0)
+        item, ship, part, _allow_3d = self._part_icon_queue.pop(0)
 
         def done(data: bytes | None) -> None:
             try:
                 if data:
-                    item.setIcon(0, icon_from_png(data, 26))
-                elif allow_3d:
-                    self._load_part_3d_icon(item, ship, part)
+                    item.setIcon(0, icon_from_png(data, 40))
             except Exception:                              # noqa: BLE001
                 pass
             if self._part_icon_queue:
                 self._part_icon_timer.start(20)
 
         def fail(_msg: str) -> None:
-            if allow_3d:
-                self._load_part_3d_icon(item, ship, part)
             if self._part_icon_queue:
                 self._part_icon_timer.start(20)
 
-        run_worker(self.svc.part_icon, done, fail, ship, part, 32)
+        run_worker(self.svc.part_icon, done, fail, ship, part, 48)
 
     def _load_part_3d_icon(self, item: QTreeWidgetItem, ship: str, part: str) -> None:
-        def done(data: bytes) -> None:
+        def done(data: bytes | None) -> None:
             try:
-                item.setIcon(0, icon_from_png(data, 26))
+                if data:
+                    item.setIcon(0, icon_from_png(data, 40))
             except Exception:                              # noqa: BLE001
                 pass
 
-        run_worker(self.svc.part_thumb, done, lambda _m: None, ship, part, 48)
+        run_worker(self.svc.part_icon, done, lambda _m: None, ship, part, 48)
 
     def _filter_parts(self, text: str) -> None:
         needle = text.strip().upper()
@@ -564,8 +593,7 @@ class ShipLabPage(QWidget):
             look = {"primary": [c.redF(), c.greenF(), c.blueF()], "tol": 0.18}
         payload = {"ship": self.ship.currentData(), "want": want, "avoid": avoid,
                    "look": look, "limit": 24, "max_seeds": int(self.budget.currentData()),
-                   "time_limit": 180.0,
-                   "workers": min(4, max(1, (os.cpu_count() or 4) // 2))}
+                   "time_limit": 180.0, "workers": 1}
         self.search_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self._thumb_timer.stop()

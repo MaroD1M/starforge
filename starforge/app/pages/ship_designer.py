@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from ...services import get_services
 from ..widgets.ship_viewer import ShipViewer
-from ..widgets.ui import Card, muted, placeholder_icon
+from ..widgets.ui import Card, icon_from_png, muted, placeholder_icon
 from ..widgets.worker import run as run_worker
 
 SHIPS = [("sentinel", "拦截机"), ("fighter", "战斗机"), ("hauler", "运输舰"),
@@ -131,6 +131,11 @@ class ShipDesignerPage(QWidget):
         self._render_token = 0
         self._updating_tree = False
         self._search_job = None
+        self._icon_queue: list[tuple[QTreeWidgetItem, str, str]] = []
+        self._icon_timer = QTimer(self)
+        self._icon_timer.setSingleShot(True)
+        self._icon_timer.setInterval(20)
+        self._icon_timer.timeout.connect(self._next_icon)
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(220)
@@ -176,9 +181,18 @@ class ShipDesignerPage(QWidget):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["部件", "组"])
         self.tree.setColumnWidth(0, 210)
-        self.tree.setIconSize(QSize(24, 24))
+        self.tree.setIconSize(QSize(40, 40))
+        self.tree.setStyleSheet("QTreeWidget::item { height: 38px; }")
         self.tree.itemChanged.connect(self._on_tree_changed)
+        self.tree.itemClicked.connect(self._show_part_detail)
         v.addWidget(self.tree, 1)
+
+        self.part_detail = QLabel("点击部件查看预览与详情")
+        self.part_detail.setObjectName("muted")
+        self.part_detail.setMinimumHeight(54)
+        self.part_detail.setWordWrap(True)
+        self.part_detail.setStyleSheet("background:#08111d;border:1px solid #24384a;border-radius:8px;padding:8px;")
+        v.addWidget(self.part_detail)
 
         self.parts_count = muted("尚未加载部件表")
         v.addWidget(self.parts_count)
@@ -304,6 +318,8 @@ class ShipDesignerPage(QWidget):
 
     def _populate_tree(self) -> None:
         self._updating_tree = True
+        self._icon_queue.clear()
+        total = 0
         try:
             self.tree.clear()
             for group in self._groups:
@@ -321,11 +337,55 @@ class ShipDesignerPage(QWidget):
                     child.setCheckState(0, Qt.Unchecked)
                     child.setIcon(0, placeholder_icon(part))
                     child.setToolTip(0, f"{part}\n组：{gid}")
+                    if total < 24:
+                        self._icon_queue.append((child, self.ship.currentData(), part))
+                    total += 1
                     top.addChild(child)
                 self.tree.addTopLevelItem(top)
                 top.setExpanded(True)
         finally:
             self._updating_tree = False
+        if self._icon_queue:
+            self._icon_timer.start(30)
+
+    def _next_icon(self) -> None:
+        if not self._icon_queue:
+            return
+        item, ship, part = self._icon_queue.pop(0)
+
+        def done(data: bytes | None) -> None:
+            if data:
+                try:
+                    item.setIcon(0, icon_from_png(data, 40))
+                except Exception:                          # noqa: BLE001
+                    pass
+            if self._icon_queue:
+                self._icon_timer.start(20)
+
+        run_worker(self.svc.part_icon, done, lambda _m: None, ship, part, 48)
+        if self._icon_queue:
+            self._icon_timer.start(20)
+
+    def _show_part_detail(self, item: QTreeWidgetItem, _column: int) -> None:
+        part = item.data(0, Qt.UserRole)
+        if not part:
+            return
+        gid = item.data(0, Qt.UserRole + 1) or item.text(1)
+        self.part_detail.setText(f"{part}  ·  组 {gid}\n读取预览…")
+
+        def done(data: bytes | None) -> None:
+            if data:
+                pix = QPixmap()
+                pix.loadFromData(data, "PNG")
+                if not pix.isNull():
+                    self.part_detail.setPixmap(pix)
+                    self.part_detail.setToolTip(f"{part} / {gid}")
+                    return
+            self.part_detail.setText(f"{part}  ·  组 {gid}\n该部件没有可渲染的几何（结构件/空槽）")
+
+        run_worker(self.svc.part_icon, done,
+                   lambda m: self.part_detail.setText(f"{part} 预览失败：{m}"),
+                   self.ship.currentData(), part, 96)
 
     @staticmethod
     def _source_label(source: str | None) -> str:
@@ -482,8 +542,7 @@ class ShipDesignerPage(QWidget):
         self.search_status.setText("搜索中…")
         self.search_btn.setEnabled(False)
         payload = {"ship": ship, "want": parts, "avoid": [], "limit": 12,
-                   "max_seeds": 20_000_000, "time_limit": 20.0,
-                   "workers": min(4, max(1, (os.cpu_count() or 4) // 2))}
+                   "max_seeds": 20_000_000, "time_limit": 20.0, "workers": 1}
         try:
             self._search_job = self.svc.start_search(payload)
         except Exception as e:                              # noqa: BLE001

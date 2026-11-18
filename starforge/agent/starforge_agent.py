@@ -37,6 +37,9 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import queue
+import threading
+from functools import wraps
 from typing import Any
 
 import nmspy.data.basic_types as basic
@@ -47,6 +50,14 @@ from pymhf import Mod
 from pymhf.core.http_api import endpoint
 
 log = logging.getLogger("starforge.agent")
+
+
+def _game_thread(fn):
+    """HTTP 线程不能直接读写游戏对象；统一排队到游戏主线程执行。"""
+    @wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        return self._run_on_game_thread(lambda: fn(self, *args, **kwargs))
+    return wrapper
 
 
 def _s(value: Any) -> str:
@@ -286,6 +297,36 @@ class StarforgeAgent(Mod):
         self._last_error = ""
         self._portal_buffer = None
         self.instant_scan = False
+        self._game_queue: queue.Queue = queue.Queue()
+        self._game_thread_id: int | None = None
+
+    def _run_on_game_thread(self, fn, timeout: float = 6.0):
+        if self._game_thread_id == threading.get_ident():
+            return fn()
+        ev = threading.Event()
+        box: dict = {}
+        self._game_queue.put((fn, box, ev))
+        if not ev.wait(timeout):
+            return {"ok": False, "code": "E_GAME_BUSY",
+                    "error": "游戏主线程繁忙/未进入场景；请稍后重试"}
+        if "error" in box:
+            return {"ok": False, "error": box["error"]}
+        return box.get("result")
+
+    @nms.cGcApplication.Update.after
+    def _drain_game_queue(self, this):
+        self._game_thread_id = threading.get_ident()
+        while True:
+            try:
+                fn, box, ev = self._game_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                box["result"] = fn()
+            except Exception as e:                          # noqa: BLE001
+                box["error"] = f"{type(e).__name__}: {e}"
+            finally:
+                ev.set()
 
     @nms.cGcBinoculars.UpdateScanBarProgress.before
     def _force_scan_progress(self, this, lfScanProgress):
@@ -296,6 +337,7 @@ class StarforgeAgent(Mod):
     # ------------------------------------------------------------ 基础
 
     @endpoint("/hello")
+    @_game_thread
     def hello(self) -> dict:
         try:
             import nmspy
@@ -324,6 +366,7 @@ class StarforgeAgent(Mod):
                 }}
 
     @endpoint("/player")
+    @_game_thread
     def player(self) -> dict:
         loc = _location()
         if loc is None:
@@ -354,6 +397,7 @@ class StarforgeAgent(Mod):
         return out
 
     @endpoint("/ships")
+    @_game_thread
     def ships(self) -> dict:
         try:
             ps = gameData.player_state
@@ -377,6 +421,7 @@ class StarforgeAgent(Mod):
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     @endpoint("/system")
+    @_game_thread
     def system(self) -> dict:
         loc = _location()
         if loc is None:
@@ -400,6 +445,7 @@ class StarforgeAgent(Mod):
         return out
 
     @endpoint("/planet")
+    @_game_thread
     def planet(self) -> dict:
         loc = _location()
         if loc is None:
@@ -415,6 +461,7 @@ class StarforgeAgent(Mod):
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     @endpoint("/planet/scan")
+    @_game_thread
     def planet_scan(self) -> dict:
         """只读：当前行星完整档案（PlanetInfo + 物质/生物/额外资源提示）。"""
         loc = _location()
@@ -452,6 +499,7 @@ class StarforgeAgent(Mod):
         app.StateChange(ctypes.addressof(state), 0, False)
 
     @endpoint("/teleport", method="PUT")
+    @_game_thread
     def teleport(self, glyphs: str = "", galaxy: int = -1) -> dict:
         blocked = _multiplayer_block()
         if blocked:
@@ -476,6 +524,7 @@ class StarforgeAgent(Mod):
             return {"ok": False, "error": self._last_error}
 
     @endpoint("/teleport/portal", method="PUT")
+    @_game_thread
     def teleport_portal(self, glyphs: str = "", galaxy: int = -1) -> dict:
         """实验：尝试用 cGcPortalComponent 走游戏 portal warp。
 
@@ -507,6 +556,7 @@ class StarforgeAgent(Mod):
             return {"ok": False, "code": "E_PORTAL", "error": self._last_error}
 
     @endpoint("/restore", method="PUT")
+    @_game_thread
     def restore(self) -> dict:
         blocked = _multiplayer_block()
         if blocked:
