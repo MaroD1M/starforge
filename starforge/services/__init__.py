@@ -35,6 +35,42 @@ def _labels(tree: list[dict]) -> list[dict]:
 class Services:
     """一个无状态的服务门面；实例可以安全地在多个线程里调用。"""
 
+    # ------------------------------------------------------------ 进程隔离
+
+    @staticmethod
+    def _internal(kind: str, payload: dict, timeout: float = 120.0) -> dict:
+        """把 unicorn/systemgen 这类高风险原生调用放到独立进程。
+
+        原因：Unicorn 在 Qt 线程里出现过原生 access violation；隔离后即使子进程崩，
+        主界面也只显示错误，不会整个应用退出。
+        """
+        import json
+        import os
+        import subprocess
+        import sys
+
+        body = json.dumps(payload, ensure_ascii=False)
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "_internal", kind, "--payload", body]
+        else:
+            cmd = [sys.executable, "-m", "starforge", "_internal", kind, "--payload", body]
+        flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, creationflags=flags)
+        out = (r.stdout or "").strip()
+        data = None
+        for line in reversed(out.splitlines()):
+            try:
+                data = json.loads(line)
+                break
+            except ValueError:
+                continue
+        if data is None:
+            raise RuntimeError(f"内部任务没有返回 JSON（code={r.returncode}）：{(r.stderr or out)[-500:]}")
+        if r.returncode != 0 or not data.get("ok", True):
+            raise RuntimeError(data.get("error") or f"内部任务失败（code={r.returncode}）")
+        return data
+
     # ------------------------------------------------------------ 健康/能力
 
     def health(self) -> dict:
@@ -323,18 +359,13 @@ class Services:
 
     def system(self, ua: int | None = None, glyphs: str | None = None,
                save_path: str | None = None, planets: bool = True) -> dict:
-        from .. import system
         from .. import zh as zh_mod
         from ..data.shipref import TYPE_LABELS
 
-        ua_val = None
-        if glyphs:
-            from nms_procgen.locate import parse_address
-
-            ua_val = parse_address(glyphs)
-        elif ua is not None:
-            ua_val = int(ua)
-        info = system.system(ua_val, planets=planets, save_path=save_path)
+        data = self._internal("system", {"ua": ua, "glyphs": glyphs,
+                                         "save_path": save_path, "planets": planets},
+                              timeout=120.0)
+        info = data.get("result") or {}
         info["race_zh"] = zh_mod.race_label(info.get("race"))
         for pl in info.get("planet_list") or []:
             pl["biome_zh"] = zh_mod.biome_label(pl.get("biome_name"))
@@ -346,21 +377,22 @@ class Services:
 
     def locate(self, seed: str, save_path: str | None = None,
                max_steps: int = 3000, limit: int = 6) -> dict:
-        from .. import system
-
-        return _ok(**system.locate_seed(seed, save_path=save_path,
-                                        max_steps=max_steps, limit=limit))
+        data = self._internal("locate", {"seed": seed, "save_path": save_path,
+                                         "max_steps": max_steps, "limit": limit},
+                              timeout=180.0)
+        return _ok(**(data.get("result") or {}))
 
     def start_system_scan(self, center_ua: int | None = None, radius: int = 0,
                           systems_per_region: int = 200, filters: dict | None = None,
                           limit: int = 40, save_path: str | None = None):
-        from .. import system
         from ..jobs import REGISTRY, run_in_thread
 
+        payload = {"center_ua": center_ua, "radius": radius,
+                   "systems_per_region": systems_per_region, "filters": filters or {},
+                   "limit": limit, "save_path": save_path}
         job = REGISTRY.create("system-scan")
-        run_in_thread(job, lambda j: system.scan(
-            center_ua=center_ua, radius=radius, systems_per_region=systems_per_region,
-            filters=filters, limit=limit, job=j, save_path=save_path))
+        run_in_thread(job, lambda _j: self._internal("system-scan", payload, timeout=900.0)
+                      .get("result") or [])
         return job
 
     def galaxy_stats(self) -> dict:
@@ -407,13 +439,14 @@ class Services:
     def start_galaxy_scan(self, center_ua: int | None = None, radius: int = 0,
                           systems_per_region: int = 60, filters: dict | None = None,
                           limit: int = 40, save_path: str | None = None):
-        from .. import galaxy
         from ..jobs import REGISTRY, run_in_thread
 
+        payload = {"center_ua": center_ua, "radius": radius,
+                   "systems_per_region": systems_per_region, "filters": filters or {},
+                   "limit": limit, "save_path": save_path}
         job = REGISTRY.create("galaxy-scan")
-        run_in_thread(job, lambda j: galaxy.scan(
-            center_ua=center_ua, radius=radius, systems_per_region=systems_per_region,
-            filters=filters, limit=limit, job=j, save_path=save_path))
+        run_in_thread(job, lambda _j: self._internal("galaxy-scan", payload, timeout=1800.0)
+                      .get("result") or {})
         return job
 
     # ------------------------------------------------------------ 符文

@@ -215,6 +215,59 @@ def cmd_agent(a) -> int:
     return 0 if a.action != "hello" else (0 if attached else 5)
 
 
+def cmd_internal(a) -> int:
+    """隐藏的内部子进程入口：把 unicorn/systemgen 隔离出去。"""
+    import json as _json
+
+    try:
+        payload = _json.loads(a.payload or "{}")
+    except ValueError as e:
+        print(_json.dumps({"ok": False, "error": f"payload 不是 JSON：{e}"}))
+        return 2
+    try:
+        if a.kind == "system":
+            from . import system as system_mod
+
+            ua = payload.get("ua")
+            glyphs = payload.get("glyphs")
+            if glyphs:
+                from nms_procgen.locate import parse_address
+
+                ua = parse_address(glyphs)
+            result = system_mod.system(ua, planets=bool(payload.get("planets", True)),
+                                       save_path=payload.get("save_path"))
+        elif a.kind == "locate":
+            from . import system as system_mod
+
+            result = system_mod.locate_seed(payload.get("seed"), save_path=payload.get("save_path"),
+                                            max_steps=int(payload.get("max_steps") or 3000),
+                                            limit=int(payload.get("limit") or 6))
+        elif a.kind == "system-scan":
+            from . import system as system_mod
+
+            result = system_mod.scan(
+                center_ua=payload.get("center_ua"), radius=int(payload.get("radius") or 0),
+                systems_per_region=int(payload.get("systems_per_region") or 200),
+                filters=payload.get("filters") or {}, limit=int(payload.get("limit") or 40),
+                save_path=payload.get("save_path"))
+        elif a.kind == "galaxy-scan":
+            from . import galaxy
+
+            result = galaxy.scan(
+                center_ua=payload.get("center_ua"), radius=int(payload.get("radius") or 0),
+                systems_per_region=int(payload.get("systems_per_region") or 60),
+                filters=payload.get("filters") or {}, limit=int(payload.get("limit") or 40),
+                save_path=payload.get("save_path"))
+        else:
+            print(_json.dumps({"ok": False, "error": f"未知内部任务：{a.kind}"}))
+            return 2
+        print(_json.dumps({"ok": True, "result": result}, ensure_ascii=False))
+        return 0
+    except Exception as e:                                  # noqa: BLE001
+        print(_json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
+        return 1
+
+
 def cmd_doctor(a) -> int:
     """环境体检：把"运行时会不会缺东西"一次说清（打包产物排障的第一条命令）。
 
@@ -452,6 +505,11 @@ def main(argv=None) -> int:
     p = sub.add_parser("live", help="实时通道（只读诊断）")
     p.add_argument("action", choices=["probe"], nargs="?", default="probe")
     p.set_defaults(func=lambda a: cmd_live_probe(a))
+
+    p = sub.add_parser("_internal", help=argparse.SUPPRESS)
+    p.add_argument("kind", choices=["system", "locate", "system-scan", "galaxy-scan"])
+    p.add_argument("--payload", default="{}")
+    p.set_defaults(func=cmd_internal)
 
     p = sub.add_parser("doctor", help="环境体检（依赖/unicorn/窗口/上游）")
     p.set_defaults(func=cmd_doctor)

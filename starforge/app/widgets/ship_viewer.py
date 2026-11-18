@@ -146,7 +146,9 @@ class ShipViewer(QOpenGLWidget):
 
     def set_mesh(self, groups: dict, colours: dict | None = None) -> None:
         if np is None:
-            raise RuntimeError(f"NumPy 不可用，无法渲染 3D：{_NUMPY_ERROR}")
+            self._failed = True
+            self._error = f"NumPy 不可用：{_NUMPY_ERROR}"
+            return
         self._groups = groups or {}
         self._colours = colours or {}
         self._compute_bounds()
@@ -198,6 +200,14 @@ class ShipViewer(QOpenGLWidget):
     # ---------------------------------------------------------------- GL
 
     def initializeGL(self) -> None:
+        try:
+            self._initialize_gl()
+        except Exception as e:                              # noqa: BLE001
+            self._failed = True
+            self._error = f"{type(e).__name__}: {e}"
+            log.exception("3D 初始化失败：%s", self._error)
+
+    def _initialize_gl(self) -> None:
         f = QOpenGLFunctions()
         f.initializeOpenGLFunctions()
         self._gl = f
@@ -266,6 +276,19 @@ class ShipViewer(QOpenGLWidget):
             self._gl.glViewport(0, 0, max(1, w), max(1, h))
 
     def paintGL(self) -> None:
+        if self._failed:
+            return
+        try:
+            self._paint_gl()
+        except Exception as e:                              # noqa: BLE001
+            # 不让异常逃出 paintGL，否则 Qt 会再次进入 excepthook/QMessageBox，
+            # 最终可能变成 access violation。
+            self._failed = True
+            self._error = f"{type(e).__name__}: {e}"
+            log.exception("3D 绘制失败：%s", self._error)
+            self._prims.clear()
+
+    def _paint_gl(self) -> None:
         f = self._gl
         if f is None or not self.isValid():
             return
@@ -304,7 +327,7 @@ class ShipViewer(QOpenGLWidget):
             self._program.enableAttributeArray(1)
             self._program.setAttributeBuffer(1, GL_FLOAT, 0, 3, 0)
             prim.ibo.bind()
-            f.glDrawElements(GL_TRIANGLES, prim.count, GL_UNSIGNED_INT, None)
+            f.glDrawElements(GL_TRIANGLES, prim.count, GL_UNSIGNED_INT, 0)
         self._vao.release()
         self._program.release()
 

@@ -1,5 +1,16 @@
 # 更新记录
 
+## v0.14.4-beta（3D 绘制/Unicorn 隔离/运行时识别修复）
+
+- 修复 `glDrawElements(..., None)` 的 PySide6 参数错误：索引偏移改为 `0`。
+- `paintGL` / `initializeGL` 全部异常兜底：3D 失败只关闭视口，不再进入
+  `_excepthook` → 递归重绘 → access violation。
+- **Unicorn/systemgen 隔离到独立子进程**：当前星系/扫描/种子反查不再在 Qt 线程里跑
+  unicorn，子进程崩溃也不会带走主界面。
+- 修复运行时识别：`_runtime_info` 设置 `PYTEST_VERSION=1`，避免 pymhf 在无控制台时
+  因 questionary 初始化失败而误报 NMSpy/pymhf 缺失。
+- 包含新的 Command Deck UI（概览/飞船实验室/我的船队/星图/游戏内）。
+
 ## v0.14.3-beta（修复 NumPy 加载失败 + 完全自包含）
 
 - **NumPy 固定为 2.2.6**，避免最新 2.4.6 在部分 Windows/CPU/杀软环境下的 DLL 加载问题。

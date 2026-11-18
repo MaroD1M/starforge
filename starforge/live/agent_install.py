@@ -190,8 +190,11 @@ def _runtime_info() -> dict:
         " print(json.dumps({'error':type(e).__name__+': '+str(e)}))\n"
     )
     try:
+        env = dict(os.environ)
+        env["PYTEST_VERSION"] = "1"       # 同 launch：避免 pymhf import 时弹 questionary
+        env["PYTHONUTF8"] = "1"
         r = subprocess.run([str(py), "-c", code], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=30)
+                           encoding="utf-8", errors="replace", timeout=30, env=env)
         import json
         data = json.loads((r.stdout or "{}").strip().splitlines()[-1] or "{}")
         data["python"] = str(py)
