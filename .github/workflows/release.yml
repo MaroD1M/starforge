@@ -187,6 +187,7 @@ jobs:
           if (Test-Path "build/agent-runtime") {
             Copy-Item -Recurse -Force "build/agent-runtime" "dist/starforge/agent-runtime"
           }
+          Set-Content -Path "dist/starforge/starforge-safe.bat" -Encoding ascii -Value '@echo off','"%~dp0starforge.exe" app --safe','pause'
           Compress-Archive -Path dist/starforge/* -DestinationPath "dist/starforge-${{ github.ref_name }}-win64.zip"
 
       - name: 发布

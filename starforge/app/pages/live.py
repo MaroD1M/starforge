@@ -31,7 +31,13 @@ class LivePage(QWidget):
         super().__init__(parent)
         self.svc = get_services()
         self._busy = False
+        self._loaded = False
         self._build_ui()
+
+    def ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
         self.refresh()
 
     # ---------------------------------------------------------------- UI

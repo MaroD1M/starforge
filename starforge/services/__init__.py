@@ -225,6 +225,11 @@ class Services:
         ships, warns = library.open_ships(p)
         return _ok(path=str(p), ships=[s.to_dict() for s in ships], warnings=warns)
 
+    def default_save(self) -> dict:
+        from ..save import library
+
+        return _ok(path=str(library.default_save_path()))
+
     def apply_seed(self, path: str, slot: int, source: dict, confirm: bool = False,
                    copy: bool = False) -> dict:
         from ..data.shipref import coerce

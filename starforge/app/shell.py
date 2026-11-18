@@ -1,7 +1,7 @@
 """原生主窗口：左侧导航 + 页面栈 + 状态芯片。"""
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings, QTimer
+from PySide6.QtCore import QSettings, QThreadPool, QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -139,6 +139,9 @@ class MainWindow(QMainWindow):
         if page is None:
             return
         self.stack.setCurrentWidget(page)
+        ensure = getattr(page, "ensure_loaded", None)
+        if callable(ensure):
+            ensure()
         for k, btn in self._buttons.items():
             btn.setChecked(k == key)
         if remember:

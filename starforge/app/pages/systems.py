@@ -34,7 +34,13 @@ class SystemsPage(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._poll_scan)
+        self._loaded = False
         self._build_ui()
+
+    def ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
         self._load_current()
 
     def _build_ui(self) -> None:

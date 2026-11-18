@@ -36,7 +36,13 @@ class SearchPage(QWidget):
         self._timer.setInterval(200)
         self._timer.timeout.connect(self._poll_job)
         self._part_items: dict[str, str] = {}
+        self._loaded = False
         self._build_ui()
+
+    def ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
         self._load_parts()
 
     # ---------------------------------------------------------------- UI

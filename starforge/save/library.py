@@ -183,5 +183,7 @@ def resolve(path: str | None = None) -> Path:
         p = Path(path).expanduser()
         if not p.exists():
             raise BadRequest(f"存档路径不存在：{p}")
+        if p.is_dir():
+            raise BadRequest(f"这是目录，不是存档文件：{p}（请选择 save.hg 或 save2.hg）")
         return p
     return default_save_path()

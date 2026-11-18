@@ -1,7 +1,9 @@
 """原生入口：``python -m starforge.app`` / ``starforge app``。"""
 from __future__ import annotations
 
+import faulthandler
 import multiprocessing
+import os
 import sys
 import traceback
 
@@ -9,11 +11,25 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QSurfaceFormat
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from ..core import log
+from ..core import log, paths
 from .shell import MainWindow
 from .theme import apply as apply_theme
 
 log = log.get("app")
+_CRASH_FILE = None
+
+
+def _enable_crash_log() -> None:
+    """把原生崩溃（访问冲突/fail-fast）的栈写进 ~/.starforge/logs/。"""
+    global _CRASH_FILE
+    try:
+        d = paths.app_home() / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        _CRASH_FILE = open(d / "faulthandler.log", "a", buffering=1, encoding="utf-8")
+        faulthandler.enable(file=_CRASH_FILE, all_threads=True)
+        log.info("faulthandler 已启用：%s", d / "faulthandler.log")
+    except Exception as e:                                    # noqa: BLE001
+        log.warning("faulthandler 启用失败：%s", e)
 
 
 def _excepthook(exc_type, exc, tb) -> None:
@@ -27,6 +43,11 @@ def _excepthook(exc_type, exc, tb) -> None:
 
 def run(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()                         # PyInstaller + 进程池必需
+    _enable_crash_log()
+    if os.environ.get("STARFORGE_SAFE") == "1":
+        # 安全模式：软件 OpenGL，绕过部分显卡/远程桌面驱动崩溃
+        QApplication.setAttribute(Qt.AA_UseSoftwareOpenGL, True)
+        log.info("安全模式：已请求软件 OpenGL")
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     fmt = QSurfaceFormat()

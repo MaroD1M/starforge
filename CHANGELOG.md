@@ -1,5 +1,14 @@
 # 更新记录
 
+## v0.14.1-beta（修复启动/存档路径 + 崩溃诊断）
+
+- 修复「我的船」把**存档目录**当成 `save.hg` 解析导致的 `SaveFormatError: 无法识别的文件类型`；
+  现在自动选择 `save.hg`/`save2.hg`，目录会明确拒绝。
+- 页面改为**首次打开才加载**，避免启动时多个后台任务同时读档/生成星系。
+- 关闭窗口时等待后台任务收尾，降低退出时的原生崩溃概率。
+- 新增 `faulthandler`：原生崩溃栈写入 `~/.starforge/logs/faulthandler.log`。
+- 新增安全模式：`starforge-safe.bat`（软件 OpenGL），用于排查显卡驱动/远程桌面导致的 `0xC0000409`。
+
 ## v0.14.0-beta（原生界面 + 应用内游戏 agent）
 
 - **原生桌面界面**：PySide6 Widgets + 原生 OpenGL 3D 视口；`starforge app` 默认原生，`--webview` 保留旧壳回退。

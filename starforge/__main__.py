@@ -37,6 +37,9 @@ def cmd_app(a) -> int:
         a.no_browser = False
         return cmd_serve(a)
     if not getattr(a, "webview", False):
+        if getattr(a, "safe", False):
+            os.environ["STARFORGE_SAFE"] = "1"
+            os.environ["QT_OPENGL"] = "software"
         try:
             from .app.main import run as native_run
             return native_run([sys.argv[0]])
@@ -403,6 +406,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("app", help="打开桌面窗口（默认原生）")
     p.add_argument("--browser", action="store_true", help="强制用浏览器打开（调试用）")
     p.add_argument("--webview", action="store_true", help="回退到旧的 pywebview 外壳")
+    p.add_argument("--safe", action="store_true", help="安全模式：软件 OpenGL，排查显卡驱动崩溃")
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--debug", action="store_true")
     p.set_defaults(func=cmd_app)

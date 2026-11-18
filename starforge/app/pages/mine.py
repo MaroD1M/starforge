@@ -1,6 +1,8 @@
 """我的船页：读存档 → 表格 → 原生 3D / 写回入口。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -25,8 +27,8 @@ class MinePage(QWidget):
         super().__init__(parent)
         self.svc = get_services()
         self._ships: list[dict] = []
+        self._loaded = False
         self._build_ui()
-        self._auto_path()
 
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
@@ -76,17 +78,35 @@ class MinePage(QWidget):
         split.addWidget(right)
         split.setSizes([420, 620])
 
-    def _auto_path(self) -> None:
-        def done(res: dict) -> None:
-            resolved = (res.get("resolved") or {}).get("saves_dir") or ""
-            if resolved and not self.path.text():
-                self.path.setText(resolved)
-                self._load()
+    def ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        self._auto_path()
 
-        run_worker(self.svc.settings_snapshot, done, lambda _m: None)
+    def _auto_path(self) -> None:
+        if self.path.text().strip():
+            self._load()
+            return
+
+        def done(res: dict) -> None:
+            p = res.get("path") or ""
+            if p:
+                self.path.setText(p)
+                self._load()
+            else:
+                self.status.setText("没有自动找到存档；请点「浏览…」选择 save.hg")
+
+        def fail(msg: str) -> None:
+            self.status.setText(f"没有自动找到存档：{msg}；请点「浏览…」选择 save.hg")
+
+        run_worker(self.svc.default_save, done, fail)
 
     def _browse(self) -> None:
-        p, _ = QFileDialog.getOpenFileName(self, "选择存档", self.path.text(), "存档 (*.hg);;所有文件 (*)")
+        start = self.path.text()
+        if start and not Path(start).is_file():
+            start = str(Path(start).parent) if Path(start).parent.exists() else ""
+        p, _ = QFileDialog.getOpenFileName(self, "选择存档", start, "存档 (*.hg);;所有文件 (*)")
         if p:
             self.path.setText(p)
 
