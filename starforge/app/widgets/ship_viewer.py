@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QMatrix4x4, QOpenGLFunctions, QSurfaceFormat, QVector3D
 from PySide6.QtOpenGL import (
@@ -25,6 +24,13 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from ...core import log
 
 log = log.get("ui.viewer")
+
+try:
+    import numpy as np
+    _NUMPY_ERROR = ""
+except Exception as _e:                                      # noqa: BLE001
+    np = None                                                # type: ignore[assignment]
+    _NUMPY_ERROR = f"{type(_e).__name__}: {_e}"
 
 VERT = """
 #version 120
@@ -139,6 +145,8 @@ class ShipViewer(QOpenGLWidget):
     # ---------------------------------------------------------------- 数据
 
     def set_mesh(self, groups: dict, colours: dict | None = None) -> None:
+        if np is None:
+            raise RuntimeError(f"NumPy 不可用，无法渲染 3D：{_NUMPY_ERROR}")
         self._groups = groups or {}
         self._colours = colours or {}
         self._compute_bounds()
@@ -154,6 +162,9 @@ class ShipViewer(QOpenGLWidget):
 
     def set_demo(self) -> None:
         """无游戏数据时的 3D spike：一个可辨认的飞船占位几何。"""
+        if np is None:
+            self._error = f"NumPy 不可用：{_NUMPY_ERROR}"
+            return
         def tri(p0, p1, p2):
             p = np.array([p0, p1, p2], np.float32)
             n = np.cross(p[1] - p[0], p[2] - p[0])

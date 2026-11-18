@@ -63,6 +63,18 @@ def run(argv: list[str] | None = None) -> int:
     app.setApplicationDisplayName("无人深空 · 飞船猎人")
     apply_theme(app)
     sys.excepthook = _excepthook
+    try:
+        import numpy
+
+        log.info("NumPy %s 可用：%s", numpy.__version__, numpy.__file__)
+    except Exception as e:                                  # noqa: BLE001
+        log.exception("NumPy 不可用：%s", e)
+        QMessageBox.critical(
+            None, "NumPy 不可用",
+            "搜索 / 3D / 缩略图需要 NumPy，但当前进程加载 NumPy 失败：\n\n"
+            f"{type(e).__name__}: {e}\n\n"
+            "请重新解压完整安装包（不要覆盖旧目录），并把安装目录加入杀毒软件排除项。\n"
+            "应用会继续启动，但相关功能会报错；诊断信息已写入 ~/.starforge/logs/。")
     win = MainWindow()
     win.show()
     return app.exec()

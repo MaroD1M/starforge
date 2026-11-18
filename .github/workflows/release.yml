@@ -77,7 +77,6 @@ jobs:
             --add-data "starforge/web/static;starforge/web/static" `
             --add-data "starforge/agent;starforge/agent" `
             --add-data "starforge/live/builds;starforge/live/builds" `
-            --add-data "build/agent-runtime;agent-runtime" `
             --exclude-module numpy.f2py --exclude-module numpy.distutils `
             --exclude-module pymhf --exclude-module nmspy `
             --exclude-module starforge.agent.starforge_agent `

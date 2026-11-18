@@ -1,5 +1,13 @@
 # 更新记录
 
+## v0.14.3-beta（修复 NumPy 加载失败 + 完全自包含）
+
+- **NumPy 固定为 2.2.6**，避免最新 2.4.6 在部分 Windows/CPU/杀软环境下的 DLL 加载问题。
+- **移除 `_internal/agent-runtime` 的重复副本**：运行时只放包根目录，减少 DLL 冲突和约 100MB 体积。
+- `numpy` 改为**软失败**：即使 NumPy 加载失败，应用也能进入界面并弹出明确诊断，不再在 PyInstaller 引导阶段直接退出。
+- 运行时就绪时隐藏/禁用“准备运行时 / 安装组件”，正常包完全不需要联网下载。
+- 新增 `docs/UI-REDESIGN.md`：Command Deck 布局、设计令牌、组件库与迁移计划。
+
 ## v0.14.2-beta（修复原生 3D 崩溃与运行时选择）
 
 - 修复 `ship_viewer.paintGL` 调用 `setUniformValue("uEmissive", float)` 的 PySide6 重载错误：

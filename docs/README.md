@@ -7,6 +7,7 @@
 | [MANUAL.md](MANUAL.md) | **软件手册**：产品定位、13 项功能、五页界面线框、符文浮窗规范、接口、运维、验收、里程碑 |
 | [DESIGN.md](DESIGN.md) | 设计方案：架构与进程模型、七个关键决策（含实测数据）、API 契约、性能预算、风险登记 |
 | [CAPABILITIES.md](CAPABILITIES.md) | 能力清单与实机效果：每项功能的判定（可用 / 需实现 / 需游戏内）与真实跑出的结果 |
+| [UI-REDESIGN.md](UI-REDESIGN.md) | **界面重构设计**：Command Deck 布局、设计令牌、组件库、六个页面与迁移计划 |
 | [PLAN-V4.md](PLAN-V4.md) | **全功能路线图**：离线 / 存档 / 外部实时 / 进程内 agent 四条线，M0–M8 阶段与 Windows 实测轮次 |
 | [AGENT.md](AGENT.md) | **agent 是什么**：为什么传送/扫描必须在进程内、DLL 代理如何工作、build 绑定与安全边界 |
 | [AGENT-PROTOCOL.md](AGENT-PROTOCOL.md) | agent 命名管道协议 v1：帧格式、命令表、错误码、能力协商 |

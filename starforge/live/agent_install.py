@@ -98,9 +98,12 @@ def runtime_python() -> Path | None:
 
 
 def bootstrap_runtime(out=None) -> dict:
-    """在应用内下载 Python embeddable 并安装 agent 依赖（仅 Windows）。"""
+    """修复运行时：正常包已内置，只有缺失/损坏时才下载（仅 Windows）。"""
     if not mem.IS_WINDOWS:
         return {"ok": False, "error": "Python 运行时只需在 Windows 上准备"}
+    rt = runtime_python()
+    if rt and _has_agent_packages(rt):
+        return {"ok": True, "python": str(rt), "note": "运行时已内置，无需下载"}
     py = runtime_dir() / "python.exe"
     if py.exists() and _has_agent_packages(py):
         return {"ok": True, "python": str(py), "note": "运行时已存在"}
@@ -209,6 +212,8 @@ def status() -> dict:
     rinfo = _runtime_info()
     nmspy = rinfo.get("nmspy") or _dist_version("NMSpy") or _dist_version("nmspy")
     pymhf = rinfo.get("pymhf") or _dist_version("pymhf")
+    exe_dir = Path(sys.executable).resolve().parent
+    bundled = bool(rt and str(rt).lower().startswith(str(exe_dir).lower()))
     game_running = False
     pid = None
     if mem.IS_WINDOWS:
@@ -239,18 +244,28 @@ def status() -> dict:
         "pymhf_http_api": bool(rinfo.get("http_api")),
         "runtime_python": str(rt) if rt else "",
         "runtime_ready": bool(rt and _has_agent_packages(rt)),
+        "runtime_bundled": bundled,
         "reachable": reachable,
         "hello": hello,
         "build": build.summary(fp),
-        "note": _note(mem.IS_WINDOWS, game_running, nmspy, expected, pymhf, reachable),
+        "note": _note(mem.IS_WINDOWS, game_running, nmspy, expected, pymhf, reachable,
+                      bool(rt and _has_agent_packages(rt)), bundled),
     }
 
 
-def _note(windows: bool, running: bool, nmspy: str, expected: str, pymhf: str, reachable: bool) -> str:
+def _note(windows: bool, running: bool, nmspy: str, expected: str, pymhf: str,
+          reachable: bool, runtime_ready: bool = False, bundled: bool = False) -> str:
     if not windows:
         return "游戏内通道仅支持 Windows；其它功能不受影响"
+    if runtime_ready and nmspy and pymhf:
+        prefix = "内置运行时已就绪（无需下载）" if bundled else "运行时已就绪"
+        if not running:
+            return prefix + "；启动游戏并载入存档后点「连接游戏」"
+        if not reachable:
+            return prefix + "；点「连接游戏」注入 agent"
+        return prefix + "；agent 已连接"
     if not nmspy or not pymhf:
-        return "还没安装游戏内组件（NMSpy + pymhf）；点「安装/更新游戏内组件」"
+        return "内置运行时缺失或不完整；请重新解压完整安装包（正常包不需要联网安装）"
     if expected and nmspy and not nmspy.startswith(expected.rsplit(".", 1)[0]):
         return f"游戏 build 是 {expected}，已装 NMSpy {nmspy}；请点「安装/更新游戏内组件」"
     if not running:
@@ -277,7 +292,10 @@ def uninstall_mod() -> dict:
 
 
 def install_deps(version: str | None = None, timeout: int = 600) -> dict:
-    """在应用内一键安装/更新 NMSpy + pymhf（需要网络；失败会返回原命令与输出）。"""
+    """修复/更新 NMSpy + pymhf。正常包已内置；只有 runtime 损坏时才需要联网。"""
+    rt = runtime_python()
+    if rt and _has_agent_packages(rt):
+        return {"ok": True, "note": "运行时已内置，无需安装/更新", "python": str(rt)}
     version = version or expected_nmspy_version()
     if not version:
         raise ValueError("无法从游戏 build 推断 NMSpy 版本")

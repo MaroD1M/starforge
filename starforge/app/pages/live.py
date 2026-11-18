@@ -32,6 +32,8 @@ class LivePage(QWidget):
         self.svc = get_services()
         self._busy = False
         self._loaded = False
+        self._runtime_ready = False
+        self._supported = False
         self._build_ui()
 
     def ensure_loaded(self) -> None:
@@ -73,7 +75,7 @@ class LivePage(QWidget):
         self.install_btn = QPushButton("安装 Mod")
         self.install_btn.clicked.connect(self._install_mod)
         row.addWidget(self.install_btn)
-        self.inject_btn = QPushButton("注入并连接")
+        self.inject_btn = QPushButton("连接游戏（自动安装 Mod）")
         self.inject_btn.setObjectName("primary")
         self.inject_btn.clicked.connect(lambda: self._launch(True))
         row.addWidget(self.inject_btn)
@@ -186,10 +188,14 @@ class LivePage(QWidget):
 
     def _apply_status(self, st: dict) -> None:
         hello = st.get("hello") or {}
+        runtime_ready = bool(st.get("runtime_ready"))
+        bundled = bool(st.get("runtime_bundled"))
+        self._runtime_ready = runtime_ready
+        self._supported = bool(st.get("supported"))
         parts = [
             f"游戏：{'运行中' if st.get('game_running') else '未运行'}",
             f"Mod：{'已安装' if st.get('mod_installed') else '未安装'}",
-            f"运行时：{'就绪' if st.get('runtime_ready') else '缺失'}",
+            f"运行时：{'就绪（内置）' if bundled else ('就绪' if runtime_ready else '缺失')}",
             f"NMSpy：{st.get('nmspy_version') or '缺失'} / 期望 {st.get('expected_nmspy') or '—'}",
             f"pymhf：{st.get('pymhf_version') or '缺失'}",
             f"agent：{'已连接' if st.get('reachable') else '未连接'}",
@@ -210,16 +216,23 @@ class LivePage(QWidget):
             self.caps.setItem(i, 3, QTableWidgetItem(note))
         self.caps.resizeColumnsToContents()
         supported = bool(st.get("supported"))
-        for b in (self.runtime_btn, self.deps_btn, self.probe_btn, self.inject_btn, self.start_btn):
+        for b in (self.probe_btn, self.inject_btn, self.start_btn):
             b.setEnabled(supported)
+        # 正常包运行时已内置：准备/安装按钮只作为修复入口，避免用户误以为还要下载
+        self.runtime_btn.setEnabled(supported and not runtime_ready)
+        self.deps_btn.setEnabled(supported and not runtime_ready)
+        self.runtime_btn.setText("修复/更新运行时" if runtime_ready else "准备游戏内运行时")
+        self.deps_btn.setText("修复/更新组件" if runtime_ready else "安装/更新游戏内组件")
 
     # ---------------------------------------------------------------- 操作
 
     def _set_busy(self, busy: bool, text: str = "") -> None:
         self._busy = busy
-        for b in (self.runtime_btn, self.deps_btn, self.install_btn, self.inject_btn,
-                  self.start_btn, self.stop_btn, self.refresh_btn, self.probe_btn):
-            b.setEnabled(not busy)
+        for b in (self.install_btn, self.inject_btn, self.start_btn,
+                  self.stop_btn, self.refresh_btn, self.probe_btn):
+            b.setEnabled(not busy and self._supported)
+        self.runtime_btn.setEnabled(not busy and self._supported and not self._runtime_ready)
+        self.deps_btn.setEnabled(not busy and self._supported and not self._runtime_ready)
         if text:
             self.status.setText(text)
 
