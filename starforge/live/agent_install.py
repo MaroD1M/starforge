@@ -333,6 +333,9 @@ def launch(attach: bool = True) -> dict:
     )
     env = dict(os.environ)
     env["PYTHONUTF8"] = "1"
+    # pymhf 的 __init__ 在非 pytest 环境会创建 questionary 提示；agent 是无人值守启动，
+    # 设置这个变量让它跳过交互（load_mod_file 本身不走交互配置）。
+    env["PYTEST_VERSION"] = "1"
     log_path = agent_dir() / "launcher.log"
     log_file = open(log_path, "a", encoding="utf-8")
     global _LAUNCH

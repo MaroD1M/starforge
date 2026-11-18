@@ -53,7 +53,10 @@ def main() -> int:
     print("安装 NMSpy + pymhf 到 runtime")
     subprocess.run([sys.executable, "-m", "pip", "install", "--target", str(site_packages),
                     f"NMSpy=={NMSpy_VERSION}", "pymhf[http_api]>=0.2.5"], check=True)
-    subprocess.run([str(py), "-c", "import nmspy,pymhf,fastapi,uvicorn;print('runtime ok')"], check=True)
+    env = dict(os.environ)
+    env["PYTEST_VERSION"] = "1"       # pymhf 在 import 期会弹 questionary；CI/agent 里必须绕过
+    subprocess.run([str(py), "-c", "import nmspy,pymhf,fastapi,uvicorn;print('runtime ok')"],
+                   check=True, env=env)
     print("agent runtime ->", DEST.resolve())
     return 0
 
