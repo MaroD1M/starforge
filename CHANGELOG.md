@@ -1,5 +1,13 @@
 # 更新记录
 
+## v0.13.4-beta（修 CI 的依赖断言）
+
+- v0.13.3 的 CI 在“冒烟测试”步骤失败：磁盘依赖白名单里加了 `capstone`/`pefile`，但这两者
+  **是纯 Python 包，会进 PYZ**，`_internal` 里本来就没有对应文件。现改为：
+  磁盘只查真正的二进制/数据（numpy/flask/lz4/hgpaktool/texture2ddecoder/webview/pythonnet/clr_loader/Python.Runtime.dll/mapping.json），
+  `unicorn`/`capstone`/`pefile` 交给新增的 `doctor` 步骤用 **import + 真建 Uc** 验证（更严格也更靠谱）。
+- 其余同 v0.13.3（unicorn 打包、pythonnet 运行时 netfx→coreclr→mono、doctor 命令）。
+
 ## v0.13.3-beta（修打包产物里两个致命依赖：unicorn / pythonnet）
 
 > 依据你机器上的真实日志：

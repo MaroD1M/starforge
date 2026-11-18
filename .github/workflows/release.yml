@@ -89,10 +89,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "打包产物 selftest 失败（exit $LASTEXITCODE）" }
           # 关键依赖必须在包内
           foreach ($bundle in @("dist/starforge/_internal")) {
+            # 这里只查"必须在磁盘上有文件"的二进制/数据依赖；纯 Python 包（capstone/pefile）
+            # 会进 PYZ，磁盘上找不到属正常 —— 它们由下一步 doctor 用 import 验证。
             foreach ($p in @("numpy", "flask", "werkzeug", "_tkinter", "lz4", "hgpaktool",
                              "texture2ddecoder", "webview", "pythonnet", "clr_loader",
-                             "Python.Runtime.dll", "mapping.json",
-                             "unicorn", "capstone", "pefile")) {
+                             "Python.Runtime.dll", "mapping.json")) {
               $hit = Get-ChildItem -Recurse -Path $bundle -Filter "*$p*" -ErrorAction SilentlyContinue
               if (-not $hit) { throw "打包缺少依赖：$p（$bundle）" }
             }
@@ -114,7 +115,7 @@ jobs:
           $out | Out-Host
           # doctor 的退出码含"桌面窗口可用"这一项，CI 环境不保证，所以只断言关键依赖
           if ($out -match '"unicorn":\s*\{\s*"ok": false') { throw "打包产物里 unicorn 不可用（星系/行星生成会失效）" }
-          foreach ($dep in @("numpy", "flask", "lz4", "hgpaktool", "texture2ddecoder", "pefile")) {
+          foreach ($dep in @("numpy", "flask", "lz4", "hgpaktool", "texture2ddecoder", "pefile", "capstone")) {
             if ($out -notmatch ('"' + $dep + '": "ok"')) { throw "依赖不可用：$dep" }
           }
           Write-Host "doctor 检查通过"
