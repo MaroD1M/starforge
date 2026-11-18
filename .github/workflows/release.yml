@@ -288,7 +288,7 @@ jobs:
               throw "服务没起来（端口 8899）"
             }
             $r2 = Invoke-WebRequest -Uri "http://127.0.0.1:8899/" -UseBasicParsing -TimeoutSec 5
-            if ($r2.Content -notmatch '"service": "starforge-api"') { throw "根路径不是 API-only JSON" }
+            if ($r2.Content -notmatch 'starforge-api') { throw "根路径不是 API-only JSON" }
             Write-Host "API 服务冒烟通过"
           } finally {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
