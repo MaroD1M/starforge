@@ -29,6 +29,12 @@ QSS = """
 QWidget { color: #e2e7f0; }
 QMainWindow, QDialog { background: #0a0c11; }
 QFrame#navRail { background: #0d1119; border-right: 1px solid #1e2432; }
+QFrame#commandBar { background: #0b0f16; border-bottom: 1px solid #1e2432; }
+QFrame#jobDock { background: #0b0f16; border-top: 1px solid #1e2432; }
+QFrame#card { background: #0f141d; border: 1px solid #1e2432; border-radius: 12px; }
+QLabel#breadcrumb { font-size: 15px; font-weight: 700; color: #e6ecf5; }
+QPushButton#ghostButton { background: transparent; border: 1px solid #28303f; color: #8b97aa; }
+QPushButton#ghostButton:hover { color: #e6ecf5; border-color: #3a4a66; }
 QPushButton#navButton {
   text-align: left; padding: 10px 14px; border: 1px solid transparent;
   border-radius: 8px; background: transparent; color: #8b95a7; font-size: 13px;

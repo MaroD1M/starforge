@@ -1,7 +1,8 @@
-"""原生主窗口：左侧导航 + 页面栈 + 状态芯片。"""
+"""原生主窗口（Command Deck）：CommandBar + NavRail + Workspace + JobDock。"""
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings, QThreadPool, QTimer
+from PySide6.QtCore import QSettings, QThreadPool, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -17,17 +18,21 @@ from PySide6.QtWidgets import (
 
 from ..core import paths, strings
 from ..services import get_services
+from .pages.home import HomePage
 from .pages.live import LivePage
 from .pages.mine import MinePage
 from .pages.search import SearchPage
 from .pages.settings import SettingsPage
 from .pages.systems import SystemsPage
+from .widgets.command_palette import CommandPalette
+from .widgets.job_dock import JobDock
 from .widgets.worker import run as run_worker
 
 NAV = [
-    ("search", "搜船"),
-    ("mine", "我的船"),
-    ("systems", "星球"),
+    ("home", "概览"),
+    ("search", "飞船实验室"),
+    ("mine", "我的船队"),
+    ("systems", "星图"),
     ("live", "游戏内"),
     ("settings", "设置"),
 ]
@@ -40,6 +45,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(strings.APP_TITLE)
         self.setMinimumSize(1180, 760)
         self._settings = QSettings(str(paths.app_home() / "native-window.ini"), QSettings.IniFormat)
+        self._active = "home"
         self._build_ui()
         self._restore_geometry()
         self._health_timer = QTimer(self)
@@ -47,6 +53,8 @@ class MainWindow(QMainWindow):
         self._health_timer.timeout.connect(self.refresh_health)
         self._health_timer.start()
         self.refresh_health()
+        sc = QShortcut(QKeySequence("Ctrl+K"), self)
+        sc.activated.connect(self.open_palette)
 
     # ---------------------------------------------------------------- UI
 
@@ -57,18 +65,48 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        root.addWidget(self._build_rail())
+
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
+        rv.addWidget(self._build_command_bar())
+
+        self.stack = QStackedWidget()
+        self.pages = {
+            "home": HomePage(),
+            "search": SearchPage(),
+            "mine": MinePage(),
+            "systems": SystemsPage(),
+            "live": LivePage(),
+            "settings": SettingsPage(),
+        }
+        self.pages["home"].navigate.connect(self.goto)
+        for page in self.pages.values():
+            self.stack.addWidget(page)
+        rv.addWidget(self.stack, 1)
+
+        self.dock = JobDock()
+        rv.addWidget(self.dock)
+        root.addWidget(right, 1)
+
+        self.statusBar().showMessage("就绪")
+        self.goto("home", remember=False)
+
+    def _build_rail(self) -> QFrame:
         rail = QFrame()
         rail.setObjectName("navRail")
-        rail.setFixedWidth(164)
+        rail.setFixedWidth(190)
         rv = QVBoxLayout(rail)
-        rv.setContentsMargins(10, 14, 10, 14)
+        rv.setContentsMargins(12, 16, 12, 16)
         brand = QLabel("STARFORGE")
         brand.setObjectName("brand")
         rv.addWidget(brand)
         sub = QLabel("无人深空 · 飞船猎人")
         sub.setObjectName("muted")
         rv.addWidget(sub)
-        rv.addSpacing(12)
+        rv.addSpacing(16)
 
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
@@ -89,63 +127,73 @@ class MainWindow(QMainWindow):
         self.mode = QLabel("原生窗口 · PySide6")
         self.mode.setObjectName("muted")
         rv.addWidget(self.mode)
-        root.addWidget(rail)
+        return rail
 
-        right = QWidget()
-        rv2 = QVBoxLayout(right)
-        rv2.setContentsMargins(0, 0, 0, 0)
-        rv2.setSpacing(0)
-
-        top = QFrame()
-        top.setStyleSheet("background:#0d1119;border-bottom:1px solid #1e2432;")
-        th = QHBoxLayout(top)
-        th.setContentsMargins(14, 8, 14, 8)
+    def _build_command_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setObjectName("commandBar")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(16, 8, 16, 8)
+        self.breadcrumb = QLabel("概览")
+        self.breadcrumb.setObjectName("breadcrumb")
+        h.addWidget(self.breadcrumb)
+        h.addSpacing(10)
+        palette = QPushButton("命令  Ctrl+K")
+        palette.setObjectName("ghostButton")
+        palette.clicked.connect(self.open_palette)
+        h.addWidget(palette)
+        h.addStretch(1)
         self.chips: dict[str, QLabel] = {}
         for key, text in (("data", "数据层"), ("saves", "存档"), ("game", "游戏"), ("write", "写入")):
             chip = QLabel(text)
             chip.setObjectName("chip")
             self.chips[key] = chip
-            th.addWidget(chip)
-        th.addStretch(1)
+            h.addWidget(chip)
         self.job_label = QLabel("")
         self.job_label.setObjectName("muted")
-        th.addWidget(self.job_label)
+        h.addWidget(self.job_label)
         self.progress = QProgressBar()
-        self.progress.setFixedWidth(160)
+        self.progress.setFixedWidth(140)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setVisible(False)
-        th.addWidget(self.progress)
-        rv2.addWidget(top)
-
-        self.stack = QStackedWidget()
-        self.pages = {
-            "search": SearchPage(),
-            "mine": MinePage(),
-            "systems": SystemsPage(),
-            "live": LivePage(),
-            "settings": SettingsPage(),
-        }
-        for page in self.pages.values():
-            self.stack.addWidget(page)
-        rv2.addWidget(self.stack, 1)
-        root.addWidget(right, 1)
-
-        self.statusBar().showMessage("就绪")
-        self.goto("search", remember=False)
+        h.addWidget(self.progress)
+        return bar
 
     def goto(self, key: str, remember: bool = True) -> None:
         page = self.pages.get(key)
         if page is None:
             return
+        self._active = key
         self.stack.setCurrentWidget(page)
         ensure = getattr(page, "ensure_loaded", None)
         if callable(ensure):
             ensure()
         for k, btn in self._buttons.items():
             btn.setChecked(k == key)
+        label = dict(NAV).get(key, key)
+        self.breadcrumb.setText(label)
         if remember:
-            self.statusBar().showMessage(f"{dict(NAV).get(key, key)}")
+            self.statusBar().showMessage(label)
+
+    # ---------------------------------------------------------------- 命令面板
+
+    def open_palette(self) -> None:
+        actions = [
+            ("概览 / Home", lambda: self.goto("home")),
+            ("飞船实验室 / 搜船", lambda: self.goto("search")),
+            ("我的船队", lambda: self.goto("mine")),
+            ("星图 / 星球", lambda: self.goto("systems")),
+            ("游戏内 / 连接", lambda: self.goto("live")),
+            ("设置", lambda: self.goto("settings")),
+            ("刷新状态", self.refresh_health),
+            ("展开/收起任务 Dock", self.dock.toggle_body),
+            ("打开日志目录", lambda: QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(paths.app_home() / "logs")))),
+            ("复制版本号", lambda: QGuiApplication.clipboard().setText(
+                __import__("starforge").__version__)),
+        ]
+        CommandPalette(actions, self).exec()
 
     # ---------------------------------------------------------------- 状态
 
@@ -190,6 +238,7 @@ class MainWindow(QMainWindow):
         else:
             self.resize(1440, 900)
 
-    def closeEvent(self, e) -> None:
+    def closeEvent(self, e) -> None:                        # noqa: N802 - Qt 回调
         self._settings.setValue("geometry", self.saveGeometry())
+        QThreadPool.globalInstance().waitForDone(4000)
         super().closeEvent(e)

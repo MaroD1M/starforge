@@ -23,8 +23,8 @@ def test_native_main_window_builds(qapp):
     win = MainWindow()
     try:
         assert win.windowTitle()
-        assert set(win.pages) == {"search", "mine", "systems", "live", "settings"}
-        assert win.stack.count() == 5
+        assert set(win.pages) == {"home", "search", "mine", "systems", "live", "settings"}
+        assert win.stack.count() == 6
         win.goto("settings")
         assert win.stack.currentWidget() is win.pages["settings"]
     finally:
