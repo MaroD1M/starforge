@@ -189,6 +189,7 @@ class LivePage(QWidget):
         parts = [
             f"游戏：{'运行中' if st.get('game_running') else '未运行'}",
             f"Mod：{'已安装' if st.get('mod_installed') else '未安装'}",
+            f"运行时：{'就绪' if st.get('runtime_ready') else '缺失'}",
             f"NMSpy：{st.get('nmspy_version') or '缺失'} / 期望 {st.get('expected_nmspy') or '—'}",
             f"pymhf：{st.get('pymhf_version') or '缺失'}",
             f"agent：{'已连接' if st.get('reachable') else '未连接'}",

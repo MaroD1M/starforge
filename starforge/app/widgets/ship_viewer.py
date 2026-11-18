@@ -22,6 +22,10 @@ from PySide6.QtOpenGL import (
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
+from ...core import log
+
+log = log.get("ui.viewer")
+
 VERT = """
 #version 120
 attribute vec3 aPos;
@@ -129,6 +133,8 @@ class ShipViewer(QOpenGLWidget):
         self._dist = 1.0
         self._last = QPoint()
         self._error = ""
+        self._failed = False
+        self._u_mvp = self._u_normal = self._u_light = self._u_color = self._u_emissive = -1
 
     # ---------------------------------------------------------------- 数据
 
@@ -202,6 +208,11 @@ class ShipViewer(QOpenGLWidget):
             self._error = self._program.log() or "着色器编译失败"
             self._program = None
             return
+        self._u_mvp = self._program.uniformLocation("uMvp")
+        self._u_normal = self._program.uniformLocation("uNormal")
+        self._u_light = self._program.uniformLocation("uLight")
+        self._u_color = self._program.uniformLocation("uColor")
+        self._u_emissive = self._program.uniformLocation("uEmissive")
         self._upload()
 
     def _upload(self) -> None:
@@ -266,14 +277,15 @@ class ShipViewer(QOpenGLWidget):
         mvp = proj * view
 
         self._program.bind()
-        self._program.setUniformValue("uMvp", mvp)
-        self._program.setUniformValue("uNormal", view.normalMatrix())
+        # PySide6 没有 setUniformValue(str, float) 重载；float 必须传 location(int)
+        self._program.setUniformValue(self._u_mvp, mvp)
+        self._program.setUniformValue(self._u_normal, view.normalMatrix())
         light = QVector3D(0.45, 0.75, 0.5).normalized()
-        self._program.setUniformValue("uLight", light)
+        self._program.setUniformValue(self._u_light, light)
         self._vao.bind()
         for prim in self._prims:
-            self._program.setUniformValue("uColor", QVector3D(*prim.color))
-            self._program.setUniformValue("uEmissive", float(prim.emissive))
+            self._program.setUniformValue(self._u_color, QVector3D(*prim.color))
+            self._program.setUniformValue(self._u_emissive, float(prim.emissive))
             prim.vbo_pos.bind()
             self._program.enableAttributeArray(0)
             self._program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 0)

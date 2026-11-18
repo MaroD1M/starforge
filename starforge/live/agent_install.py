@@ -62,29 +62,38 @@ def runtime_dir() -> Path:
     return agent_dir() / "runtime"
 
 
+def _has_agent_packages(py: Path) -> bool:
+    """判断一个 runtime 里是否真的装了 nmspy + pymhf（避免选中半成品）。"""
+    base = py.parent
+    site = base / "Lib" / "site-packages"
+    return (site / "nmspy").is_dir() and (site / "pymhf").is_dir()
+
+
 def runtime_python() -> Path | None:
     """找一个可用来运行 pymhf 的 Python。
 
-    优先级：应用自带 runtime → 非冻结环境的本进程 Python → PATH 里的 python。
-    冻结 exe 不能直接用 sys.executable（它是 starforge.exe），所以必须有 runtime。
+    优先级：应用自带 runtime → 用户运行时 → 非冻结环境的本进程 Python → PATH。
+    **必须真的含 nmspy+pymhf**；旧版本留下的空 runtime 会被跳过。
     """
     exe_dir = Path(sys.executable).resolve().parent
-    for cand in (runtime_dir() / "python.exe",
-                 Path(__file__).resolve().parents[2] / "agent-runtime" / "python.exe",
-                 exe_dir / "agent-runtime" / "python.exe",
-                 exe_dir / "_internal" / "agent-runtime" / "python.exe"):
-        if cand.exists():
+    cands = [
+        exe_dir / "agent-runtime" / "python.exe",
+        exe_dir / "_internal" / "agent-runtime" / "python.exe",
+        Path(__file__).resolve().parents[2] / "agent-runtime" / "python.exe",
+        runtime_dir() / "python.exe",
+    ]
+    if getattr(sys, "_MEIPASS", ""):
+        cands.append(Path(sys._MEIPASS) / "agent-runtime" / "python.exe")
+    for cand in cands:
+        if cand.exists() and _has_agent_packages(cand):
             return cand
+    # 开发环境：本进程 Python 已装 pymhf 时可以直接用
     if not getattr(sys, "frozen", False) and sys.executable:
         try:
             import pymhf  # noqa: F401
             return Path(sys.executable)
         except Exception:                                # noqa: BLE001
             pass
-    for name in ("python.exe", "python"):
-        found = shutil.which(name)
-        if found:
-            return Path(found)
     return None
 
 
@@ -93,7 +102,7 @@ def bootstrap_runtime(out=None) -> dict:
     if not mem.IS_WINDOWS:
         return {"ok": False, "error": "Python 运行时只需在 Windows 上准备"}
     py = runtime_dir() / "python.exe"
-    if py.exists():
+    if py.exists() and _has_agent_packages(py):
         return {"ok": True, "python": str(py), "note": "运行时已存在"}
     d = runtime_dir()
     d.mkdir(parents=True, exist_ok=True)
@@ -229,7 +238,7 @@ def status() -> dict:
         "pymhf_version": pymhf,
         "pymhf_http_api": bool(rinfo.get("http_api")),
         "runtime_python": str(rt) if rt else "",
-        "runtime_ready": bool(rt and (runtime_dir() / "python.exe").exists()),
+        "runtime_ready": bool(rt and _has_agent_packages(rt)),
         "reachable": reachable,
         "hello": hello,
         "build": build.summary(fp),

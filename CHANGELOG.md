@@ -1,5 +1,15 @@
 # 更新记录
 
+## v0.14.2-beta（修复原生 3D 崩溃与运行时选择）
+
+- 修复 `ship_viewer.paintGL` 调用 `setUniformValue("uEmissive", float)` 的 PySide6 重载错误：
+  float 现在统一用 `uniformLocation()` 返回的 int location，避免 `TypeError`。
+- `initializeGL` / `paintGL` 全部加异常兜底：绘制失败只关闭 3D，不再把异常抛回 Qt 导致
+  `QMessageBox` 递归 + `0xC0000409`。
+- 修复运行时选择：优先使用包内 `agent-runtime`，只有确实含 `nmspy+pymhf` 才选中；
+  旧版本留下的空 runtime 不再挡住新包，状态页新增「运行时」。
+- 新增 uniform location 缓存，3D 绘制更稳。
+
 ## v0.14.1-beta（修复启动/存档路径 + 崩溃诊断）
 
 - 修复「我的船」把**存档目录**当成 `save.hg` 解析导致的 `SaveFormatError: 无法识别的文件类型`；
