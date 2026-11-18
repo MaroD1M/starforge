@@ -66,7 +66,9 @@ jobs:
             --add-data "build/vendor/data;data" `
             --add-data "build/vendor/THIRD_PARTY_SHIPWRIGHT_LICENSE.txt;." `
             --collect-all hgpaktool --collect-all numpy --collect-all flask `
-            --collect-all texture2ddecoder --collect-all webview --collect-all pythonnet --hidden-import clr `
+            --collect-all texture2ddecoder --collect-all webview `
+            --collect-all pythonnet --collect-all clr_loader --hidden-import clr `
+            --collect-all unicorn --collect-all capstone --collect-all pefile `
             --collect-submodules starforge --hidden-import tkinter `
             --add-data "starforge/web/static;starforge/web/static" `
             --exclude-module numpy.f2py --exclude-module numpy.distutils `
@@ -88,7 +90,9 @@ jobs:
           # 关键依赖必须在包内
           foreach ($bundle in @("dist/starforge/_internal")) {
             foreach ($p in @("numpy", "flask", "werkzeug", "_tkinter", "lz4", "hgpaktool",
-                             "texture2ddecoder", "webview", "mapping.json")) {
+                             "texture2ddecoder", "webview", "pythonnet", "clr_loader",
+                             "Python.Runtime.dll", "mapping.json",
+                             "unicorn", "capstone", "pefile")) {
               $hit = Get-ChildItem -Recurse -Path $bundle -Filter "*$p*" -ErrorAction SilentlyContinue
               if (-not $hit) { throw "打包缺少依赖：$p（$bundle）" }
             }
@@ -99,6 +103,36 @@ jobs:
           if ($out -match "Shipwright: 未找到") { throw "打包产物里没有内置上游（nms_save 不可导入）" }
           if ($out -notmatch "内置\(打包版\)") { throw "内置上游未被识别为打包版：$out" }
           Write-Host "依赖检查通过（含内置上游）"
+
+      - name: 运行时体检（doctor：unicorn/依赖/窗口/上游）
+        shell: pwsh
+        env:
+          STARFORGE_HOME: ${{ runner.temp }}/sfhome-doctor
+        run: |
+          $exe = "dist/starforge/starforge.exe"
+          $out = & $exe doctor 2>&1 | Out-String
+          $out | Out-Host
+          # doctor 的退出码含"桌面窗口可用"这一项，CI 环境不保证，所以只断言关键依赖
+          if ($out -match '"unicorn":\s*\{\s*"ok": false') { throw "打包产物里 unicorn 不可用（星系/行星生成会失效）" }
+          foreach ($dep in @("numpy", "flask", "lz4", "hgpaktool", "texture2ddecoder", "pefile")) {
+            if ($out -notmatch ('"' + $dep + '": "ok"')) { throw "依赖不可用：$dep" }
+          }
+          Write-Host "doctor 检查通过"
+
+      - name: 原生窗口依赖自检（pythonnet 运行时 + WebView2）
+        shell: pwsh
+        env:
+          STARFORGE_HOME: ${{ runner.temp }}/sfhome-desktop
+        run: |
+          $exe = "dist/starforge/starforge.exe"
+          $out = & $exe desktop-check 2>&1 | Out-String
+          $out | Out-Host
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0 -or $out -notmatch '"available": true') {
+            Write-Host "::warning::原生窗口依赖不全（exit $rc）——包仍会发布，但用户会落到浏览器模式，见上面 reason"
+          } else {
+            Write-Host "原生窗口依赖检查通过"
+          }
 
       - name: 网页冒烟（进程内自检，不依赖端口）
         shell: pwsh

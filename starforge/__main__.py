@@ -205,6 +205,76 @@ def cmd_agent(a) -> int:
     return 0 if a.action != "hello" else (0 if attached else 5)
 
 
+def cmd_doctor(a) -> int:
+    """环境体检：把"运行时会不会缺东西"一次说清（打包产物排障的第一条命令）。
+
+    检查项：Python/平台、关键三方库、unicorn（能不能建 Uc）、系统生成器能不能借用、
+    桌面窗口三件套（pywebview/pythonnet/WebView2）、上游数据层。
+    """
+    import json as _json
+    import platform
+    out = {"python": sys.version.split()[0], "platform": platform.platform(),
+           "frozen": bool(getattr(sys, "frozen", False)), "deps": {}, "notes": []}
+    for mod, why in (("numpy", "渲染/几何"), ("flask", "本地服务"), ("lz4", "存档解压"),
+                     ("hgpaktool", "pak 解包"), ("texture2ddecoder", "BC7 贴图"),
+                     ("pefile", "exe 反射（生物角色表）"), ("capstone", "反汇编（签名扫描）")):
+        try:
+            __import__(mod)
+            out["deps"][mod] = "ok"
+        except Exception as e:                             # noqa: BLE001
+            out["deps"][mod] = f"{type(e).__name__}: {e}"
+            out["notes"].append(f"{mod} 缺失（{why}会降级）")
+    # unicorn：不只是 import，还要能真的建 Uc（Windows 打包最常见是 DLL 没带进去）
+    try:
+        import unicorn
+        uc = unicorn.Uc(unicorn.UC_ARCH_X86, unicorn.UC_MODE_64)
+        uc.mem_map(0x1000, 0x1000)
+        out["unicorn"] = {"ok": True, "version": getattr(unicorn, "__version__", "?")}
+    except Exception as e:                                 # noqa: BLE001
+        out["unicorn"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        out["notes"].append("unicorn 不可用 → 星系/行星生成、种子反查星系会失效")
+    # 系统生成器
+    try:
+        from . import system as system_mod
+        out["systemgen"] = {"available": system_mod.available()}
+    except Exception as e:                                 # noqa: BLE001
+        out["systemgen"] = {"available": False, "error": f"{type(e).__name__}: {e}"}
+    # 桌面窗口
+    try:
+        from . import desktop
+        out["desktop"] = desktop.probe()
+    except Exception as e:                                 # noqa: BLE001
+        out["desktop"] = {"available": False, "reason": f"{type(e).__name__}: {e}"}
+    # 上游数据层
+    try:
+        from .core import paths
+        out["upstream"] = paths.ensure_shipwright_importable()
+    except Exception as e:                                 # noqa: BLE001
+        out["upstream"] = f"{type(e).__name__}: {e}"
+    ok = (out["unicorn"]["ok"] and all(v == "ok" for v in out["deps"].values())
+          and bool(out["desktop"].get("available")))
+    out["ok"] = ok
+    print(_json.dumps(out, ensure_ascii=False, indent=1))
+    return 0 if ok else 7
+
+
+def cmd_desktop_check(a) -> int:
+    """原生窗口诊断：把 probe()、pythonnet 各运行时的失败原文、WebView2 检测结果全打出来。
+
+    这条命令是给用户回报用的：出问题时跑一次，把输出整段贴回来即可定位。
+    """
+    import json as _json
+    from . import desktop
+    rep = desktop.probe()
+    wv = desktop.webview2_runtime()
+    clr = desktop.ensure_clr()
+    out = {"probe": rep, "webview2": wv, "pythonnet_runtime": clr,
+           "last_fallback": desktop.LAST_FALLBACK_REASON,
+           "hint": "原生窗口 = pywebview + pythonnet + Edge WebView2 三者齐备；缺哪个看上面 reason"}
+    print(_json.dumps(out, ensure_ascii=False, indent=1))
+    return 0 if rep.get("available") else 6
+
+
 def cmd_glyph_overlay(a) -> int:
     from . import glyphs as glyph_mod, overlay
     try:
@@ -368,6 +438,12 @@ def main(argv=None) -> int:
     p = sub.add_parser("live", help="实时通道（只读诊断）")
     p.add_argument("action", choices=["probe"], nargs="?", default="probe")
     p.set_defaults(func=lambda a: cmd_live_probe(a))
+
+    p = sub.add_parser("doctor", help="环境体检（依赖/unicorn/窗口/上游）")
+    p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("desktop-check", help="原生窗口诊断（回报时跑这条）")
+    p.set_defaults(func=cmd_desktop_check)
 
     p = sub.add_parser("agent", help="游戏内代理（M4）：hello / 能力表")
     p.add_argument("action", choices=["hello"], nargs="?", default="hello")

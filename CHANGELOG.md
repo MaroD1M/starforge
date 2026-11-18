@@ -1,5 +1,23 @@
 # 更新记录
 
+## v0.13.3-beta（修打包产物里两个致命依赖：unicorn / pythonnet）
+
+> 依据你机器上的真实日志：
+> `bad_request: ImportError: Failed to load the Unicorn dynamic library`、
+> `窗口启动失败：Failed to resolve Python.Runtime.Loader.Initialize from …\_internal\pythonnet\runtime\Python.Runtime.dll`
+
+- **unicorn 没打进包**（星球/星系/种子反查在 Windows 上全部失效）：PyInstaller 参数补
+  `--collect-all unicorn --collect-all capstone --collect-all pefile`；依赖检查把这三者纳入断言。
+- **pythonnet 加载失败**（原生窗口退回浏览器的真因）：
+  · CI 补 `--collect-all clr_loader`（pywebview 的 WinForms 后端靠它加载 `Python.Runtime.dll`）；
+  · `desktop.ensure_clr()` 现在**按 netfx → coreclr → mono 顺序**试运行时——玩家机器多数只有系统自带的
+    .NET Framework，没有 .NET 6/8，所以先试 netfx，并记录每种失败的原文；
+  · `/api/desktop` 与「设置 → 原生窗口」会把 `pythonnet_runtime` / 每种运行时的错误显示出来。
+- **新增 `starforge doctor`**：一次体检 Python/平台、7 个关键依赖、unicorn（真的建一个 Uc）、
+  系统生成器可用性、桌面窗口三件套、上游数据层；输出纯 JSON，返回码 7 表示有致命项。
+  CI 里新增 doctor 步骤（unicorn 与依赖不 ok 直接失败），原生窗口那步只告警不阻塞发布。
+- 新增测试 3 项（doctor 的机器可读与关键依赖、desktop-check 输出结构、ensure_clr 的失败说明）。
+
 ## v0.13.2-beta（按你实测反馈修 4 处）
 
 - **船型中文化**：船型按钮与详情标题此前渲染的是英文 id（`fighter`/`sentinel`…），现在统一走中文表

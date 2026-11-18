@@ -1,5 +1,9 @@
 # 桌面窗口（原生窗口，内部用 Edge WebView2 渲染我们自己的界面）
 pywebview>=5.0
+# pywebview 在 Windows 上的 WinForms 后端依赖 pythonnet；clr_loader 是它的加载器
+# （缺 clr_loader 时打包产物会报 “Failed to resolve Python.Runtime.Loader.Initialize”）
+pythonnet>=3.0; platform_system == "Windows"
+clr_loader>=0.2.6; platform_system == "Windows"
 # 核心（本地服务 + 存档 + 搜索 + 三维）
 flask>=3.0
 numpy>=1.24

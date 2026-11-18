@@ -18,6 +18,8 @@ import threading
 import time
 import webbrowser
 
+import sys
+
 from .core import log, paths, settings, strings
 
 log = log.get("desktop")
@@ -213,6 +215,43 @@ def run(port: int = 0, width: int = 1440, height: int = 900, debug: bool = False
     return 0
 
 
+_CLR_STATE: dict = {"runtime": None, "errors": {}}
+
+
+def ensure_clr() -> dict:
+    """Windows 上把 pythonnet 的运行时按"最可能可用"的顺序试一遍。
+
+    实测（用户机 v0.13.1 日志）：
+        ERROR 窗口启动失败：Failed to resolve Python.Runtime.Loader.Initialize from
+        C:\\...\_internal\pythonnet\runtime\Python.Runtime.dll
+    这是 pythonnet 找不到可用的 .NET 运行时（多数玩家机器只有系统自带的 .NET Framework，
+    没有 .NET 6/8）。因此这里**先试 netfx**，再 coreclr，最后 mono，并记录每种失败的原文。
+    """
+    if _CLR_STATE["runtime"]:
+        return _CLR_STATE
+    if os.name != "nt":
+        _CLR_STATE["errors"] = {"netfx": "非 Windows：跳过"}
+        return _CLR_STATE
+    if "clr" in sys.modules:
+        _CLR_STATE["runtime"] = os.environ.get("PYTHONNET_RUNTIME") or "already-loaded"
+        return _CLR_STATE
+    order = [os.environ.get("PYTHONNET_RUNTIME") or "netfx", "coreclr", "mono"]
+    errors = {}
+    for rt in dict.fromkeys([x for x in order if x]):
+        os.environ["PYTHONNET_RUNTIME"] = rt
+        try:
+            import clr  # noqa: F401
+            _CLR_STATE.update(runtime=rt, errors=errors)
+            log.info("pythonnet 运行时：%s", rt)
+            return _CLR_STATE
+        except Exception as e:                             # noqa: BLE001
+            errors[rt] = f"{type(e).__name__}: {e}"
+            log.warning("pythonnet 运行时 %s 不可用：%s", rt, errors[rt])
+    os.environ.pop("PYTHONNET_RUNTIME", None)
+    _CLR_STATE.update(runtime=None, errors=errors)
+    return _CLR_STATE
+
+
 def webview2_runtime() -> dict:
     """Windows 上检测 Edge WebView2 运行时（pywebview 的 Edge 后端必须依赖它）。
 
@@ -273,13 +312,14 @@ def probe() -> dict:
                          "换成官方发布的 exe 包会自带它；源码运行请 pip install pywebview")
         return out
     if os.name == "nt":
-        try:
-            import clr  # noqa: F401                     # pythonnet：Edge 渲染必需
-            out["pythonnet"] = True
-        except Exception:                                  # noqa: BLE001
-            out["pythonnet"] = False
-            out["reason"] = ("缺少 pythonnet（Windows Edge 窗口需要）——"
-                             "官方 exe 包自带；源码运行请 pip install pythonnet")
+        clr_state = ensure_clr()
+        out["pythonnet"] = bool(clr_state.get("runtime"))
+        out["pythonnet_runtime"] = clr_state.get("runtime")
+        out["pythonnet_errors"] = clr_state.get("errors") or {}
+        if not out["pythonnet"]:
+            detail = "; ".join(f"{k}→{v}" for k, v in (out["pythonnet_errors"] or {}).items())
+            out["reason"] = ("缺少可用的 .NET 运行时（Windows Edge 窗口需要 .NET Framework 4.7.2+ 或 .NET 6+）"
+                             + (f"：{detail}" if detail else ""))
         wv = webview2_runtime()
         out["webview2"] = wv.get("present")
         out["webview2_path"] = wv.get("path", "")

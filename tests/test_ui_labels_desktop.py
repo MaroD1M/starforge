@@ -83,3 +83,37 @@ def test_desktop_probe_has_actionable_reason():
         assert info["reason"], "不可用必须给原因"
     if not info["windows"]:
         assert desktop.webview2_runtime()["present"] is None   # 非 Windows 不假装检测
+
+
+def test_desktop_check_cli_is_machine_readable(capsys):
+    """`starforge desktop-check` 是给用户回报用的：必须是纯 JSON 且含三段诊断。"""
+    import json as _json
+    import types
+    from starforge.__main__ import cmd_desktop_check
+    rc = cmd_desktop_check(types.SimpleNamespace())
+    out = _json.loads(capsys.readouterr().out)
+    assert set(out) >= {"probe", "webview2", "pythonnet_runtime"}
+    assert rc in (0, 6)
+
+
+def test_ensure_clr_reports_errors_on_non_windows():
+    from starforge import desktop
+    desktop._CLR_STATE.update(runtime=None, errors={})
+    st = desktop.ensure_clr()
+    if desktop.os.name != "nt":
+        assert st["runtime"] is None
+        assert st["errors"]          # 非 Windows 也要给出"为什么没用上"的说明
+
+
+def test_doctor_reports_critical_deps(capsys):
+    """`starforge doctor`：CI 与用户回报都用它，必须机器可读且覆盖 unicorn/依赖/桌面/上游。"""
+    import json as _json
+    import types
+    from starforge.__main__ import cmd_doctor
+    rc = cmd_doctor(types.SimpleNamespace())
+    out = _json.loads(capsys.readouterr().out)
+    assert out["unicorn"]["ok"] is True, out["unicorn"]
+    for dep in ("numpy", "flask", "lz4", "hgpaktool", "texture2ddecoder", "pefile", "capstone"):
+        assert out["deps"][dep] == "ok", (dep, out["deps"][dep])
+    assert "desktop" in out and "upstream" in out
+    assert rc in (0, 7)
