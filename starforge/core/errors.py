@@ -55,7 +55,7 @@ class GameFilesMissing(NmsHunterError):
 class WriteDisabled(NmsHunterError):
     status = 403
     kind = "write_disabled"
-    hint = "到设置页打开“允许写入”，或在 CLI 加 --yes-write"
+    hint = "到设置页打开“允许写入”（POST /api/settings 的 write_enabled），写命令还需带 confirm=true"
 
 
 class WriteRefused(NmsHunterError):

@@ -91,8 +91,11 @@ def test_preview_levels_without_game():
 
 def test_digits_for_accepts_forms():
     assert glyphs.digits_for("1043FEE69929") == "1043FEE69929"
+    # 12 位十六进制有歧义：历史行为当符文串（保持兼容）
     assert glyphs.digits_for("0x1043FEE69929") == "1043FEE69929"
-    assert glyphs.digits_for(0x1043FEE69929) == "1043FEE69929"
+    # int 明确按 UA 处理，按位段重排（v0.13 修正；旧实现是截低 12 位，见 handbook 01 卷 §6.4）
+    assert glyphs.digits_for(0x1043FEE69929) == "1010FEE69929"
+    assert glyphs.digits_for(0x10400F19BDCE5) == "1104F19BDCE5"
     assert glyphs.digits_for("AB") == "00000000AB".rjust(12, "0")[:12]
 
 

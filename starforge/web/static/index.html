@@ -65,6 +65,26 @@
           <div id="partTree" class="tree"></div>
         </div>
         <div class="selected" id="selectedSummary"></div>
+        <div class="field">
+          <label class="check" style="margin:0"><input id="lookOn" type="checkbox"> 按涂装筛（主色/副色）</label>
+          <div class="row" style="gap:8px;margin-top:6px">
+            <label class="tiny">主色 <input id="lookPrimary" type="color" value="#f2c744"></label>
+            <label class="tiny"><input id="lookPrimaryOn" type="checkbox" checked> 启用</label>
+            <label class="tiny">副色 <input id="lookSecondary" type="color" value="#1c1c22"></label>
+            <label class="tiny"><input id="lookSecondaryOn" type="checkbox"> 启用</label>
+          </div>
+          <div class="row" style="gap:8px;margin-top:4px">
+            <label class="tiny">容差
+              <select id="lookTol" class="input" style="width:auto;display:inline-block">
+                <option value="0.10">很接近（0.10）</option>
+                <option value="0.18" selected>接近（0.18）</option>
+                <option value="0.28">宽松（0.28）</option>
+                <option value="0.40">很宽松（0.40）</option>
+              </select>
+            </label>
+            <span class="tiny">按真实配色后置过滤，比纯部件搜索慢一些</span>
+          </div>
+        </div>
         <div class="grid2">
           <div class="field"><label>数量</label><input id="limit" class="input" type="number" value="12" min="1" max="60"></div>
           <div class="field"><label>搜索预算</label>
@@ -135,8 +155,14 @@
         <div class="row results-bar"><span id="mineInfo" class="tiny">选择左侧的船</span>
           <div class="spacer"></div>
           <label class="check" style="margin:0"><input id="onlyPreview" type="checkbox"> 只看能预览的</label>
+          <button id="backupBtn" class="btn small" title="每次写入都会自动备份，可在这里回滚">备份/恢复…</button>
           <button id="exportMine" class="btn small hide">导出全部</button></div>
         <div id="mineGrid" class="grid big"></div>
+        <div class="hr"></div>
+        <div class="row results-bar"><span id="petInfo" class="tiny" style="cursor:pointer" title="点开看游戏内的生物角色表">我的同伴</span>
+          <div class="spacer"></div>
+          <span class="tiny">3D 预览要等生物生成器（后续）</span></div>
+        <div id="petList" class="shiplist"></div>
       </div>
       <div class="pane detail" id="mineDetail">
         <div class="empty"><div class="empty-ico">🚀</div><p>你的船会显示在这里</p></div>
@@ -163,8 +189,24 @@
             <option value="0">本 region</option><option value="1">+ 邻接 region</option></select></div>
           <div class="field"><label>扫描系统数</label><input id="sysCount" class="input" type="number" value="200" min="20" max="767"></div>
         </div>
-        <button id="goScan" class="btn primary block">扫描</button>
+        <button id="goScan" class="btn primary block">扫描（只返回结果）</button>
         <div id="sysMsg" class="msg"></div>
+        <div class="hr"></div>
+        <label>银河索引（扫过的星系存进本地库，之后不用重扫）</label>
+        <div class="grid2">
+          <div class="field"><label>最少行星数</label>
+            <input id="minPlanets" class="input" type="number" value="0" min="0" max="8"></div>
+          <div class="field"><label>查多少条</label>
+            <input id="indexLimit" class="input" type="number" value="40" min="1" max="200"></div>
+        </div>
+        <div class="row" style="gap:8px">
+          <button id="goScanIndex" class="btn block" style="flex:1"
+                  title="扫一片区域并写入索引，扫完立刻按条件查">扫入库并查</button>
+          <button id="queryIndex" class="btn" title="不重扫，只查已经入库的星系">查索引</button>
+        </div>
+        <button id="exportIndex" class="btn small block" style="margin-top:6px"
+                title="把当前条件命中的星系导成 CSV（Excel 可开）">导出 CSV</button>
+        <div id="indexInfo" class="tiny" style="margin-top:6px"></div>
       </div>
       <div class="pane results">
         <div class="row results-bar"><span id="scanInfo" class="tiny">行星与本星系船池</span></div>

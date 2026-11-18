@@ -47,6 +47,18 @@ def run(include_write: bool = True) -> dict:
     steps: list[dict] = []
     state: dict = {}
 
+    # 0) 路径自愈（K21）：外部应用最常见的失败态是"游戏明明装着，设置里是空的"。
+    #    上游 gamepath.find 带 lru_cache，先失败过的空结果会被缓存住，所以先清缓存再自动发现。
+    try:
+        from nms_save import gamepath
+        gamepath.find.cache_clear()
+    except Exception:                                       # noqa: BLE001
+        pass
+    try:
+        state["autodetect"] = settings.autodetect(apply=True)
+    except Exception as e:                                  # noqa: BLE001
+        state["autodetect"] = {"error": f"{type(e).__name__}: {e}"}
+
     # 1) 只读数据
     steps.append(_step("部件目录 catalog", lambda: (
         lambda c: f"{len(c.ships)} 船型 / {c.stats['O']} 部件")(load_catalog())))
@@ -152,10 +164,10 @@ def run(include_write: bool = True) -> dict:
             "summary": f"{sum(1 for s in steps if s['ok'])}/{len(steps)} 步通过"}
 
 
-def main() -> int:
+def main(include_write: bool = True) -> int:
     from .core import console
     console.setup_console()
-    rep = run(include_write=True)
+    rep = run(include_write=include_write)
     print("starforge 自检")
     print("-" * 68)
     for s in rep["steps"]:
@@ -165,5 +177,5 @@ def main() -> int:
     print(rep["summary"], "·", "全部关键步骤通过" if rep["ok"] else "有关键步骤失败")
     if not rep["ok"]:
         print("\n排障顺序：① 设置页确认游戏/存档/数据目录 → ② 运行 'python -m starforge selftest' "
-              "→ ③ 看 ~/.starforge/logs/nmsforge.log")
+              "→ ③ 看 ~/.starforge/logs/starforge.log")
     return 0 if rep["ok"] else 1

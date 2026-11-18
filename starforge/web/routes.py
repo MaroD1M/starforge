@@ -10,10 +10,12 @@ POST /api/saves/apply         写回存档（S4 才实现；此网关先落地�
 """
 from __future__ import annotations
 
+import time
+
 from flask import Blueprint, Response, jsonify, request
 
 from ..core import log, paths, settings, strings
-from ..core.errors import BadRequest, GameFilesMissing, NotFound, WriteDisabled
+from ..core.errors import BadRequest, GameFilesMissing, NotFound, WriteDisabled, WriteRefused
 from ..data import load_catalog, load_icons
 from ..save import library
 
@@ -129,6 +131,40 @@ def api_ships():
         d.update(type_label=s.type_label, can_preview=s.can_preview)
         rows.append(d)
     return ok(path=str(p), count=len(ships), ships=rows, warnings=warns)
+
+
+@bp.get("/creatures/table")
+def api_creature_table():
+    """角色表结构级解析（表 → 86 条 cGcCreatureData；字段名来自 exe 反射）。"""
+    from .. import creature
+    return ok(**creature.role_table())
+
+
+@bp.get("/creatures/roles")
+def api_creature_roles():
+    """生物角色名表（来自游戏内 CreatureDataTable.mbin 的字符串表，启发式提取）。"""
+    from .. import creature
+    r = creature.role_names()
+    return ok(count=r["count"], roles=r["roles"], bytes=r["bytes"],
+              file=r["file"], note=r["note"])
+
+
+@bp.get("/creatures/capabilities")
+def api_creature_caps():
+    """生物 3D 的可行性盘点（T8 spike 结论），界面据此决定显示"暂不支持"还是预览。"""
+    from .. import creature
+    deep = request.args.get("deep") in ("1", "true", "yes")
+    return ok(**creature.capabilities(deep=deep))
+
+
+@bp.get("/creatures")
+def api_creatures():
+    """存档里的同伴（只读）。M8-lite：先给描述符与种子，3D 留到生物生成器之后。"""
+    from .. import creature
+    try:
+        return ok(**creature.companions(request.args.get("path")))
+    except Exception as e:                     # noqa: BLE001
+        raise BadRequest(f"{type(e).__name__}: {e}")
 
 
 @bp.post("/saves/apply")
@@ -274,11 +310,14 @@ def api_glyphs_png(name: str):
 def api_glyph_panel():
     from .. import glyphs as glyph_mod
     body = request.get_json(silent=True) or {}
-    text = body.get("glyphs") or body.get("ua") or request.args.get("glyphs")
-    if not text:
+    raw = body.get("glyphs") if body.get("glyphs") not in (None, "") else body.get("ua")
+    if raw in (None, ""):
+        raw = request.args.get("glyphs") or request.args.get("ua")
+    if raw in (None, ""):
         raise BadRequest("需要 glyphs 或 ua")
     try:
-        payload = glyph_mod.panel_payload(str(text))
+        # 传 UA（int 或 0x…）时由 glyphs.digits_for 按位段重排成符文串，不要先 str() 成十进制
+        payload = glyph_mod.panel_payload(raw if isinstance(raw, int) else str(raw))
     except ValueError as e:
         raise BadRequest(str(e))
     payload.update(target=body.get("target"), pinned=bool(body.get("pinned")))
@@ -320,6 +359,146 @@ def api_system():
         return ok(**info)
     except Exception as e:                     # noqa: BLE001
         raise BadRequest(f"{type(e).__name__}: {e}")
+
+
+@bp.post("/locate")
+def api_locate():
+    """船种子 → 星系坐标 + 符文（并用生成器证实）。"""
+    from .. import system
+    body = request.get_json(silent=True) or {}
+    seed = body.get("seed") or request.args.get("seed")
+    if not seed:
+        raise BadRequest("需要 seed（十六进制字符串或整数）")
+    try:
+        out = system.locate_seed(seed, save_path=body.get("save"),
+                                 max_steps=int(body.get("max_steps") or 3000),
+                                 limit=int(body.get("limit") or 6))
+    except GameFilesMissing:
+        raise
+    except Exception as e:                      # noqa: BLE001
+        raise BadRequest(f"{type(e).__name__}: {e}")
+    return ok(**out)
+
+
+@bp.post("/saves/class")
+def api_apply_class():
+    """改船级/属性（备份→原子写→读回→失败回滚）。"""
+    from ..save import writer
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirm"):
+        raise BadRequest("写操作需要 confirm=true")
+    path = body.get("path") or str(library.resolve(None))
+    values = body.get("values") or None
+    if values is not None and not isinstance(values, dict):
+        raise BadRequest("values 必须是 {属性ID: 数值} 的对象")
+    return ok(**writer.apply_class(path, int(body.get("slot", -1)),
+                                   ship_class=body.get("ship_class") or "",
+                                   values=values, best=bool(body.get("best")),
+                                   confirm=True, copy=bool(body.get("copy"))))
+
+
+@bp.get("/galaxy/export.csv")
+def api_galaxy_export():
+    """把索引里符合条件的星系导成 CSV（给 Excel/表格用）。"""
+    import csv
+    import io
+
+    from .. import galaxy
+    a = request.args
+    filters = {}
+    for k in ("biome", "sentinels", "race"):
+        if a.get(k):
+            filters[k] = a.get(k)
+    if a.get("dissonant") is not None:
+        filters["dissonant"] = a.get("dissonant") in ("1", "true", "yes")
+    if a.get("min_planets"):
+        filters["min_planets"] = int(a["min_planets"])
+    if a.get("has_interceptor") in ("1", "true", "yes"):
+        filters["has_interceptor"] = True
+    st = galaxy.GalaxyStore()
+    try:
+        rows = st.query(filters, limit=int(a.get("limit") or 500))
+    finally:
+        st.close()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["ua", "glyphs", "coords", "galaxy", "race", "planets", "dissonant",
+                "interceptor", "planet_index", "biome", "sentinels", "weather"])
+    for r in rows:
+        for pl in (r.get("matched_planets") or [{}]):
+            w.writerow([r.get("ua"), r.get("glyphs"), r.get("coords"), r.get("galaxy"),
+                        r.get("race"), r.get("planets"), int(bool(r.get("dissonant"))),
+                        r.get("interceptor") or "", pl.get("index", ""), pl.get("biome") or "",
+                        pl.get("sentinels") or "", pl.get("weather") or ""])
+    data = buf.getvalue()
+    fn = "galaxy-%s.csv" % time.strftime("%Y%m%d-%H%M%S")
+    return Response(data, mimetype="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+
+@bp.get("/galaxy/stats")
+def api_galaxy_stats():
+    from .. import galaxy
+    st = galaxy.GalaxyStore()
+    try:
+        return ok(**st.stats())
+    finally:
+        st.close()
+
+
+@bp.get("/galaxy/query")
+def api_galaxy_query():
+    """在已扫过的银河索引里按条件查（不需要游戏在跑）。"""
+    from .. import galaxy
+    a = request.args
+    filters = {}
+    for k in ("biome", "sentinels", "race"):
+        if a.get(k):
+            filters[k] = a.get(k)
+    if a.get("dissonant") is not None:
+        filters["dissonant"] = a.get("dissonant") in ("1", "true", "yes")
+    for k in ("min_planets",):
+        if a.get(k):
+            filters[k] = int(a.get(k))
+    if a.get("has_interceptor") in ("1", "true", "yes"):
+        filters["has_interceptor"] = True
+    st = galaxy.GalaxyStore()
+    try:
+        rows = st.query(filters, limit=int(a.get("limit") or 50))
+        return ok(filters=filters, count=len(rows), rows=rows, store=st.stats())
+    finally:
+        st.close()
+
+
+@bp.post("/galaxy/scan")
+def api_galaxy_scan():
+    """扫一片区域并**落库**（与 /system/scan 的区别：那个只返回命中，不留索引）。"""
+    from .. import galaxy, jobs, system
+    if not system.available():
+        raise GameFilesMissing("没有检测到游戏目录：银河扫描需要 NMS.exe 与 PCBANKS")
+    body = request.get_json(silent=True) or {}
+    center = body.get("center")
+    ua = None
+    if center:
+        try:
+            ua = int(str(center), 16) if str(center).lower().startswith("0x") else None
+            if ua is None:
+                from nms_procgen import locate
+                ua = locate.parse_address(str(center))
+        except Exception as e:                 # noqa: BLE001
+            raise BadRequest(f"无法解析圆心地址：{e}")
+    params = dict(center_ua=ua, radius=int(body.get("radius") or 0),
+                  systems_per_region=int(body.get("systems") or 60),
+                  filters=body.get("filters") or {}, limit=int(body.get("limit") or 40),
+                  save_path=body.get("save"))
+    job = jobs.REGISTRY.create("galaxy_scan")
+    job.progress.update({k: v for k, v in params.items() if k != "save_path"})
+
+    def work(j):
+        return galaxy.scan(job=j, **params)
+
+    jobs.run_in_thread(job, work)
+    return ok(job_id=job.id, params={k: v for k, v in params.items() if k != "save_path"})
 
 
 @bp.post("/system/scan")

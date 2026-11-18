@@ -158,6 +158,48 @@ def cmd_live_probe(a) -> int:
     return 0
 
 
+def cmd_agent(a) -> int:
+    """游戏内代理（M4）的握手/自检入口。
+
+    现在还没有 DLL，但入口先固定下来：`agent hello` 打印**能力表**（每项 available/reason），
+    与 `docs/AGENT-PROTOCOL.md` 的命令表一一对应。装上 agent 之后同一条命令就会走真实握手。
+    """
+    import json as _json
+    from .live import mem
+    caps = {
+        "player.ua": (False, "需要 agent（M4）", "low"),
+        "player.position": (False, "需要 agent（M4）", "low"),
+        "player.stats": (False, "需要 agent（M4）", "low"),
+        "system.current": (False, "需要 agent（M4）", "low"),
+        "planet.current": (False, "需要 agent（M4）", "low"),
+        "ship.read": (False, "需要 agent（M4）", "low"),
+        "ship.write_seed": (False, "需要 agent（M4）", "mid"),
+        "ship.write_class": (False, "需要 agent（M4）", "mid"),
+        "ship.write_parts": (False, "实验性：部件数组布局未确认", "high"),
+        "teleport.system": (False, "需要 agent（M5）", "high"),
+        "teleport.position": (False, "需要 agent（M5）+ 落点预检", "high"),
+        "scan.planet": (False, "需要 agent（M6）", "mid"),
+        "debug.flags": (False, "实验性：位域未验证", "high"),
+    }
+    attached = False
+    note = ""
+    if not mem.IS_WINDOWS:
+        note = "非 Windows：内存通道不可用（存档写回与符文浮窗不受影响）"
+    else:
+        try:
+            with mem.attach("NMS.exe") as proc:
+                attached = True
+                note = f"已连上游戏进程 pid={getattr(proc, 'pid', '?')}，但 agent DLL 尚未安装（M4）"
+        except Exception as e:                             # noqa: BLE001
+            note = f"未连上游戏：{type(e).__name__}: {e}"
+    table = {k: {"available": False, "reason": r, "risk": risk} for k, (_ok, r, risk) in caps.items()}
+    rep = {"proto": 1, "agent": None, "attached": attached, "note": note,
+           "capabilities": table,
+           "next": "按 docs/VERIFY-AGENT-WINDOWS.md 第 4 节回报；M4 落地后这里会变成真实握手"}
+    print(_json.dumps(rep, ensure_ascii=False, indent=1))
+    return 0 if a.action != "hello" else (0 if attached else 5)
+
+
 def cmd_glyph_overlay(a) -> int:
     from . import glyphs as glyph_mod, overlay
     try:
@@ -318,12 +360,17 @@ def main(argv=None) -> int:
     p.add_argument("action", choices=["probe"], nargs="?", default="probe")
     p.set_defaults(func=lambda a: cmd_live_probe(a))
 
+    p = sub.add_parser("agent", help="游戏内代理（M4）：hello / 能力表")
+    p.add_argument("action", choices=["hello"], nargs="?", default="hello")
+    p.set_defaults(func=cmd_agent)
+
     p = sub.add_parser("webcheck", help="验证网页与静态资源（打包后必跑）")
     p.set_defaults(func=cmd_webcheck)
 
     p = sub.add_parser("selfcheck", help="端到端自检（写入只在存档副本上）")
     p.add_argument("--no-write", action="store_true")
-    p.set_defaults(func=lambda a: __import__("starforge.selfcheck", fromlist=["main"]).main())
+    p.set_defaults(func=lambda a: __import__("starforge.selfcheck", fromlist=["main"]).main(
+        include_write=not a.no_write))
 
     p = sub.add_parser("selftest", help="自检")
     p.set_defaults(func=cmd_selftest)

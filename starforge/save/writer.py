@@ -184,6 +184,90 @@ def apply_seed(save_path: str, slot: int, source: ShipRef, confirm: bool = False
         raise WriteRefused(f"写入未完成，已回滚：{e}。备份保留在 {backup}") from e
 
 
+def apply_class(save_path: str, slot: int, ship_class: str = "", values: dict | None = None,
+                best: bool = False, confirm: bool = False, copy: bool = False) -> dict:
+    """改船级与属性（F14）。
+
+    与 `apply_seed` 完全同一套铁律：游戏在跑就不写 → 备份 → 原子写 → 重新解码核对 →
+    任何一步失败立刻回滚原始字节。额外两条：
+      · 属性值必须落在"这艘船这个等级游戏会给的区间"内，否则拒绝（不造不可能的船）；
+      · 写完要核对**其它船的种子一个都没动**（写错槽位是最贵的 bug）。
+    """
+    settings.require_write()
+    if not confirm:
+        raise BadRequest("缺少 confirm=true（写操作必须二次确认）")
+    if game_running():
+        raise WriteRefused("游戏正在运行，请先退出游戏再写入（否则会被游戏覆盖）")
+    ship_class = (ship_class or "").strip().upper()
+    if ship_class and ship_class not in ("C", "B", "A", "S"):
+        raise BadRequest(f"船级只能是 C/B/A/S，收到 {ship_class!r}")
+    if not ship_class and not values and not best:
+        raise BadRequest("没有要改的内容：至少给 ship_class、values 或 best=true 之一")
+
+    codec, mapping, nms_save, nms_ships = _nms()
+    if not os.path.exists(save_path):
+        raise BadRequest(f"存档不存在：{save_path}")
+
+    original_path = save_path
+    if copy:
+        save_path = _copy_path(save_path)
+        shutil.copy2(original_path, save_path)
+        log.info("改级使用副本：%s（原档 %s 不动）", save_path, original_path)
+
+    opened = nms_save.open_save(save_path)
+    all_ships_before = {s.index: s.seed for s in nms_ships.list_ships(opened.readable)}
+    if slot not in all_ships_before:
+        raise BadRequest(f"存档里没有第 {slot} 艘船（共 {len(all_ships_before)} 艘）")
+    before = nms_ships.ship_stats(opened.readable, slot)
+
+    original = open(save_path, "rb").read()
+    backup = _backup(save_path)
+    try:
+        from . import library as _lib
+        library_clear = _lib.clear_cache
+    except Exception:                                       # noqa: BLE001
+        library_clear = None
+
+    try:
+        nms_ships.set_ship_stats(opened.readable, slot,
+                                 values={k: float(v) for k, v in (values or {}).items()} or None,
+                                 ship_class=ship_class or None, best=bool(best))
+        data = _encode(opened)
+        _atomic_write(save_path, data)
+
+        reread = nms_save.open_save(save_path)
+        after = nms_ships.ship_stats(reread.readable, slot)
+        if ship_class and after["class"] != ship_class:
+            raise WriteRefused(f"写后校验失败：等级读到 {after['class']}，预期 {ship_class}")
+        changed = {s.index: s.seed for s in nms_ships.list_ships(reread.readable)}
+        if changed != all_ships_before:
+            raise WriteRefused("写后校验失败：其它船的种子被改动了（写错槽位）")
+        if library_clear:
+            library_clear()
+        log.info("改级：%s 槽位 %d %s → %s（备份 %s）", os.path.basename(save_path), slot,
+                 before["class"], after["class"], backup)
+        return {"ok": True, "path": save_path, "original": original_path, "copy": bool(copy),
+                "slot": slot, "backup": backup, "bytes": len(data),
+                "before": before, "after": after, "ships_untouched": True, "verified": True}
+    except Exception as e:                                  # noqa: BLE001
+        try:
+            _atomic_write(save_path, original)
+            if library_clear:
+                library_clear()
+            log.error("改级失败已回滚：%s（备份 %s）", e, backup)
+        except Exception as e2:                             # noqa: BLE001
+            log.error("回滚也失败！请手工把 %s 复制回 %s（%s）", backup, save_path, e2)
+        raise WriteRefused(f"改级未完成，已回滚：{e}。备份保留在 {backup}") from e
+
+
+def _copy_path(save_path: str) -> str:
+    """`save.hg` → `save.edited.hg`（已经带 .edited.hg 就原样）。"""
+    if save_path.endswith(".edited.hg"):
+        return save_path
+    base = save_path[:-3] if save_path.lower().endswith(".hg") else save_path
+    return base + ".edited.hg"
+
+
 def restore(save_path: str, backup_path: str, confirm: bool = False) -> dict:
     """从备份恢复（手册 F13 诊断里的"一键恢复"）。"""
     settings.require_write()

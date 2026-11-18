@@ -1,13 +1,17 @@
 """传送门符文：地址 → 12 个十六进制数字 → 图标/拼图。
 
 关键事实（已在游戏文件里核实）：
-  · 传送门符文 = 系统地址的 12 位十六进制（实测 stations.jsonl 5/5 通过）；
+  · 传送门符文 = **按位段重排**后拼出的 12 个十六进制字符：行星位 + system(3) + Y(2) + Z(3) + X(3)。
+    不是"地址的 12 位十六进制"——UA 是 52 位、字段宽度与符文分段不一致，直接截位是错的
+    （0x10400F19BDCE5 正确符文是 1104F19BDCE5，截低位会得到 0400F19BDCE5）。
+    实测见 handbook 01 卷 §6 与 tests/test_glyphs_ua.py。
   · 游戏内图标：NMSARC.TexUI.pak → textures/ui/frontend/icons/update3/portalsymbol.<0-f>.dds
     16 张 256×256，DX10/DXGI 98 = BC7。BC7 解码需要额外依赖；没有依赖时退回内置位图字体，
     面板依然可用（只是不如游戏原图好看）。
 
 对外：
-  digits_for(text)   -> "1043FEE69929"
+  digits_for(text)      -> "1104F19BDCE5"（int/0x… 按位段重排；12 位串按原样规范化）
+  glyphs_for_ua(ua)     -> 同上（显式 UA 入口）
   icon_png(digit)    -> bytes|None（游戏原图，需解码器；结果缓存到磁盘）
   panel_png(glyphs)  -> bytes（12 联符文图，原图或位图字体）
 """
@@ -49,11 +53,42 @@ _FONT = {
 }
 
 
+def unpack_ua(ua: int) -> dict:
+    """UA → 位域（与上游 `nms_procgen.locate.unpack_ua` 一致）。"""
+    s = lambda v, bits: v - (1 << bits) if v >= 1 << (bits - 1) else v   # noqa: E731
+    return {"x": s(ua & 0xFFF, 12), "z": s(ua >> 12 & 0xFFF, 12), "y": s(ua >> 24 & 0xFF, 8),
+            "galaxy": ua >> 32 & 0xFF, "system": ua >> 40 & 0xFFF, "planet": ua >> 52 & 0xF}
+
+
+def glyphs_for_ua(ua: int, planet: int = 1) -> str:
+    """UA → 12 位符文串（第 1 位行星 / system / Y / Z / X，各取自己的位段）。
+
+    注意：**不能**把 UA 的十六进制位直接截 12 位当符文串——UA 是 52 位、字段宽度与符文
+    分段不一致（system 在 UA 里占 40-51 位，在符文里占第 2-4 位）。上游 `describe()`
+    走的就是这条按位段重排的路，这里与它对齐。
+    """
+    u = unpack_ua(int(ua))
+    return (f"{int(planet) & 0xF:X}{u['system'] & 0xFFF:03X}"
+            f"{u['y'] & 0xFF:02X}{u['z'] & 0xFFF:03X}{u['x'] & 0xFFF:03X}")
+
+
 def digits_for(text: str | int) -> str:
-    """接受 12 位 glyph 串、UA 整数、或 0x… 十六进制，统一成 12 位大写十六进制。"""
+    """接受 12 位 glyph 串、UA 整数、或 0x… 十六进制，统一成 12 位大写十六进制。
+
+    传 UA（int 或 `0x…`）时按位段重排成符文串；传 12 位串时原样规范化。
+    """
     if isinstance(text, int):
-        text = "0x%X" % text
-    s = str(text).strip().upper()
+        return glyphs_for_ua(text)
+    raw = str(text).strip()
+    if raw.lower().startswith("0x"):
+        digits = raw[2:]
+        # 歧义处理：12 位十六进制既可能是符文串、也可能是 UA。历史上（v0.9–v0.12）12 位一律
+        # 当符文串，这里保持兼容；UA 的真实长度通常 >12 位（本例 0x10400F19BDCE5 是 13 位），
+        # 需要精确换算请直接传 int。
+        if len(digits) != 12:
+            return glyphs_for_ua(int(raw, 16))
+        raw = digits
+    s = raw.upper()
     if s.startswith("0X"):
         s = s[2:]
     if not s or any(c not in HEX for c in s):
@@ -124,9 +159,21 @@ def _decode_dds(data: bytes) -> tuple[int, int, bytes]:
             import texture2ddecoder
             return w, h, texture2ddecoder.decode_bc7(data[148:], w, h)
         raise NotImplementedError(f"DXGI {dxgi}")
-    from . import dds as dds_mod
-    w2, h2, rgba = dds_mod.decode_dds(data)
-    return w2, h2, rgba.tobytes()
+    # DXT1/3/5：用 texture2ddecoder 自带的解码器（旧代码 `from . import dds` 指向一个
+    # 不存在的模块，非 BC7 的符文贴图会 ImportError 并静默退回位图字体）。
+    import texture2ddecoder
+    if fourcc in (b"DXT1", b"DXT3", b"DXT5"):
+        dec = {b"DXT1": texture2ddecoder.decode_bc1,
+               b"DXT3": texture2ddecoder.decode_bc3,
+               b"DXT5": texture2ddecoder.decode_bc3}[fourcc]
+        return w, h, _fourcc_decode(dec, data, w, h)
+    raise NotImplementedError(f"不支持的 DDS 压缩格式 {fourcc!r}")
+
+
+def _fourcc_decode(dec, data: bytes, w: int, h: int) -> bytes:
+    """texture2ddecoder 的 decode_bc* 接受 (data, w, h) 并返回 RGBA 字节。"""
+    out = dec(data[128:], w, h)
+    return out if isinstance(out, (bytes, bytearray)) else bytes(out)
 
 
 _ICON_CACHE: dict[tuple[str, int], np.ndarray] = {}       # 只缓存成功结果（负结果会因设置变化而失效）

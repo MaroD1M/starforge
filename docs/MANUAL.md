@@ -110,10 +110,10 @@ GlyphPanel   = {glyphs:"1043FEE69929", digits[12], target{ua,coords,galaxy}, mod
 ② 看我的船
   GET /api/ships?path=… → ShipRef[]（7 艘）
     → 列表 → 选中 → /api/preview（L1）→ 与"搜索结果"并排对比
-    → 主动作：把这艘的 seed 套到另一艘同型船（POST /api/save/apply）
+    → 主动作：把这艘的 seed 套到另一艘同型船（POST /api/saves/apply）
 
 ③ 找星球
-  GET /api/system?current=1 → SystemRef（6 行星 + 50 船 + 拦截机）
+  GET /api/system（不带参数=当前星系） → SystemRef（6 行星 + 50 船 + 拦截机）
     → 不满意 → POST /api/system/scan {center, radius, filters} → job
     → 结果表（biome/哨兵/dissonant/拦截机）
     → 主动作：打开符文浮窗（把 glyphs 交给浮窗）→ 游戏内传送门

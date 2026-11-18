@@ -395,18 +395,73 @@
   });
 
   $('#goSearch').onclick = async () => {
-    if (!S.want.size && !S.avoid.size) { $('#searchMsg').textContent = '先选至少一个部件（点一下变绿＝想要）'; return; }
+    const look = buildLook();
+    if (!S.want.size && !S.avoid.size && !look) { $('#searchMsg').textContent = '先选至少一个部件（点一下变绿＝想要），或勾选「按涂装筛」'; return; }
     $('#searchMsg').textContent = ''; $('#grid').innerHTML = ''; $('#gridEmpty').classList.add('hide');
     $('#resultInfo').textContent = '搜索中…';
     try {
       localStorage.setItem('sf.query', JSON.stringify({ ship: S.ship, want: [...S.want], avoid: [...S.avoid] }));
       const r = await post('/api/search', {
-        ship: S.ship, want: [...S.want], avoid: [...S.avoid],
+        ship: S.ship, want: [...S.want], avoid: [...S.avoid], look,
         limit: +$('#limit').value || 12, max_seeds: +$('#maxSeeds').value, time_limit: 30, workers: 1,
       });
       pollJob(r.job_id, onSearchDone);
     } catch (e) { $('#searchMsg').textContent = e.message; $('#resultInfo').textContent = '失败'; }
   };
+
+  /* 生物角色表（T8-3）：86 条，Id 是 16 字节 ASCII，可直接显示 */
+  async function showRoleTable() {
+    let t;
+    try {
+      t = await api('/api/creatures/table');
+    } catch (e) {
+      toast('角色表读取失败：' + e.message);
+      return;
+    }
+    const items = t.items || [];
+    dialog({
+      title: `生物角色表 · ${t.entries} 条`,
+      body: `<p class="tiny">来源 <code>Metadata/Simulation/Ecosystem/CreatureDataTable.mbin</code>
+               （${(t.end_at || 0).toLocaleString()} 字节处结束 · ${t.entry_size} B/条 ·
+               类 <code>${esc(t.class || '')}</code>）</p>
+             <div class="opt-list">${items.map(it => `
+               <div class="row-item"><div class="meta"><b>${esc(it.id || '?')}</b>
+                 <div class="tiny">force_type ${esc(String(it.force_type))} · real_type ${esc(String(it.real_type))}
+                   · 体型 ${(+it.min_scale).toFixed(2)}–${(+it.max_scale).toFixed(2)}
+                   ${it.eco_system ? ' · 生态刷出' : ''}${it.can_be_female ? ' · 可有雌性' : ''}</div></div>
+               </div>`).join('')}</div>
+             <p class="tiny">${esc(t.note || '')}</p>`,
+      okText: '知道了', cancelText: '', onOk: () => true,
+    });
+  }
+  document.addEventListener('click', e => {
+    if (e.target && e.target.id === 'petInfo') { showRoleTable(); }
+  });
+
+  /* 涂装筛选：把两个 color input 变成 look 对象（RGB 模式，后端做后置过滤） */
+  function hexToRgb(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec((hex || '').trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
+  }
+  function buildLook() {
+    if (!$('#lookOn')?.checked) return null;
+    const look = { tol: +($('#lookTol')?.value || 0.18) };
+    if ($('#lookPrimaryOn')?.checked) {
+      const c = hexToRgb($('#lookPrimary')?.value);
+      if (c) look.primary = c;
+    }
+    if ($('#lookSecondaryOn')?.checked) {
+      const c = hexToRgb($('#lookSecondary')?.value);
+      if (c) look.secondary = c;
+    }
+    return (look.primary || look.secondary) ? look : null;
+  }
+  $('#lookOn') && ($('#lookOn').onchange = () => {
+    document.querySelectorAll('#lookPrimary, #lookPrimaryOn, #lookSecondary, #lookSecondaryOn, #lookTol')
+      .forEach(el => { el.disabled = !$('#lookOn').checked; });
+  });
 
   function pollJob(id, done) {
     clearInterval(S.jobTimer);
@@ -445,7 +500,10 @@
         <img loading="lazy" src="/api/thumb/${r.type}/${r.seed}.png?size=340" alt="${esc(r.seed)}"
              onerror="this.style.visibility='hidden'">
         <span class="star ${isFav(r) ? 'on' : ''}" data-star="${i}" title="收藏">★</span>
-        <div class="cap"><span class="seed">…${r.seed.slice(-8)}</span><span class="badge ok">3D</span></div>
+        <div class="cap"><span class="seed">…${r.seed.slice(-8)}</span>${
+          r.look_match ? `<span class="badge ok" title="与目标涂装的 RGB 距离，越小越像">Δ${
+            Object.values(r.look_match).filter(v => v != null).map(v => v.toFixed(2)).join('/') || '?'}</span>` : ''
+        }<span class="badge ok">3D</span></div>
       </div>`).join('');
     $$('#grid .card').forEach(el => el.onclick = e => {
       if (e.target.dataset.star !== undefined) { toggleFav(items[+e.target.dataset.star]); return; }
@@ -602,7 +660,9 @@
       <div class="actions">
         <button class="btn small" data-a="copy">复制种子</button>
         <button class="btn small" data-a="share">分享码</button>
+        <button class="btn small" data-a="locate">在哪（反查星系）</button>
         ${withActions ? '<button class="btn small primary" data-a="apply">写回存档…</button>' : ''}
+        ${ref.slot !== undefined ? '<button class="btn small" data-a="class">改级/属性…</button>' : ''}
         ${S.live.supported ? '<button class="btn small" data-a="live">送进游戏</button>' : ''}
       </div>
       <div class="kvbox"></div>
@@ -645,6 +705,8 @@
     });
     act('apply') && (act('apply').onclick = () => openApply(ref));
     act('live') && (act('live').onclick = () => pushLive(ref));
+    act('locate') && (act('locate').onclick = () => openLocate(ref));
+    act('class') && (act('class').onclick = () => openClass(ref));
   }
 
   /* ---------------- 我的船 ---------------- */
@@ -672,10 +734,67 @@
       });
       renderMine();
       if (S.mine.length) $$('#shipList .row-item')[0].click();
+      loadPets();
     } catch (e) {
       $('#saveMsg').textContent = e.message;
       $('#shipList').innerHTML = '<div class="tiny">读取失败。可在设置页确认存档目录，或点右上角「一键配置」。</div>';
       $('#mineGrid').innerHTML = '';
+    }
+  }
+
+  /* ---------------- 我的同伴（M8-lite，只读） ---------------- */
+  async function loadPets() {
+    const path = ($('#savePath')?.value || '').trim();
+    const host = $('#petList');
+    if (!host) return;
+    host.innerHTML = '<div class="tiny">读取同伴…</div>';
+    try {
+      const [r, caps] = await Promise.all([
+        api('/api/creatures' + (path ? '?path=' + encodeURIComponent(path) : '')),
+        api('/api/creatures/capabilities').catch(() => null),
+      ]);
+      const list = r.creatures || [];
+      $('#petInfo').textContent = `我的同伴 ${r.count} 只`
+        + (caps && caps.descriptors ? ` · 游戏里有 ${caps.descriptors} 个生物描述符 / ${caps.rigs.length} 个骨架族` : '')
+        + (caps && !caps.preview_possible ? ' · 3D 需运行时生物生成器' : '');
+      if (!list.length) {
+        host.innerHTML = `<div class="tiny">${esc(r.note || '这个存档里还没有同伴')}</div>`;
+        return;
+      }
+      host.innerHTML = list.map(c => `
+        <div class="row-item" data-pet="${c.index}" title="${esc((c.descriptors || []).join(' · '))}">
+          <div class="meta"><b>${esc(c.name)}</b>
+            <div class="tiny">${esc(c.creature_zh || c.creature)} · ${esc(c.type_zh)} · ${esc(c.biome_zh)}
+               · 体型 ${esc(String(c.scale))}${c.predator ? ' · 掠食' : ''}${c.has_fur ? ' · 有毛' : ''}</div>
+            <div class="tiny"><code>${esc(c.seeds.species)}</code></div></div>
+          <span class="spacer"></span>
+          <button class="btn small" data-copy-species="${esc(c.seeds.species)}">复制种子</button>
+        </div>`).join('');
+      host.querySelectorAll('[data-copy-species]').forEach(b => b.onclick = e => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(b.dataset.copySpecies);
+        toast('物种种子已复制');
+      });
+      host.querySelectorAll('[data-pet]').forEach(el => el.onclick = () => {
+        const c = list.find(x => String(x.index) === el.dataset.pet);
+        dialog({
+          title: c.name,
+          body: `<p><b>${esc(c.creature_zh || c.creature)}</b> · ${esc(c.type_zh)} · ${esc(c.biome_zh)}
+                   · 体型 ${esc(String(c.scale))}</p>
+                 <div class="kvbox">
+                   <div class="kvrow"><span>物种种子</span><span><code>${esc(c.seeds.species)}</code></span></div>
+                   <div class="kvrow"><span>属种子</span><span><code>${esc(c.seeds.genus)}</code></span></div>
+                   <div class="kvrow"><span>个体种子</span><span><code>${esc(c.seeds.creature)}</code></span></div>
+                   <div class="kvrow"><span>所在星系</span><span><code>0x${c.ua.toString(16).toUpperCase()}</code></span></div>
+                   <div class="kvrow"><span>属性点</span><span>${esc(String(c.traits))} 项</span></div>
+                 </div>
+                 <div class="warnbox">描述符（决定外观的部件组合）：<br>
+                   ${(c.descriptors || []).map(d => `<code>${esc(d)}</code>`).join(' ')}</div>
+                 <p class="tiny">${esc('3D 预览与"按外观搜索"需要生物生成器，属 T8 第二阶段；写回同伴暂不开放。')}</p>`,
+          okText: '知道了', cancelText: '', onOk: () => true });
+      });
+    } catch (e) {
+      host.innerHTML = `<div class="tiny">同伴读取失败：${esc(e.message)}</div>`;
     }
   }
 
@@ -697,6 +816,53 @@
       showShip(s, 'mineDetail', false);
     });
   }
+  /* ---------------- 备份与恢复（写入的安全网） ---------------- */
+  async function openBackups() {
+    const path = ($('#savePath')?.value || '').trim();
+    const qs = path ? '?path=' + encodeURIComponent(path) : '';
+    let r;
+    try {
+      r = await api('/api/saves/backups' + qs);
+    } catch (e) {
+      dialog({ title: '备份列表不可用', body: `<div class="warnbox">${esc(e.message)}</div>`,
+        okText: '知道了', cancelText: '', onOk: () => true });
+      return;
+    }
+    const rows = r.backups || [];
+    if (!rows.length) {
+      dialog({ title: '没有备份', okText: '知道了', cancelText: '', onOk: () => true,
+        body: '<p>这个存档还没有备份。每次写入（写回/改级）前都会自动生成一份。</p>' });
+      return;
+    }
+    const body = `<p class="tiny">存档：<code>${esc(r.path || path || '默认存档')}</code></p>
+      <div class="opt-list">${rows.map((b, i) => `
+        <div class="row-item"><div class="meta">
+          <b>${esc(b.path.split(/[\\/]/).pop())}</b>
+          <div class="tiny">${new Date((b.mtime || 0) * 1000).toLocaleString()} · ${(b.bytes / 1048576).toFixed(2)} MB</div>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn small" data-restore="${i}">恢复这一份</button></div>`).join('')}</div>
+      <div class="warnbox">恢复会覆盖当前存档（恢复前也会先给当前状态留一份快照）。游戏正在运行时不允许恢复。</div>`;
+    dialog({ title: '备份 / 恢复', body, okText: '关闭', cancelText: '', onOk: () => true });
+    $$('#dlgBody [data-restore]').forEach(btn => btn.onclick = () => {
+      const b = rows[+btn.dataset.restore];
+      dialog({
+        title: '确认恢复',
+        body: `<p>用 <code>${esc(b.path.split(/[\\/]/).pop())}</code> 覆盖当前存档？</p>
+               <div class="warnbox">当前存档会先被备份，然后被这份覆盖。之后重新进入游戏即可看到旧状态。</div>`,
+        okText: '恢复', cancelText: '取消',
+        onOk: async () => {
+          await post('/api/saves/restore',
+            { path, backup: b.path, confirm: true });
+          toast('已恢复，并给恢复前的状态留了快照');
+          openSave();
+          return true;
+        },
+      });
+    });
+  }
+  $('#backupBtn').onclick = openBackups;
+
   document.addEventListener('change', e => { if (e.target.id === 'onlyPreview') renderMine(); });
   $('#openSave').onclick = openSave;
 
@@ -743,6 +909,81 @@
     $$('#dlgBody label.pick').forEach(el => el.onclick = () => {
       slot = +el.dataset.slot;
       $$('#dlgBody label.pick').forEach(x => x.classList.toggle('on', x === el));
+    });
+  }
+
+  /* ---------------- 种子反查星系（A4） ---------------- */
+  async function openLocate(ref) {
+    const body = `<p class="tiny">正在反解 <code>${esc(ref.seed)}</code> …（要跑一次星系生成器，通常 1–6 秒）</p>
+      <div id="locateOut"><div class="row-item"><div class="meta">反解中…</div></div></div>`;
+    dialog({ title: '这艘船在哪？', body, okText: '关闭', cancelText: '', onOk: () => true });
+    let r;
+    try {
+      r = await post('/api/locate', { seed: ref.seed });
+    } catch (e) {
+      $('#locateOut').innerHTML = `<div class="warnbox">反查失败：${esc(e.message)}</div>`;
+      return;
+    }
+    const hits = r.hits || [];
+    if (!hits.length) {
+      $('#locateOut').innerHTML = `<div class="warnbox">${esc(r.reason || '反解不出可信星系')}
+        <br><span class="tiny">候选 ${r.candidates} 个，均未通过生成器证实。这不影响你使用这艘船。</span></div>`;
+      return;
+    }
+    $('#locateOut').innerHTML = hits.map((h, i) => `
+      <div class="row-item" data-hit="${i}">
+        <div class="meta">
+          <b>${esc(h.galaxy_name || 'Euclid')} · <code>${esc(h.glyphs)}</code></b>
+          <div class="tiny">坐标 ${esc(h.coords)} · ${esc(h.ua)}</div>
+          <div class="tiny">出处：${esc(h.where || '未知')}${h.what ? ' · ' + esc(h.what) : ''}
+            ${h.visited ? ' · <b>你到过这个星系</b>' : ''} · 回退 ${esc(String(h.steps ?? '?'))} 步</div>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn small" data-copy-glyph="${esc(h.glyphs)}">复制符文</button>
+      </div>`).join('');
+    $$('#locateOut [data-copy-glyph]').forEach(b => b.onclick = e => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(b.dataset.copyGlyph);
+      toast('符文已复制：' + b.dataset.copyGlyph);
+    });
+  }
+
+  /* ---------------- 改船级/属性（C3） ---------------- */
+  async function openClass(ref) {
+    const cls = ref.ship_class || 'C';
+    const body = `
+      <p>槽位 ${ref.slot} · ${esc(ref.name || ref.type_label || ref.type)} · 当前 <b>${esc(cls)}</b> 级</p>
+      <div class="opt-list">${['C', 'B', 'A', 'S'].map(c => `
+        <label class="pick ${c === 'S' ? 'on' : ''}" data-cls="${c}">
+          <input type="radio" name="cls" ${c === 'S' ? 'checked' : ''}><span>${c} 级</span>
+        </label>`).join('')}</div>
+      <label class="pick"><input type="checkbox" id="clsBest"> 属性拉到该等级上限（游戏允许的最高值）</label>
+      <label class="pick"><input type="checkbox" id="clsCopy"> 写到副本（原档字节级不动）</label>
+      <div class="warnbox">写入前自动备份；写完重新解码核对等级、并确认<b>其它船的种子一个没动</b>，
+        不符即回滚。改级不会改变外观。</div>`;
+    let shipClass = 'S';
+    dialog({
+      title: '改船级 / 属性', body, okText: '写入并校验',
+      onOk: async () => {
+        const r = await post('/api/saves/class', {
+          slot: ref.slot, ship_class: shipClass,
+          best: !!$('#clsBest')?.checked, copy: !!$('#clsCopy')?.checked, confirm: true,
+        });
+        toast(`已改为 ${r.after.class} 级并通过读回校验`);
+        dialog({
+          title: '改级成功',
+          body: `<p>槽位 ${r.slot}：${esc(r.before.class)} 级 → <b>${esc(r.after.class)} 级</b></p>
+                 <p class="tiny">${(r.after.stats || []).map(x => esc(x.name || x.id) + ' ' + esc(String(x.value))).join(' · ')}</p>
+                 <p class="tiny">备份：<code>${esc(r.backup)}</code></p>`,
+          okText: '好', cancelText: '关闭', onOk: () => true,
+        });
+        openSave();
+        return true;
+      },
+    });
+    $$('#dlgBody label[data-cls]').forEach(el => el.onclick = () => {
+      shipClass = el.dataset.cls;
+      $$('#dlgBody label[data-cls]').forEach(x => x.classList.toggle('on', x === el));
     });
   }
 
@@ -796,6 +1037,7 @@
             <b>${esc(p.biome_zh || p.biome_name)}</b>
             <div class="spacer"></div><span class="tiny">${here ? '你在这里' : '#' + p.index}</span></div>
           <div class="tiny">哨兵 ${esc(p.sentinels_zh || p.sentinels)}</div>
+          ${(p.sentinel_presets || []).length ? `<div class="tiny" title="各哨兵预设下的等级（第 3 个是游戏判定 dissonant 用的）">预设 ${esc((p.sentinel_presets || []).join('/'))}</div>` : ''}
           <div class="glyph">${esc(s.glyphs)}</div>
           <div class="row"><button class="btn small" data-glyph="${esc(s.glyphs)}">符文</button></div>
         </div>`;
@@ -850,6 +1092,87 @@
         $$('#scanTable [data-glyph]').forEach(b => b.onclick = () => showGlyphs(b.dataset.glyph, ''));
       });
     } catch (e) { $('#sysMsg').textContent = e.message; }
+  };
+
+  /* ---------------- 银河索引（M3） ---------------- */
+  function indexFilters() {
+    const f = {
+      biome: $('#biomeSel')?.value || null,
+      sentinels: $('#sentSel')?.value || null,
+      dissonant: !!$('#dissChk')?.checked,
+      min_planets: +($('#minPlanets')?.value || 0),
+    };
+    return f;
+  }
+  function indexQueryString(f) {
+    const q = new URLSearchParams();
+    if (f.biome) q.set('biome', f.biome);
+    if (f.sentinels) q.set('sentinels', f.sentinels);
+    if (f.dissonant) q.set('dissonant', '1');
+    if (f.has_interceptor) q.set('has_interceptor', '1');
+    if (f.min_planets) q.set('min_planets', f.min_planets);
+    q.set('limit', +($('#indexLimit')?.value || 40));
+    return q.toString();
+  }
+  function renderIndex(rows, store) {
+    $('#scanInfo').textContent = `索引命中 ${rows.length} 个星系`;
+    if (store) {
+      $('#indexInfo').textContent = `库内 ${store.systems} 星系 / ${store.planets} 行星`
+        + (store.updated ? ` · 更新于 ${new Date(store.updated * 1000).toLocaleString()}` : '');
+    }
+    if (!rows.length) {
+      $('#scanTable').innerHTML = '<div class="tiny">索引里没有符合条件的星系。先「扫入库并查」，或放宽条件（生物群系/哨兵/最少行星数）。</div>';
+      return;
+    }
+    $('#scanTable').innerHTML = `<table><thead><tr><th>星系</th><th>符文</th><th>行星</th>
+      <th>生物群系</th><th>哨兵</th><th></th></tr></thead><tbody>` +
+      rows.map(r => {
+        const pls = r.matched_planets || [];
+        const first = pls[0] || {};
+        return `<tr>
+          <td>${esc(r.ua)}${r.dissonant ? ' <span class="badge ok">D</span>' : ''}</td>
+          <td><code>${esc(r.glyphs || '')}</code></td>
+          <td>${pls.map(p => '#' + p.index).join(' ') || (r.planets || '')}</td>
+          <td>${esc(first.biome || '—')}</td>
+          <td>${esc(first.sentinels || '—')}</td>
+          <td><button class="btn small" data-glyph="${esc(r.glyphs || '')}">符文</button></td>
+        </tr>`;
+      }).join('') + '</tbody></table>';
+    $$('#scanTable [data-glyph]').forEach(b => b.onclick = () => showGlyphs(b.dataset.glyph, ''));
+  }
+  async function queryIndex() {
+    const f = indexFilters();
+    $('#indexInfo').textContent = '查询中…';
+    try {
+      const r = await api('/api/galaxy/query?' + indexQueryString(f));
+      renderIndex(r.rows || [], r.store);
+    } catch (e) { $('#indexInfo').textContent = '查询失败：' + e.message; }
+  }
+  $('#queryIndex').onclick = queryIndex;
+  $('#exportIndex').onclick = () => {
+    const f = indexFilters();
+    const q = indexQueryString(f);
+    window.location.href = '/api/galaxy/export.csv?' + q.replace(/(^|&)limit=[^&]*/, '$1limit=500');
+    $('#indexInfo').textContent = '已请求导出 CSV（浏览器下载栏）';
+  };
+
+  $('#goScanIndex').onclick = async () => {
+    const f = indexFilters();
+    $('#indexInfo').textContent = '扫描并入库中…（扫完会自动按条件查一次）';
+    try {
+      const r = await post('/api/galaxy/scan', {
+        radius: +$('#radius').value, systems: +$('#sysCount').value, limit: 200,
+        filters: { biome: f.biome, sentinels: f.sentinels, dissonant: f.dissonant,
+                   min_planets: f.min_planets },
+      });
+      pollJob(r.job_id, j => {
+        if (j.status === 'failed') { $('#indexInfo').textContent = '扫描失败：' + j.error; return; }
+        const res = j.result || {};
+        $('#indexInfo').textContent = `扫了 ${res.scanned ?? '?'} 个星系，命中 ${(res.hits || []).length}`
+          + (res.store ? ` · 库内 ${res.store.systems} 星系` : '');
+        queryIndex();
+      });
+    } catch (e) { $('#indexInfo').textContent = e.message; }
   };
 
   /* ---------------- 符文 ---------------- */

@@ -1,7 +1,9 @@
 """GSHI 图标容器（Gagarin 的 icons.bin）读写。
 
 格式（由 winmm.dll @0x180030030 逆出，实测 1039+867 条全通）：
-  header: char[4] "GSHI"; u16 version(1|2); u32 count
+  header: char[4] "GSHI"; u32 version(1|2); u32 count     ← 共 12 字节
+          （此前注释写作 "u16 version"，是错的：u16 后有 2 字节对齐填充，
+           count 落在 +0x08；按 10 字节解析会得到荒谬的 count。见 handbook 02/03 卷）
   entry : u8 namelen; char name[namelen]; u16 w; u16 h; u32 datalen; u8 data[datalen]
   stream: code=u8
             code >= 0x80 -> 跳过 (code & 0x7f) 个像素（保持透明）

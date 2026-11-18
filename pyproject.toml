@@ -17,7 +17,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["starforge", "starforge.core", "starforge.data", "starforge.save", "starforge.web"]
+packages = ["starforge", "starforge.core", "starforge.data", "starforge.save", "starforge.web", "starforge.live"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

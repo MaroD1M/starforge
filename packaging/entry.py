@@ -31,6 +31,8 @@ import starforge.search  # noqa: F401
 import starforge.jobs  # noqa: F401
 import starforge.glyphs  # noqa: F401
 import starforge.gltf  # noqa: F401
+import starforge.galaxy  # noqa: F401  （M3 银河索引：SQLite 落库/查询/CSV）
+import starforge.creature  # noqa: F401  （M8-lite 同伴 + T8 角色表）
 import starforge.overlay  # noqa: F401
 import starforge.desktop  # noqa: F401
 
@@ -60,11 +62,6 @@ import starforge.live.exml  # noqa: F401
 import starforge.data.catalog  # noqa: F401
 import starforge.data.icons  # noqa: F401
 import starforge.data.shipref  # noqa: F401
-import starforge.web.routes  # noqa: F401
-import starforge.live.scan  # noqa: F401
-import starforge.live.exml  # noqa: F401
-import starforge.live.mem  # noqa: F401
-import starforge.live.writer  # noqa: F401
 
 from starforge.__main__ import main
 

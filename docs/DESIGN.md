@@ -180,9 +180,9 @@ PreviewAsset = {shipref_hash, level:"L0|L1", glb_path, png_paths[], verts, tris,
 | DELETE | `/api/jobs/{id}` | — | 取消 |
 | GET | `/api/preview/{type}/{seed}` | `?parts=&level=` | `{level, glb_url, png_url, verts, tris, degraded}` |
 | GET | `/api/model/{type}/{seed}.glb` | `?parts=` | glTF 二进制（ETag） |
-| GET | `/api/system` | `?ua=` 或 `?glyphs=` 或 `?current=1` | SystemRef |
+| GET | `/api/system` | `?ua=` 或 `?glyphs=`（都不带 = 当前星系） | SystemRef |
 | POST | `/api/system/scan` | `{center, radius, filters}` | `{job_id}` |
-| POST | `/api/save/apply` | `{path, slot, shipref, confirm}` | 备份路径 + 校验结果（**403 若写关闭**） |
+| POST | `/api/saves/apply` | `{path, slot, shipref, confirm}` | 备份路径 + 校验结果（**403 若写关闭**） |
 | POST | `/api/live/push` | `{slot_id, shipref, confirm}` | 写入+回读（**403 若写关闭**） |
 | GET/POST | `/api/settings` | — | 读写设置（写设置不算"游戏写入"） |
 

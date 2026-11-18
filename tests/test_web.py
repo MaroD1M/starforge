@@ -59,8 +59,20 @@ def test_write_gate_is_closed_by_default(client):
     assert r.get_json()["error"]["kind"] == "write_disabled"
 
 
-def test_write_gate_opens_then_needs_confirm(client):
+def test_write_gate_opens_then_needs_confirm(client, monkeypatch):
+    """闸门顺序：先 write_enabled，再 confirm，最后才碰存档。
+
+    这里显式把"找不到存档"固定住——否则本机设了 STARFORGE_SAVES 时，用例会走到
+    "存档里没有第 -1 艘船"的 400，测试就跟着环境漂了（这条坑由 goal 轮跑全量时暴露）。
+    """
+    from starforge.core.errors import SaveNotFound
+    from starforge.save import library as library_mod
+
+    def _no_save(*a, **k):
+        raise SaveNotFound("没有找到存档目录")
+
     settings_mod.update(write_enabled=True)
+    monkeypatch.setattr(library_mod, "resolve", _no_save)
     r = client.post("/api/saves/apply", json={})
     assert r.status_code == 400                     # 缺 confirm
     # 有 confirm 但没配置存档路径 → 明确 404，而不是静默成功
