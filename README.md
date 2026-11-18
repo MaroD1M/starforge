@@ -13,13 +13,13 @@
 
 | 能力 | 状态 |
 |---|---|
-| 按部件 / 涂装条件搜索飞船种子（同型内） | ✅ 网页可用（13–20 M seeds/s） |
+| 按部件 / 涂装条件搜索飞船种子（同型内） | ✅ 原生界面可用（13–20 M seeds/s） |
 | 真 3D 预览（读你自己的游戏 pak）+ 浏览器内可旋转 | ✅ WebGL 查看器 + 导出 glb |
 | 服务端渲染缩略图（点云 + 法线着色 + 2× 超采样） | ✅ 网格与详情页共用 |
 | 存档飞船图鉴（型号 / 种子 / 名称 / 是否可换外观） | ✅ 真实存档验证（7/8 艘） |
 | 星系 / 星球搜索（生物群系、哨兵、dissonant） | ✅ 实测 25 系统/秒级 |
 | 本星系船池（含拦截机种子） | ✅ 实测 50 条/系统 |
-| **传送门符文**（地址 → 12 个符文，网页浮层/弹窗） | ✅ 网页版可用；独立置顶窗口 🚧 |
+| **传送门符文**（地址 → 12 个符文，网页浮层/弹窗） | ✅ 原生界面可用；独立 Qt 置顶窗口 |
 | 同型换种子写回存档（备份 + 原子写 + 读回 + 回滚） | ✅ 已实现并测试（跨型明确拒绝） |
 | 游戏内实时通道（模板槽写 seed，仅 Windows，默认关闭） | ✅ 定位/写入/回读已实现；模板 Mod 一键生成 |
 
@@ -54,7 +54,7 @@ starforge 把该输的 12 个符文放大置顶显示，你照着传送门点即
 
 ## 桌面应用（默认形态）
 
-双击 `starforge.exe` 会打开一个**原生 Qt 窗口**（PySide6 Widgets + 原生 OpenGL 3D；双击时会自动隐藏黑控制台，也不需要装 Python）。旧的 WebView2 外壳保留为回退（`--webview`），不再默认使用。
+双击 `starforge.exe` 会打开一个**原生 Qt 窗口**（PySide6 Widgets + 原生 OpenGL 3D；双击时会自动隐藏黑控制台，也不需要装 Python）。旧 WebView2/pywebview 外壳已移除；默认就是原生 Qt。
 
 - 路径全部自动检测；设置页有「浏览…」原生目录选择框，不用手打
 - 数据层已内置（NMS-Shipwright, MIT），**不需要额外安装任何东西**
@@ -62,7 +62,7 @@ starforge 把该输的 12 个符文放大置顶显示，你照着传送门点即
 - 3D 用**种子真实配色**渲染（从游戏数据解出主色/副色/底漆）
 
 > 命令行：单 exe 版本用 `starforge.exe <子命令>`；v0.11.x 的包里是 `starforge-cli\starforge-cli.exe <子命令>`。
-> 可用子命令：`serve`（浏览器调试）、`ships`、`selfcheck`、`webcheck`、`glyph-overlay`、`live probe`。
+> 可用子命令：`serve`（可选 JSON API 调试）、`ships`、`selfcheck`、`webcheck`、`glyph-overlay`、`live probe`。
 
 ## 快速开始
 
@@ -77,7 +77,7 @@ export STARFORGE_GAMEDATA=/path/to/NoMansSky/GAMEDATA
 
 python -m starforge selftest     # 自检：上游 / 数据 / 存档 / 游戏
 python -m starforge app          # 原生窗口（默认）
-python -m starforge serve        # 可选：浏览器调试（127.0.0.1，随机端口）
+python -m starforge serve        # 可选：JSON API 调试（127.0.0.1，随机端口）
 ```
 
 **一条命令自检**（写入只在存档副本上发生）：
@@ -115,9 +115,9 @@ starforge **不重复造轮子**，而是把三个开源项目缝成一个产品
 
 ## 界面（设计稿）
 
-五页：搜索 / 我的船 / 星球 / 设置 + 独立符文浮窗。
-文档：[使用指南](docs/USAGE.md)（逐屏）· [软件手册](docs/MANUAL.md) · [设计方案](docs/DESIGN.md) ·
-[能力清单](docs/CAPABILITIES.md) · [Windows 验收清单](docs/VERIFY-WINDOWS.md)。
+七页：概览 / 飞船实验室 / 设计器 / 我的船队 / 星图 / 游戏内代理 / 设置 + 独立 Qt 符文浮窗。
+文档：[架构](docs/ARCHITECTURE.md) · [界面重构](docs/UI-REDESIGN.md) · [功能地图](docs/FEATURE-MAP.md) ·
+[差距分析](docs/GAP-ANALYSIS.md) · [路线图](docs/PLAN-V4.md) · [打包](docs/PACKAGING.md)。
 
 ---
 

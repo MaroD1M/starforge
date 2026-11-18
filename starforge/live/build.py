@@ -20,6 +20,10 @@ from pathlib import Path
 from typing import Any
 
 
+# 这些能力会改写游戏状态（位置/发现列表/扫描进度），必须只在已验证 build 上开放。
+HIGH_RISK_CAPABILITIES = frozenset({"teleport", "restore", "scan.discover", "scan.instant"})
+
+
 def _shipped_dir() -> Path:
     here = Path(__file__).resolve().parent / "builds"
     if here.exists():
@@ -152,8 +156,27 @@ def register(fp: dict, extra: dict | None = None) -> Path:
 
 
 def summary(fp: dict | None = None) -> dict:
+    """build 指纹 + 写闸门。
+
+    ``write_allowed`` 只有在地址书里明确 ``status == "verified"`` 时才为 True；
+    未知 build 和未验证 build 都保持只读，并通过 ``reason`` 说明原因。
+    返回字段是在旧结构（fingerprint/build_id/known/verified/write_allowed）上追加，
+    调用方可以继续只读旧字段。
+    """
     fp = fp or fingerprint()
     row = lookup(fp)
+    raw_status = (row or {}).get("status")
+    status = str(raw_status or "").strip().lower()
+    verified = status == "verified"
+    if verified:
+        reason = ""
+    elif row:
+        reason = (f"这版未验证（build {build_id(fp)}，status={status or 'unknown'}）："
+                  "只允许只读能力")
+    elif fp.get("error"):
+        reason = f"无法确认游戏 build：{fp['error']}；只允许只读能力"
+    else:
+        reason = f"这版未验证（build {build_id(fp)} 不在地址书）：只允许只读能力"
     return {"fingerprint": fp, "build_id": build_id(fp), "known": row,
-            "verified": bool(row and row.get("status") == "verified"),
-            "write_allowed": bool(row and row.get("status") == "verified")}
+            "status": status or ("unknown" if not row else ""),
+            "verified": verified, "write_allowed": verified, "reason": reason}

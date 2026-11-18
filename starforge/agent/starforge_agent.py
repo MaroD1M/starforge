@@ -23,8 +23,10 @@
   GET  /StarforgeAgent/player
   GET  /StarforgeAgent/system
   GET  /StarforgeAgent/planet
+  GET  /StarforgeAgent/planet/scan
   GET  /StarforgeAgent/ships
   PUT  /StarforgeAgent/teleport?glyphs=...&galaxy=...
+  PUT  /StarforgeAgent/teleport/portal?glyphs=...&galaxy=...
   PUT  /StarforgeAgent/scan?mode=read
   PUT  /StarforgeAgent/restore
 
@@ -78,6 +80,22 @@ def _location() -> dict | None:
         }
     except Exception:                                      # noqa: BLE001
         return None
+
+
+def _multiplayer() -> bool:
+    """多人状态；读不到时按单人处理（真正的写操作仍还有 build 闸门）。"""
+    try:
+        app = gameData.GcApplication
+        return bool(getattr(app, "mbMultiplayerActive", False)) if app else False
+    except Exception:                                      # noqa: BLE001
+        return False
+
+
+def _multiplayer_block() -> dict | None:
+    if not _multiplayer():
+        return None
+    return {"ok": False, "code": "E_MULTIPLAYER", "multiplayer": True,
+            "error": "多人模式已启用：传送/还原/扫描写操作被禁用"}
 
 
 def _pack_ua(loc: dict) -> int:
@@ -143,6 +161,120 @@ def _planet_info(planet) -> dict:
     return out
 
 
+def _planet_scan_info(planet) -> dict:
+    """当前行星完整档案；每个扩展字段单独读取，失败的字段明确标记 unsupported。"""
+    out = _planet_info(planet)
+    out.pop("extra_error", None)
+    data = planet.mPlanetData
+    errors: dict[str, str] = {}
+    unsupported: list[str] = []
+
+    def read(name: str, convert):
+        try:
+            return convert(getattr(data, name))
+        except Exception as e:                             # noqa: BLE001
+            errors[name] = f"{type(e).__name__}: {e}"
+            unsupported.append(name)
+            return None
+
+    def hints(values):
+        rows = []
+        for item in values:
+            try:
+                rows.append({"hint": _s(item.Hint), "icon": _s(item.Icon)})
+            except Exception as e:                         # noqa: BLE001
+                errors.setdefault("ExtraResourceHints",
+                                  f"{type(e).__name__}: {e}")
+                unsupported.append("ExtraResourceHints")
+                return None
+        return rows
+
+    values = {
+        "CreatureIDs": read("CreatureIDs", lambda v: [_s(x) for x in v]),
+        "CommonSubstanceID": read("CommonSubstanceID", _s),
+        "RareSubstanceID": read("RareSubstanceID", _s),
+        "UncommonSubstanceID": read("UncommonSubstanceID", _s),
+        "ExtraResourceHints": read("ExtraResourceHints", hints),
+    }
+    aliases = {
+        "CreatureIDs": "creature_ids",
+        "CommonSubstanceID": "common_substance",
+        "RareSubstanceID": "rare_substance",
+        "UncommonSubstanceID": "uncommon_substance",
+        "ExtraResourceHints": "extra_resource_hints",
+    }
+    for raw_name, value in values.items():
+        if value is not None:
+            out[aliases[raw_name]] = value
+        out[raw_name] = value
+    out["complete"] = not unsupported
+    if unsupported:
+        out["unsupported"] = sorted(set(unsupported))
+    if errors:
+        out["field_errors"] = errors
+    return out
+
+
+# cGcPortalComponent::WarpPlayer 的原始组件构造路径尚未在 Windows 实机上校准。
+# 未校准时 teleport.portal 只报告 unsupported，绝不假装成功。
+_PORTAL_WARP_CALIBRATED = False
+
+
+def _portal_api() -> dict:
+    try:
+        cls = nms.cGcPortalComponent
+    except Exception as e:                                 # noqa: BLE001
+        return {"available": False, "error": f"{type(e).__name__}: {e}"}
+    missing = [name for name in ("OnAttached", "Prepare", "WarpPlayer")
+               if not callable(getattr(cls, name, None))]
+    if missing:
+        return {"available": False, "error": "缺少 " + ", ".join(missing)}
+    return {"available": True, "calibrated": bool(_PORTAL_WARP_CALIBRATED)}
+
+
+def _portal_unsupported(detail: str = "") -> dict:
+    out = {"ok": False, "code": "E_UNSUPPORTED", "unsupported": True,
+           "error": "本版未实现/需实机校准",
+           "note": "teleport.portal 为实验端点：raw cGcPortalComponent 构造和落点确认"
+                   "都需要 Windows 实机校准"}
+    if detail:
+        out["detail"] = detail
+    return out
+
+
+def _portal_warp(dest: dict) -> dict:
+    """尝试通过 cGcPortalComponent 触发 portal warp。
+
+    只有 API 齐全且 ``_PORTAL_WARP_CALIBRATED`` 为真时才真正调用游戏函数；
+    否则返回明确的 unsupported，避免在未校准 build 上写错组件/地址。
+    """
+    api = _portal_api()
+    if not api.get("available"):
+        return _portal_unsupported(api.get("error") or "cGcPortalComponent 不可用")
+    if not _PORTAL_WARP_CALIBRATED:
+        return _portal_unsupported(
+            "cGcPortalComponent API 可用，但 raw 组件偏移/WarpPlayer 调用尚未实机校准")
+    try:
+        cls = nms.cGcPortalComponent
+        size = max(0x1000, ctypes.sizeof(cls) + 0x100)
+        buffer = ctypes.create_string_buffer(size)
+        component = cls.from_buffer(buffer)
+        target_ua = _pack_ua(dest)
+        component.OnAttached()
+        component.mPortalData.mTargetUA = target_ua
+        component.mPortalData.mbActive = True
+        component.Prepare()
+        component.WarpPlayer()
+        # buffer 必须活到 warp 完成；由调用方持有（见 teleport_portal）。
+        return {"ok": True, "experimental": True, "confirmed": False,
+                "target_ua": f"0x{target_ua:016X}",
+                "_buffer": buffer,
+                "note": "已调用 cGcPortalComponent.WarpPlayer；本版未实机校准，"
+                        "落点是否生效需在游戏内确认，失败请用 restore 还原"}
+    except Exception as e:                                 # noqa: BLE001
+        return _portal_unsupported(f"{type(e).__name__}: {e}")
+
+
 class StarforgeAgent(Mod):
     __author__ = "starforge"
     __description__ = "starforge 游戏内通道：状态读取 / 传送 / 扫描"
@@ -152,11 +284,12 @@ class StarforgeAgent(Mod):
         super().__init__()
         self._snapshot: dict | None = None
         self._last_error = ""
+        self._portal_buffer = None
         self.instant_scan = False
 
     @nms.cGcBinoculars.UpdateScanBarProgress.before
     def _force_scan_progress(self, this, lfScanProgress):
-        if self.instant_scan and lfScanProgress < 1:
+        if self.instant_scan and not _multiplayer() and lfScanProgress < 1:
             return (this, 1)
         return None
 
@@ -171,13 +304,23 @@ class StarforgeAgent(Mod):
         except Exception:                                  # noqa: BLE001
             version = "unknown"
         app = gameData.GcApplication
+        try:
+            in_game = gameData.player_state is not None
+        except Exception:                                  # noqa: BLE001
+            in_game = False
+        multiplayer = _multiplayer()
+        write_ok = not multiplayer
+        portal = _portal_api()
         return {"ok": True, "agent": self.__version__, "nmspy": version,
-                "game_attached": app is not None,
-                "multiplayer": bool(getattr(app, "mbMultiplayerActive", False)) if app else False,
+                "game_attached": app is not None, "in_game": in_game,
+                "multiplayer": multiplayer,
                 "capabilities": {
-                    "player": True, "system": True, "planet": True, "ships": True,
-                    "teleport": True, "scan": "read", "scan.discover": False,
-                    "scan.instant": True, "restore": True,
+                    "player": True, "system": True, "planet": True,
+                    "planet.scan": True, "ships": True,
+                    "teleport": write_ok, "teleport.portal": write_ok and portal["available"],
+                    "portal.calibrated": bool(portal.get("calibrated")),
+                    "scan": "read", "scan.discover": False,
+                    "scan.instant": write_ok, "restore": write_ok,
                 }}
 
     @endpoint("/player")
@@ -214,6 +357,8 @@ class StarforgeAgent(Mod):
     def ships(self) -> dict:
         try:
             ps = gameData.player_state
+            if ps is None:
+                return {"ok": False, "error": "还没进入存档（player_state 为空）"}
             ships = ps.mShipResources
             rows = []
             for i, res in enumerate(ships):
@@ -269,6 +414,24 @@ class StarforgeAgent(Mod):
         except Exception as e:                             # noqa: BLE001
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
+    @endpoint("/planet/scan")
+    def planet_scan(self) -> dict:
+        """只读：当前行星完整档案（PlanetInfo + 物质/生物/额外资源提示）。"""
+        loc = _location()
+        if loc is None:
+            return {"ok": False, "error": "玩家状态不可用"}
+        try:
+            ss = gameData.simulation.mpSolarSystem
+            if ss is None:
+                return {"ok": False, "error": "当前星系不可用"}
+            idx = max(0, int(loc["planet"]) - 1)
+            info = _planet_scan_info(ss.contents.maPlanets[idx])
+            info["index"] = idx
+            info["planet_index"] = int(loc["planet"])
+            return {"ok": True, "planet": info}
+        except Exception as e:                             # noqa: BLE001
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
     # ------------------------------------------------------------ 写：传送
 
     def _write_location(self, loc: dict) -> None:
@@ -290,11 +453,14 @@ class StarforgeAgent(Mod):
 
     @endpoint("/teleport", method="PUT")
     def teleport(self, glyphs: str = "", galaxy: int = -1) -> dict:
+        blocked = _multiplayer_block()
+        if blocked:
+            return blocked
         try:
             dest = _decode_glyphs(glyphs)
             cur = _location()
             if cur is None:
-                return {"ok": False, "error": "玩家状态不可用"}
+                return {"ok": False, "error": "还没进入存档（player_state 为空）"}
             if galaxy is None or int(galaxy) < 0:
                 dest["reality"] = cur["reality"]
             else:
@@ -309,8 +475,42 @@ class StarforgeAgent(Mod):
             self._last_error = f"{type(e).__name__}: {e}"
             return {"ok": False, "error": self._last_error}
 
+    @endpoint("/teleport/portal", method="PUT")
+    def teleport_portal(self, glyphs: str = "", galaxy: int = -1) -> dict:
+        """实验：尝试用 cGcPortalComponent 走游戏 portal warp。
+
+        API/偏移未实机校准前一律返回 ``ok:false`` + ``本版未实现/需实机校准``；
+        旧 ``teleport``（写位置 + APPLOCALLOAD）保持不变。
+        """
+        blocked = _multiplayer_block()
+        if blocked:
+            return blocked
+        try:
+            dest = _decode_glyphs(glyphs)
+            cur = _location()
+            if cur is None:
+                return {"ok": False, "error": "还没进入存档（player_state 为空）"}
+            if galaxy is None or int(galaxy) < 0:
+                dest["reality"] = cur["reality"]
+            else:
+                dest["reality"] = max(0, min(254, int(galaxy)))
+            log.info("teleport.portal %s -> %s", cur, dest)
+            result = _portal_warp(dest)
+            buffer = result.pop("_buffer", None)
+            if buffer is not None:
+                self._portal_buffer = buffer
+            result.setdefault("before", cur)
+            result.setdefault("after", dest)
+            return result
+        except Exception as e:                             # noqa: BLE001
+            self._last_error = f"{type(e).__name__}: {e}"
+            return {"ok": False, "code": "E_PORTAL", "error": self._last_error}
+
     @endpoint("/restore", method="PUT")
     def restore(self) -> dict:
+        blocked = _multiplayer_block()
+        if blocked:
+            return blocked
         if not self._snapshot:
             return {"ok": False, "error": "没有可还原的快照"}
         try:
@@ -324,6 +524,9 @@ class StarforgeAgent(Mod):
 
     @endpoint("/scan/instant", method="PUT")
     def scan_instant(self, on: bool = True) -> dict:
+        blocked = _multiplayer_block()
+        if blocked:
+            return blocked
         self.instant_scan = bool(on)
         return {"ok": True, "instant_scan": self.instant_scan,
                 "note": "开启后游戏内扫描条会立即完成；不写发现列表"}
@@ -338,6 +541,10 @@ class StarforgeAgent(Mod):
         """
         if mode not in ("read", "discover"):
             return {"ok": False, "error": "mode 只能是 read/discover"}
+        if mode == "discover":
+            blocked = _multiplayer_block()
+            if blocked:
+                return blocked
         data = self.planet()
         if not data.get("ok"):
             return data

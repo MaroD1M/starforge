@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import os
+
 from .core import log, settings
 from .data import load_catalog
 from .data.shipref import PROC_MODELS
@@ -36,15 +38,15 @@ def _from_game(ship: str) -> list[dict]:
 
 
 def source() -> str:
-    """当前部件树来自哪里：gagarin / game / none。"""
+    """当前部件树优先来自游戏资源；Gagarin 仅作为无游戏时的可选回退。"""
+    s = settings.current()
+    if s.game_dir or os.environ.get("NMS_DIR"):
+        return "game"
     try:
         load_catalog()
         return "gagarin"
     except Exception:                            # noqa: BLE001
         pass
-    s = settings.current()
-    if s.game_dir:
-        return "game"
     return "none"
 
 
@@ -53,22 +55,27 @@ def available() -> bool:
 
 
 def tree(ship: str) -> list[dict]:
-    """部件树。先试 Gagarin 目录，失败则从游戏资源推导。"""
+    """部件树。**游戏资源优先**；Gagarin 目录只作为无游戏时的可选回退。
+
+    游戏里的 `*_PROC.descriptor.mbin` 同时提供结构、权重（xRARE/xNEVER）和部件名，
+    所以 catalog.txt 不再是必需数据。
+    """
     if ship not in PROC_MODELS:
         raise ValueError(f"未知船型：{ship}")
     try:
-        got = _from_catalog(ship)
+        got = _from_game(ship)
         if got:
             return got
     except Exception as e:                       # noqa: BLE001
-        log.debug("catalog 不可用（%s），改用游戏资源推导", type(e).__name__)
+        log.debug("游戏资源推导失败（%s），尝试 Gagarin 目录回退", type(e).__name__)
     try:
-        got = _from_game(ship)
+        got = _from_catalog(ship)
+        if got:
+            log.info("部件树回退到 Gagarin catalog（游戏资源不可用）")
+            return got
     except Exception as e:                       # noqa: BLE001 - 没游戏/没数据：给出可读原因
         raise ValueError(f"取不到 {ship} 的部件表：{type(e).__name__}: {e}") from e
-    if not got:
-        raise ValueError(f"游戏资源里没有 {ship} 的部件描述（游戏目录是否配置正确？）")
-    return got
+    raise ValueError(f"游戏资源里没有 {ship} 的部件描述（游戏目录是否配置正确？）")
 
 
 def parts_of(ship: str) -> list[str]:

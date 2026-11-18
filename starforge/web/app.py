@@ -1,49 +1,20 @@
-"""Flask 应用：安全中间件 + 错误协议 + 页面。
+"""可选本地 JSON API（API-only，不再提供静态网页）。
 
-S0 验收项全部在这里：
-  · Host/Origin 校验（Shipwright 缺这一环）
-  · NmsHunterError -> {"ok":false,"error":{kind,message,hint}} + 对应 HTTP 码
-  · 写开关闸门（写接口先过 require_write）
+原生界面是默认入口；`starforge serve` 只用于调试/脚本/自动化。
 """
 from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-import os
-
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from ..core import log, settings, strings
+from ..core import log
 from ..core.errors import NmsHunterError
 
 log = log.get("web")
 
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
-
-
-def _find_static_dir() -> str:
-    """找网页静态资源目录。
-
-    打包后 `__file__` 可能位于 PYZ 归档里（路径不存在），所以按优先级试几个候选：
-      1. 包目录旁边的 static（源码/onedir 都有）
-      2. `sys._MEIPASS`（PyInstaller 运行时解包目录）
-      3. 可执行文件旁边的 `_internal/starforge/web/static`
-    """
-    import sys
-    here = os.path.dirname(os.path.abspath(__file__))
-    cands = [os.path.join(here, "static")]
-    meipass = getattr(sys, "_MEIPASS", "")
-    if meipass:
-        cands += [os.path.join(meipass, "starforge", "web", "static"),
-                  os.path.join(meipass, "static")]
-    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-    cands += [os.path.join(exe_dir, "_internal", "starforge", "web", "static"),
-              os.path.join(exe_dir, "starforge", "web", "static")]
-    for c in cands:
-        if os.path.exists(os.path.join(c, "index.html")):
-            return c
-    return cands[0]                        # 都不行就返回首选，由 404 兜底页提示
 
 
 def _host_only(value: str) -> str:
@@ -80,8 +51,7 @@ def create_app() -> Flask:
         return jsonify({"ok": False, "error": err.as_dict()}), err.status
 
     @app.errorhandler(HTTPException)
-    def _http(err):                                   # noqa: ANN202
-        """werkzeug 的 404/403 等按原状态码返回，别被兜底成 500。"""
+    def _http(err: HTTPException):                    # noqa: ANN202
         return jsonify({"ok": False, "error": {
             "kind": (err.name or "http").lower().replace(" ", "_"),
             "message": err.description or err.name, "hint": ""}}), err.code
@@ -90,7 +60,7 @@ def create_app() -> Flask:
     def _missing(err: FileNotFoundError):             # noqa: ANN202
         return jsonify({"ok": False, "error": {
             "kind": "missing", "message": str(err),
-            "hint": "检查设置里的 gamedata_dir / saves_dir"}}), 503
+            "hint": "检查设置里的 saves_dir / game_dir"}}), 503
 
     @app.errorhandler(Exception)
     def _boom(err: Exception):                        # noqa: ANN202
@@ -103,36 +73,17 @@ def create_app() -> Flask:
     app.register_blueprint(bp)
 
     from ..core import settings as settings_mod
-    if settings_mod.current().game_dir and not os.environ.get("STARFORGE_NO_WARM"):
+    if settings_mod.current().game_dir and not __import__("os").environ.get("STARFORGE_NO_WARM"):
         from .. import warm
-        warm.start(background=True)          # 后台预热：pak 元数据 / 单船几何 / 系统生成
-
-    static_dir = _find_static_dir()
+        warm.start(background=True)
 
     @app.get("/")
     def index():                                      # noqa: ANN202
-        return send_from_directory(static_dir, "index.html")
-
-    @app.get("/static/<path:filename>")
-    def static_file(filename: str):                   # noqa: ANN202
-        return send_from_directory(static_dir, filename)
-
-    @app.errorhandler(404)
-    def _missing(err):                                # noqa: ANN202
-        if os.path.exists(os.path.join(static_dir, "index.html")):
-            return jsonify({"ok": False, "error": {
-                "kind": "not_found", "message": getattr(err, "description", "404"), "hint": ""}}), 404
-        return Response(
-            "<!doctype html><meta charset='utf-8'><title>starforge</title>"
-            "<body style='background:#0c0e13;color:#d7dce5;font:14px system-ui;padding:40px'>"
-            "<h2>网页资源缺失</h2>"
-            "<p>这个打包版本里没有 <code>starforge/web/static</code>（打包时漏了 --add-data）。</p>"
-            "<p>命令行仍可用：<code>starforge.exe ships</code> / <code>selftest</code> / <code>selfcheck</code>。</p>"
-            "<p>请换用较新的 Release，或把 <code>starforge/web/static</code> 复制到程序目录下的同名路径。</p>"
-            "</body>", status=500, mimetype="text/html")
+        return jsonify({"ok": True, "service": "starforge-api",
+                        "hint": "原生界面使用 starforge app；本服务仅用于调试/自动化"})
 
     @app.get("/favicon.ico")
     def favicon():                                    # noqa: ANN202
-        return Response(status=204)
+        return jsonify({"ok": True}), 204
 
     return app

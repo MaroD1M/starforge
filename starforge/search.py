@@ -106,7 +106,7 @@ def validate(q: SearchQuery) -> SearchQuery:
     try:
         tree = parts_mod.tree(q.ship)
     except Exception as e:                                 # noqa: BLE001
-        raise QueryError(f"取不到 {q.ship} 的部件表：{e}（需要游戏目录或 Gagarin 的 GAMEDATA）")
+        raise QueryError(f"取不到 {q.ship} 的部件表：{e}（需要游戏目录）")
     allowed = {o["part"].upper() for g in tree for o in g["options"]}
     # 同一个插槽组只能出一个部件，否则组合永远不成立：直接给出可读错误
     group_of = {o["part"].upper(): g["group"] for g in tree for o in g["options"]}

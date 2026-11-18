@@ -8,12 +8,11 @@ starforge 自身以 **MIT** 发布。发布的 Windows 包内还包含下列第�
 | [Gagarin_Titov](https://github.com/autoeme/Gagarin_Titov) | 数据文件随游戏分发；字体 SIL OFL 1.1 | 部件目录 `catalog.txt`、缩略图 `icons.bin` | ❌ 不含；由用户本地游戏目录读取 |
 | [NMS-Super-Ship-Hunter](https://github.com/beihaixingchen/NMS-Super-Ship-Hunter) | MIT | "模板槽 + 外部写"思路；兼容其两个模板槽的种子常量 | ❌ 不含代码，仅按公开数据做兼容 |
 | numpy | BSD-3-Clause | 数值计算 | ✅ 打包 |
-| Flask / Werkzeug / Jinja2 | BSD-3-Clause | 本地 Web 层 | ✅ 打包 |
+| Flask / Werkzeug / Jinja2 | BSD-3-Clause | 可选 JSON API 调试 | ✅ 打包（仅 API，不含静态网页） |
 | lz4 | BSD-2-Clause | 存档 LZ4 block | ✅ 打包 |
 | texture2ddecoder | MIT | BC1–BC7 贴图解码 | ✅ 打包 |
 | hgpaktool | MIT | pak 解包（子进程） | ✅ 打包 |
 | **unicorn** | **GPL-2.0** | 用 unicorn 引擎执行 `NMS.exe` 的星系生成器（`nms_procgen/systemgen.py`） | ✅ 打包（**见下方 GPL 说明**） |
-| pywebview / pythonnet | BSD-3 / MIT | 原生窗口 | ✅ 打包 |
 
 > 本仓库**不包含**任何游戏原始文件（pak / MBIN / 贴图 / 存档），也不包含上述上游的源码副本；
 > vendor 只在 CI 构建时进行，产物带许可说明，源码仓库保持干净。

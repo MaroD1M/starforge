@@ -2,15 +2,31 @@
 from __future__ import annotations
 
 import json
+import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QMessageBox, QPushButton, QSpinBox, QTextEdit,
                                QVBoxLayout, QWidget)
 
 from ...services import get_services
+from .. import notify
+from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.page_header import PageHeader
+from ..widgets.planet_dossier import (MISSING, PlanetDossier, PoiDossier,
+                                       format_planet_text)
 from ..widgets.ui import Card, muted
 from ..widgets.worker import run as run_worker
+
+_READ_LABELS = {"player": "玩家位置", "system": "当前星系",
+                "planet": "当前行星", "ships": "游戏内船槽"}
+_CALL_LABELS = {"teleport": "传送", "teleport.portal": "传送门效果",
+                "restore": "还原", "scan": "扫描", "scan.instant": "即时扫描"}
+_CAP_FALLBACK = {"planet.scan": "planet", "scan.poi": "scan"}
+_GATING_ALIASES = ("allow_unverified_agent", "allow_unverified_writes",
+                   "allow_unverified_build_writes", "agent_allow_unverified_writes",
+                   "allow_unverified_build", "experimental_writes")
 
 
 class GameLinkPage(QWidget):
@@ -19,27 +35,70 @@ class GameLinkPage(QWidget):
         self.svc = get_services()
         self._loaded = False
         self._runtime_ready = False
+        self._reachable = False
+        self._in_game = False
+        self._build_verified = False
+        self._multiplayer = False
+        self._caps: dict = {}
+        self._cap_state_known = False
+        self._portal_available = False
+        self._portal_reason = "当前游戏内代理未实现传送门效果；需要实机验证后启用。"
+        self._unverified_key: str | None = None
+        self._read_btns: list[QPushButton] = []
+        self._safety_btns: list[QPushButton] = []
+        self._cap_buttons: list[tuple[QWidget, str]] = []
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(1500)
+        self._poll_timer.timeout.connect(self._poll_hello)
+        self._poll_busy = False
         self._build_ui()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 8)
 
+        self.header = PageHeader(
+            "游戏内代理",
+            "连接游戏、读取实时遥测、行星档案与兴趣点；高风险操作请先备份存档。")
+        root.addWidget(self.header)
+        self.error_banner = ErrorBanner("")
+        self.error_banner.set_retry_callback(self.refresh)
+        root.addWidget(self.error_banner)
+
         status = Card("连接状态", "正常包内置运行时，不需要联网")
         sv = status.v
         steps = QHBoxLayout()
         self.step_runtime = QLabel("1  运行时")
-        self.step_mod = QLabel("2  Mod")
-        self.step_agent = QLabel("3  Agent")
+        self.step_mod = QLabel("2  游戏内组件")
+        self.step_mod.setToolTip("游戏内组件（NMSpy/pymhf）")
+        self.step_agent = QLabel("3  游戏内代理")
+        self.step_agent.setToolTip("由游戏内组件（NMSpy/pymhf）提供")
         for lab in (self.step_runtime, self.step_mod, self.step_agent):
             lab.setObjectName("chip")
             steps.addWidget(lab)
         steps.addStretch(1)
         sv.addLayout(steps)
+        meta = QHBoxLayout()
+        self.build_status = QLabel("游戏版本 —")
+        self.build_status.setObjectName("chip")
+        self.mp_status = QLabel("多人：—")
+        self.mp_status.setObjectName("chip")
+        meta.addWidget(self.build_status)
+        meta.addWidget(self.mp_status)
+        meta.addStretch(1)
+        sv.addLayout(meta)
         self.status = muted("检查中…")
         sv.addWidget(self.status)
+        self.connection_empty = EmptyState(
+            "正在检查游戏内代理",
+            "先确认运行时与游戏内组件，再进入游戏并载入存档。",
+            icon="◇",
+            button_text="连接游戏")
+        self.connection_empty.actionTriggered.connect(self._connect)
+        self.empty_state = self.connection_empty
+        sv.addWidget(self.connection_empty)
         row = QHBoxLayout()
-        self.connect_btn = QPushButton("连接游戏（自动安装 Mod）")
+        self.connect_btn = QPushButton("连接游戏（自动安装游戏内组件）")
         self.connect_btn.setObjectName("primary")
         self.connect_btn.clicked.connect(self._connect)
         row.addWidget(self.connect_btn)
@@ -52,7 +111,7 @@ class GameLinkPage(QWidget):
         self.refresh_btn = QPushButton("刷新状态")
         self.refresh_btn.clicked.connect(self.refresh)
         row.addWidget(self.refresh_btn)
-        self.repair_btn = QPushButton("修复运行时/组件")
+        self.repair_btn = QPushButton("修复运行时/游戏内组件")
         self.repair_btn.clicked.connect(self._repair)
         row.addWidget(self.repair_btn)
         self.probe_btn = QPushButton("外部内存只读探测")
@@ -69,10 +128,37 @@ class GameLinkPage(QWidget):
             btn = QPushButton(text)
             btn.clicked.connect(lambda _=False, c=cmd: self._read(c))
             row2.addWidget(btn)
+            self._read_btns.append(btn)
+            self._cap_buttons.append((btn, cmd))
         tv.addLayout(row2)
         self.telemetry = muted("连接后点上面的按钮读取游戏内状态。")
         tv.addWidget(self.telemetry)
         root.addWidget(tele)
+
+        planet = Card("行星档案", "读取当前行星档案；需要先进入存档")
+        pv = planet.v
+        prow = QHBoxLayout()
+        self.planet_scan_btn = QPushButton("读取行星档案")
+        self.planet_scan_btn.setToolTip("读取当前行星的天气、哨兵、资源、动植物与生物标识（ID）")
+        self.planet_scan_btn.clicked.connect(self._planet_scan)
+        prow.addWidget(self.planet_scan_btn)
+        self.planet_refresh_btn = QPushButton("刷新档案")
+        self.planet_refresh_btn.setToolTip("重新读取当前行星档案")
+        self.planet_refresh_btn.clicked.connect(self._refresh_planet)
+        prow.addWidget(self.planet_refresh_btn)
+        self.planet_copy_btn = QPushButton("复制档案")
+        self.planet_copy_btn.setToolTip("复制当前行星档案为文本")
+        self.planet_copy_btn.clicked.connect(self._copy_planet)
+        prow.addWidget(self.planet_copy_btn)
+        prow.addStretch(1)
+        pv.addLayout(prow)
+        self.planet_result = PlanetDossier()
+        self.planet_result.setMinimumHeight(150)
+        self.planet_result.set_message("尚未读取行星档案；请先连接游戏并进入存档。")
+        pv.addWidget(self.planet_result)
+        self._cap_buttons.extend([(self.planet_scan_btn, "planet.scan"),
+                                  (self.planet_refresh_btn, "planet.scan")])
+        root.addWidget(planet)
 
         safety = Card("安全区", "高风险操作；先备份存档")
         fv = safety.v
@@ -80,6 +166,10 @@ class GameLinkPage(QWidget):
         self.glyphs = QLineEdit()
         self.glyphs.setPlaceholderText("12 位传送门地址，例如 1043FEE69929")
         form.addRow("符文地址", self.glyphs)
+        self.teleport_mode = QComboBox()
+        self.teleport_mode.addItem("普通写位置", "teleport")
+        self.teleport_mode.addItem("传送门效果", "teleport.portal")
+        form.addRow("传送方式", self.teleport_mode)
         row3 = QHBoxLayout()
         self.galaxy_mode = QComboBox()
         self.galaxy_mode.addItem("保持当前星系", None)
@@ -97,25 +187,87 @@ class GameLinkPage(QWidget):
         restore = QPushButton("还原上一次传送")
         restore.clicked.connect(lambda: self._call("restore"))
         row3.addWidget(restore)
+        self._safety_btns.extend([tp, restore])
+        self._cap_buttons.extend([(tp, "teleport"), (restore, "restore")])
         form.addRow("", row3)
         fv.addLayout(form)
+        self.portal_note = muted("")
+        fv.addWidget(self.portal_note)
         row4 = QHBoxLayout()
         scan = QPushButton("读取当前行星扫描")
         scan.clicked.connect(lambda: self._call("scan", mode="read"))
         row4.addWidget(scan)
+        self._safety_btns.append(scan)
+        self._cap_buttons.append((scan, "scan"))
         self.instant = QCheckBox("游戏内扫描即时完成")
         self.instant.toggled.connect(lambda on: self._call("scan.instant", on=on))
         row4.addWidget(self.instant)
+        self._cap_buttons.append((self.instant, "scan.instant"))
         row4.addStretch(1)
         fv.addLayout(row4)
+        self.allow_unverified = QCheckBox("允许未验证游戏版本实验写操作")
+        self.allow_unverified.setAccessibleName("允许未验证游戏版本实验写操作")
+        self.allow_unverified.setEnabled(False)
+        self.allow_unverified.setToolTip("当前版本没有对应的安全设置，暂不可用。")
+        self.allow_unverified.toggled.connect(self._save_gating)
+        fv.addWidget(self.allow_unverified)
+        self.gating_note = muted("读取安全设置中…")
+        fv.addWidget(self.gating_note)
         root.addWidget(safety)
 
-        logcard = Card("日志")
+        poi = Card("附近兴趣点", "传送门 / 古遗迹 / 货船 / 飞船；需要游戏内代理实机校准")
+        ov = poi.v
+        orow = QHBoxLayout()
+        self.poi_buttons: dict[str, QPushButton] = {}
+        for text, kind in (("传送门", "portal"), ("古遗迹", "ruins"),
+                           ("货船", "freighter"), ("飞船", "ship")):
+            btn = QPushButton(text)
+            btn.setToolTip(f"扫描附近的{text}；未校准前不显示结果，也不伪造坐标")
+            btn.clicked.connect(lambda _=False, k=kind, t=text: self._scan_poi(k, t))
+            orow.addWidget(btn)
+            self.poi_buttons[kind] = btn
+            self._cap_buttons.append((btn, "scan.poi"))
+        orow.addStretch(1)
+        ov.addLayout(orow)
+        self.poi_result = PoiDossier()
+        self.poi_result.setMinimumHeight(130)
+        self.poi_result.set_message(
+            "附近兴趣点：需要游戏内代理实机校准；未校准前不会显示任何结果，也不会伪造坐标。")
+        ov.addWidget(self.poi_result)
+        root.addWidget(poi)
+
+        logcard = Card("日志", "诊断数据按 JSON 格式原样记录，便于回报问题")
+        logbar = QHBoxLayout()
+        logbar.addStretch(1)
+        clear = QPushButton("清空")
+        clear.clicked.connect(self._clear_log)
+        logbar.addWidget(clear)
+        copy = QPushButton("复制")
+        copy.clicked.connect(self._copy_log)
+        logbar.addWidget(copy)
+        logcard.add_layout(logbar)
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(160)
+        self.log.setStyleSheet("font-family:Consolas,monospace;font-size:11.5px;")
         logcard.add(self.log)
         root.addWidget(logcard, 1)
+
+        self.portal_mode = self.teleport_mode
+        self.portal_combo = self.teleport_mode
+        self.planet_out = self.planet_result
+        self.planet_scan_result = self.planet_result
+        self.planet_dossier = self.planet_result
+        self.planet_table = self.planet_result.table
+        self.poi_out = self.poi_result
+        self.poi_scan_result = self.poi_result
+        self.poi_dossier = self.poi_result
+        self.poi_table = self.poi_result.table
+        self.unverified_writes = self.allow_unverified
+        self.allow_unverified_writes = self.allow_unverified
+        self.loading_overlay = LoadingOverlay(self, "正在连接游戏内代理…")
+        self.loading = self.loading_overlay
+        self._set_portal_available(False, self._portal_reason)
 
     # ---------------------------------------------------------------- 状态
 
@@ -123,6 +275,7 @@ class GameLinkPage(QWidget):
         if self._loaded:
             return
         self._loaded = True
+        self._load_gating()
         self.refresh()
 
     def _chip(self, label: QLabel, text: str, ok: bool) -> None:
@@ -131,102 +284,384 @@ class GameLinkPage(QWidget):
         label.style().unpolish(label)
         label.style().polish(label)
 
+    @staticmethod
+    def _cn(text: str) -> str:
+        value = str(text or "")
+        for pattern, repl in ((r"游戏内\s*[Aa]gent", "游戏内代理"),
+                              (r"\bAgent\b", "游戏内代理"), (r"\bagent\b", "游戏内代理"),
+                              (r"\bInspector\b", "检查器"),
+                              (r"\bBuild\b", "游戏版本"), (r"\bbuilds?\b", "游戏版本"),
+                              (r"\bMod\b", "游戏内组件"), (r"\bmods?\b", "游戏内组件"),
+                              (r"\bPOI\b", "兴趣点"), (r"\bUA\b", "银河地址")):
+            value = re.sub(pattern, repl, value, flags=re.IGNORECASE)
+        return value
+
     def refresh(self) -> None:
-        def done(st: dict) -> None:
-            runtime = bool(st.get("runtime_ready"))
-            self._runtime_ready = runtime
-            reachable = bool(st.get("reachable"))
-            self._chip(self.step_runtime, "1  运行时 ✓" if runtime else "1  运行时 ✗", runtime)
-            self._chip(self.step_mod, "2  Mod ✓" if st.get("mod_installed") else "2  Mod ✗",
-                       bool(st.get("mod_installed")))
-            self._chip(self.step_agent, "3  Agent ✓" if reachable else "3  Agent ✗", reachable)
-            self.status.setText(st.get("note") or "")
-            self.repair_btn.setEnabled(bool(st.get("supported")) and not runtime)
-            self.connect_btn.setEnabled(bool(st.get("supported")))
-            self.start_btn.setEnabled(bool(st.get("supported")))
-            self.stop_btn.setEnabled(bool(st.get("supported")))
+        self.loading_overlay.start("正在刷新游戏内代理状态…")
+
+        def done(cap: dict) -> None:
+            if not isinstance(cap, dict) or "status" not in cap:
+                src = cap if isinstance(cap, dict) else {}
+                cap = {"status": src, "capabilities": src.get("capabilities") or {},
+                       "build": src.get("build") or {}}
+            self._apply_state(cap)
+            self.loading_overlay.stop()
 
         def fail(msg: str) -> None:
-            self.status.setText(f"状态读取失败：{msg}")
+            text = f"状态读取失败：{self._cn(msg)}"
+            self.status.setText(text)
+            self.error_banner.show_error(text)
+            self.loading_overlay.stop()
+            notify.error(text)
 
-        run_worker(self.svc.agent_status, done, fail)
+        run_worker(self.svc.live_capabilities, done, fail)
+
+    def _apply_state(self, cap: dict) -> None:
+        """按 build/多人/hello 三方结果更新界面与按钮（可单独测试）。"""
+        st = cap.get("status") or {}
+        runtime = bool(st.get("runtime_ready"))
+        self._runtime_ready = runtime
+        reachable = bool(st.get("reachable"))
+        self._reachable = reachable
+        hello = st.get("hello") or {}
+        self._in_game = bool(hello.get("in_game"))
+        self._multiplayer = bool(cap.get("multiplayer", hello.get("multiplayer")))
+        build_info = cap.get("build") or st.get("build") or {}
+        known = build_info.get("known") or {}
+        verified = bool(build_info.get("write_allowed",
+                                       build_info.get("verified", False)))
+        self._build_verified = verified
+        status_text = str(build_info.get("status") or ("verified" if verified else "unverified"))
+        status_zh = {"verified": "已验证", "unverified": "未验证",
+                     "unknown": "未知"}.get(status_text.lower(), self._cn(status_text))
+        build_id = str(build_info.get("build_id") or known.get("build") or "—")
+        self._chip(self.step_runtime, "1  运行时 ✓" if runtime else "1  运行时 ✗", runtime)
+        self._chip(self.step_mod, "2  游戏内组件 ✓" if st.get("mod_installed") else "2  游戏内组件 ✗",
+                   bool(st.get("mod_installed")))
+        self._chip(self.step_agent, "3  游戏内代理 ✓" if reachable else "3  游戏内代理 ✗", reachable)
+        self._chip(self.build_status, f"游戏版本 {build_id} · {status_zh}", verified)
+        self._chip(self.mp_status,
+                   "多人：高风险写已禁用" if self._multiplayer else "单人：可写",
+                   not self._multiplayer)
+        self.build_status.setToolTip(self._cn(str(build_info.get("reason") or status_zh)))
+        if reachable and not self._in_game:
+            text = "已注入，但游戏还没进入存档。请载入存档后再读取/传送。"
+        else:
+            extra = []
+            if not verified and build_info.get("reason"):
+                extra.append(self._cn(str(build_info["reason"])))
+            if self._multiplayer:
+                extra.append("多人模式：传送/还原/扫描写已禁用")
+            note = self._cn(str(st.get("note") or ""))
+            text = "；".join([x for x in [note, *extra] if x])
+        self.status.setText(text)
+        self.repair_btn.setEnabled(bool(st.get("supported")) and not runtime)
+        self.connect_btn.setEnabled(bool(st.get("supported")))
+        self.start_btn.setEnabled(bool(st.get("supported")))
+        self.stop_btn.setEnabled(bool(st.get("supported")))
+        caps = cap.get("capabilities") or {}
+        self._caps = caps
+        self._cap_state_known = True
+        for btn, key in self._cap_buttons:
+            lookup = key if key in caps else _CAP_FALLBACK.get(key, key)
+            info = caps.get(lookup) or {}
+            btn.setEnabled(reachable and self._in_game and bool(info.get("available")))
+            if key in ("planet.scan", "scan.poi"):
+                reason = self._read_block_reason(key)
+                btn.setToolTip(reason or btn.toolTip())
+        if not self.planet_result.has_data():
+            reason = self._read_block_reason("planet.scan")
+            if reason:
+                self.planet_result.set_message(f"行星档案不可用：{reason}")
+        if not self.poi_result.has_data():
+            reason = self._read_block_reason("scan.poi")
+            if reason:
+                self.poi_result.set_message(f"附近兴趣点暂不可用：{reason}")
+        portal = caps.get("teleport.portal") or {}
+        if not verified:
+            portal_ok, portal_reason = False, "游戏版本未验证：传送门效果已禁用。"
+        elif self._multiplayer:
+            portal_ok, portal_reason = False, "多人模式：传送门效果已禁用。"
+        else:
+            portal_ok = bool(portal.get("available"))
+            portal_reason = self._cn(str(portal.get("reason") or "")) or self._portal_reason
+        self._set_portal_available(portal_ok, portal_reason)
+        self.error_banner.clear()
+        self._update_connection_empty()
+        if reachable and not self._in_game:
+            if not self._poll_timer.isActive():
+                self._poll_timer.start()
+        else:
+            self._poll_timer.stop()
+
+    def _update_connection_empty(self) -> None:
+        state = self.connection_empty
+        if not self._runtime_ready:
+            state.title_label.setText("内置运行时未就绪")
+            state.description_label.setText(
+                "请先点「修复运行时/游戏内组件」；完成后重新连接游戏。")
+            state.description_label.setVisible(True)
+            state.show()
+        elif not self._reachable:
+            state.title_label.setText("尚未连接游戏内代理")
+            state.description_label.setText(
+                "进入游戏并载入存档后，点「连接游戏（自动安装游戏内组件）」。")
+            state.description_label.setVisible(True)
+            state.show()
+        elif not self._in_game:
+            state.title_label.setText("已注入，等待进入存档")
+            state.description_label.setText(
+                "游戏内组件已就绪；载入存档后页面会自动刷新可用能力。")
+            state.description_label.setVisible(True)
+            state.show()
+        else:
+            state.hide()
+
+    def _read_block_reason(self, key: str) -> str:
+        if not self._runtime_ready:
+            return "内置运行时未就绪；请先点「修复运行时/游戏内组件」。"
+        if not self._reachable:
+            return "未连接游戏内代理；请先点「连接游戏」并确认游戏已注入。"
+        if not self._in_game:
+            return "游戏还没进入存档；请先载入存档再读取。"
+        caps = self._caps or {}
+        lookup = key if key in caps else _CAP_FALLBACK.get(key, key)
+        info = caps.get(lookup) or {}
+        if not info.get("available"):
+            reason = self._cn(str(info.get("reason") or "")).strip()
+            if key == "planet.scan":
+                return reason or "当前游戏内代理不支持读取行星档案。"
+            if key == "scan.poi":
+                return reason or "当前游戏内代理不支持扫描附近兴趣点。"
+            return reason or "当前游戏内代理不支持该读取能力。"
+        return ""
+
+    def _set_portal_available(self, ok: bool, reason: str) -> None:
+        self._portal_available = bool(ok)
+        self._portal_reason = self._cn(reason or self._portal_reason)
+        idx = self.teleport_mode.findData("teleport.portal")
+        if idx >= 0:
+            item = self.teleport_mode.model().item(idx)
+            if item is not None:
+                item.setEnabled(self._portal_available)
+            self.teleport_mode.setItemData(idx, self._portal_reason, Qt.ToolTipRole)
+            if not self._portal_available and self.teleport_mode.currentIndex() == idx:
+                normal = self.teleport_mode.findData("teleport")
+                if normal >= 0:
+                    self.teleport_mode.setCurrentIndex(normal)
+        if self._portal_available:
+            self.portal_note.setText("传送门效果：可用；未验证版本或多人模式下会自动禁用。")
+        else:
+            self.portal_note.setText(f"传送门效果：已禁用。{self._portal_reason}")
+
+    @staticmethod
+    def _gating_key(settings: dict) -> str | None:
+        for key in _GATING_ALIASES:
+            if key in settings:
+                return key
+        for key in settings:
+            low = str(key).lower()
+            if ("unverified" in low and ("write" in low or "build" in low)) or \
+                    ("experimental" in low and "write" in low):
+                return str(key)
+        return None
+
+    def _load_gating(self) -> None:
+        def done(res: dict) -> None:
+            settings = (res or {}).get("settings") or {}
+            key = self._gating_key(settings)
+            self._unverified_key = key
+            self.allow_unverified.blockSignals(True)
+            if key is None:
+                self.allow_unverified.setChecked(False)
+                self.allow_unverified.setEnabled(False)
+                self.allow_unverified.setToolTip("当前版本没有对应的安全设置，暂不可用。")
+                self.gating_note.setText("当前版本没有“允许未验证游戏版本实验写操作”设置，暂不可用。")
+            else:
+                self.allow_unverified.setChecked(bool(settings.get(key)))
+                self.allow_unverified.setEnabled(True)
+                self.allow_unverified.setToolTip("由游戏版本闸门控制；未验证版本仍可能拒绝实验写操作。")
+                self.gating_note.setText("已读取安全设置；实验写操作仍受游戏版本闸门约束。")
+            self.allow_unverified.blockSignals(False)
+
+        def fail(msg: str) -> None:
+            self._unverified_key = None
+            self.allow_unverified.blockSignals(True)
+            self.allow_unverified.setChecked(False)
+            self.allow_unverified.blockSignals(False)
+            self.allow_unverified.setEnabled(False)
+            self.allow_unverified.setToolTip("读取安全设置失败，暂不可用。")
+            self.gating_note.setText(f"读取安全设置失败：{self._cn(msg)}；此选项暂不可用。")
+
+        run_worker(self.svc.settings_snapshot, done, fail)
+
+    def _save_gating(self, on: bool) -> None:
+        if not self._unverified_key:
+            self.gating_note.setText("当前版本没有对应的安全设置，此选项不可用。")
+            notify.warn("当前版本没有对应的安全设置，此选项不可用。")
+            return
+        try:
+            self.svc.update_settings(**{self._unverified_key: bool(on)})
+        except Exception as e:                              # noqa: BLE001
+            text = f"保存安全设置失败：{self._cn(f'{type(e).__name__}: {e}')}"
+            self.gating_note.setText(text)
+            self.error_banner.show_error(text)
+            notify.error(text)
+            return
+        self.gating_note.setText("安全设置已保存；实验写操作仍受游戏版本闸门约束。"
+                                 if on else "安全设置已保存；实验写操作已关闭。")
+        notify.success("安全设置已保存。")
+
+    def _poll_hello(self) -> None:
+        if self._poll_busy:
+            return
+        self._poll_busy = True
+
+        def done(res: dict) -> None:
+            self._poll_busy = False
+            if res.get("in_game"):
+                self._poll_timer.stop()
+                self.refresh()
+
+        def fail(_msg: str) -> None:
+            self._poll_busy = False
+
+        run_worker(self.svc.agent_call, done, fail, "hello")
 
     def _log(self, text: str) -> None:
         self.log.append(str(text))
+
+    def _copy_log(self) -> None:
+        text = self.log.toPlainText()
+        if not text.strip():
+            notify.warn("日志为空，暂无可复制内容。")
+            return
+        QGuiApplication.clipboard().setText(text)
+        notify.success("日志已复制。")
+
+    def _clear_log(self) -> None:
+        if not self.log.toPlainText().strip():
+            notify.warn("日志已经是空的。")
+            return
+        self.log.clear()
+        notify.success("日志已清空。")
 
     # ---------------------------------------------------------------- 连接
 
     def _connect(self, start_game: bool = False) -> None:
         if not self._runtime_ready:
-            QMessageBox.information(self, "运行时缺失",
-                                    "内置运行时未就绪；请先点「修复运行时/组件」，或重新解压完整包。")
+            text = "内置运行时未就绪；请先点「修复运行时/游戏内组件」，或重新解压完整包。"
+            notify.warn(text)
+            self.error_banner.show_error(text)
             return
         self.connect_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
-        self._log("注入中…" if not start_game else "启动游戏并注入…")
+        text = "启动游戏并注入…" if start_game else "注入中…"
+        self._log(text)
+        self.loading_overlay.start("正在启动游戏并注入…" if start_game else "正在连接游戏内代理…")
+        notify.toast(text)
 
         def launched(res: dict) -> None:
             self._log(json.dumps(res, ensure_ascii=False, indent=1))
-            run_worker(self.svc.agent_wait, self._after_wait,
-                       lambda m: self._log(f"等待 agent 失败：{m}"), 25.0)
+            self.loading_overlay.set_text("等待游戏内代理响应…")
+            notify.toast("游戏内组件已启动，等待游戏内代理响应…")
+            run_worker(self.svc.agent_wait, self._after_wait, wait_fail, 25.0)
+
+        def wait_fail(msg: str) -> None:
+            text = f"等待游戏内代理失败：{self._cn(msg)}"
+            self._log(text)
+            self.loading_overlay.stop()
+            self.error_banner.show_error(text)
+            notify.error(text)
 
         def fail(msg: str) -> None:
             self.connect_btn.setEnabled(True)
             self.start_btn.setEnabled(True)
-            self._log(f"注入失败：{msg}")
-            QMessageBox.warning(self, "注入失败", msg)
+            text = f"注入失败：{self._cn(msg)}"
+            self._log(text)
+            self.loading_overlay.stop()
+            self.error_banner.show_error(text)
+            notify.error(text)
 
         run_worker(self.svc.agent_launch, launched, fail, attach=not start_game)
 
     def _after_wait(self, res: dict) -> None:
         self._log(json.dumps(res, ensure_ascii=False, indent=1))
+        self.loading_overlay.stop()
+        if res.get("in_game"):
+            notify.success("游戏内代理已连接。")
+        else:
+            notify.warn("游戏内代理已连接，但还未进入存档；请载入存档。")
         self.refresh()
 
     def _stop(self) -> None:
         try:
             self._log(json.dumps(self.svc.agent_stop(), ensure_ascii=False))
+            notify.success("已停止注入器。")
         except Exception as e:                              # noqa: BLE001
-            self._log(f"停止失败：{type(e).__name__}: {e}")
+            text = f"停止失败：{self._cn(f'{type(e).__name__}: {e}')}"
+            self._log(text)
+            self.error_banner.show_error(text)
+            notify.error(text)
 
     def _external_probe(self) -> None:
         self._log("外部内存只读探测…")
+        self.loading_overlay.start("正在进行外部内存只读探测…")
+        notify.toast("正在进行外部内存只读探测…")
 
         def done(res: dict) -> None:
             self._log(json.dumps(res, ensure_ascii=False, indent=1))
+            self.loading_overlay.stop()
+            notify.success("外部内存只读探测完成，结果见日志。")
 
         def fail(msg: str) -> None:
-            self._log(f"探测失败：{msg}")
+            text = f"探测失败：{self._cn(msg)}"
+            self._log(text)
+            self.loading_overlay.stop()
+            self.error_banner.show_error(text)
+            notify.error(text)
 
         run_worker(self.svc.live_probe, done, fail)
 
     def _repair(self) -> None:
-        self._log("修复运行时/组件…")
+        self._log("修复运行时/游戏内组件…")
+        self.loading_overlay.start("正在修复运行时/游戏内组件…")
+        notify.toast("正在修复运行时/游戏内组件…")
 
         def done(res: dict) -> None:
             self._log(json.dumps(res, ensure_ascii=False, indent=1))
+            self.loading_overlay.stop()
+            notify.success("运行时/游戏内组件修复完成。")
             self.refresh()
 
         def fail(msg: str) -> None:
-            self._log(f"修复失败：{msg}")
+            text = f"修复失败：{self._cn(msg)}"
+            self._log(text)
+            self.loading_overlay.stop()
+            self.error_banner.show_error(text)
+            notify.error(text)
 
         run_worker(self.svc.agent_install_deps, done, fail)
 
     # ---------------------------------------------------------------- 读取
 
     def _read(self, cmd: str) -> None:
-        self._log(f"读取 {cmd}…")
+        label = _READ_LABELS.get(cmd, cmd)
+        self._log(f"读取{label}…")
         self.telemetry.setText("读取中…")
+        notify.toast(f"正在读取{label}…")
 
         def done(res: dict) -> None:
             self._log(json.dumps(res, ensure_ascii=False, indent=1))
             if cmd == "player":
                 loc = res.get("location") or {}
                 self.telemetry.setText(
-                    f"UA {res.get('ua') or '—'}  ·  行星 {loc.get('planet', '—')}  ·  "
+                    f"银河地址 {res.get('ua') or '—'}  ·  行星 {loc.get('planet', '—')}  ·  "
                     f"星系 {loc.get('system', '—')}  ·  {res.get('system_name') or ''}")
             elif cmd == "system":
                 self.telemetry.setText(
-                    f"{res.get('system_name') or '当前星系'}  ·  {len(res.get('planets') or [])} 颗行星")
+                    f"{res.get('system_name') or '当前星系'}  ·  "
+                    f"{len(res.get('planets') or [])} 颗行星")
             elif cmd == "planet":
                 p = res.get("planet") or {}
                 self.telemetry.setText(
@@ -234,33 +669,251 @@ class GameLinkPage(QWidget):
                     f"{p.get('weather') or ''}  ·  {p.get('resources') or ''}")
             elif cmd == "ships":
                 self.telemetry.setText(f"游戏内船槽：{len(res.get('ships') or [])} 艘")
+            self.error_banner.clear()
+            notify.success(f"{label}已更新。")
 
         def fail(msg: str) -> None:
-            self.telemetry.setText(f"读取失败：{msg}")
-            self._log(f"读取失败：{msg}")
+            text = f"读取失败：{self._cn(msg)}"
+            self.telemetry.setText(text)
+            self._log(text)
+            self.error_banner.show_error(text)
+            notify.error(text)
 
         run_worker(self.svc.agent_call, done, fail, cmd)
+
+    @staticmethod
+    def _join(value) -> str:
+        if value is None or value == "":
+            return MISSING
+        if isinstance(value, (list, tuple, set)):
+            items = [str(x).strip() for x in value if str(x).strip()]
+            return "、".join(items) if items else MISSING
+        return str(value).strip() or MISSING
+
+    def _format_planet(self, data: dict) -> str:
+        return format_planet_text(data or {})
+
+    def _planet_unavailable(self, res: dict) -> str:
+        code = str(res.get("code") or "")
+        err = self._cn(str(res.get("error") or res.get("reason") or "")).strip()
+        low = err.lower()
+        if code == "E_AGENT" or "连不上" in err or "响应超时" in err:
+            return "行星档案不可用：未连接游戏内代理；请先点「连接游戏」并确认游戏已注入。"
+        if ("还没进入存档" in err or "未进入存档" in err
+                or "玩家状态不可用" in err or "player_state" in low):
+            return "行星档案不可用：游戏尚未进入存档；请先载入存档后重试。"
+        if "当前星系不可用" in err:
+            return "行星档案不可用：当前星系不可用；请先载入存档并进入星系。"
+        if err and any(x in err for x in ("未知", "未实现", "不支持", "unknown",
+                                          "not implemented")):
+            return "行星档案不可用：当前游戏内代理未实现行星档案读取（planet.scan）。"
+        if err:
+            return f"行星档案不可用：{err}"
+        return "行星档案不可用：当前游戏内代理没有返回有效数据。"
+
+    def _planet_scan(self) -> None:
+        if self._cap_state_known:
+            reason = self._read_block_reason("planet.scan")
+            if reason:
+                text = f"行星档案不可用：{reason}"
+                self.planet_result.set_message(text)
+                self._log(text)
+                self.error_banner.show_error(text)
+                notify.warn(text)
+                return
+        self.planet_result.set_message("正在读取当前行星档案…")
+        self._log("读取行星档案…")
+        self.loading_overlay.start("正在读取当前行星档案…")
+        notify.toast("正在读取当前行星档案…")
+
+        def done(res) -> None:
+            res = res if isinstance(res, dict) else {"ok": False, "error": str(res)}
+            self._log(json.dumps(res, ensure_ascii=False, indent=1))
+            if not res.get("ok", False):
+                text = self._planet_unavailable(res)
+                self.planet_result.set_message(text)
+                self._log(text)
+                self.loading_overlay.stop()
+                self.error_banner.show_error(text)
+                notify.warn(text)
+                return
+            data = res.get("planet") or {}
+            if not data and isinstance(res.get("result"), dict):
+                data = res["result"].get("planet") or res["result"]
+            if not data and isinstance(res.get("data"), dict):
+                data = res["data"].get("planet") or res["data"]
+            if not data:
+                text = "行星档案不可用：当前游戏内代理没有返回有效数据。"
+                self.planet_result.set_message(text)
+                self._log(text)
+                self.loading_overlay.stop()
+                self.error_banner.show_error(text)
+                notify.warn(text)
+                return
+            self.planet_result.set_planet(data)
+            self._log("行星档案已更新。")
+            self.loading_overlay.stop()
+            self.error_banner.clear()
+            notify.success("行星档案已更新。")
+
+        def fail(msg: str) -> None:
+            text = f"行星档案不可用：{self._cn(msg)}"
+            self.planet_result.set_message(text)
+            self._log(text)
+            self.loading_overlay.stop()
+            self.error_banner.show_error(text)
+            notify.error(text)
+
+        run_worker(self.svc.agent_call, done, fail, "planet.scan")
+
+    def _refresh_planet(self) -> None:
+        self._planet_scan()
+
+    def _copy_planet(self) -> None:
+        if not self.planet_result.has_data():
+            self._log("没有可复制的行星档案；请先读取档案。")
+            notify.warn("没有可复制的行星档案；请先读取档案。")
+            return
+        text = self.planet_result.toPlainText().strip()
+        if not text:
+            self._log("没有可复制的行星档案；请先读取档案。")
+            notify.warn("没有可复制的行星档案；请先读取档案。")
+            return
+        QGuiApplication.clipboard().setText(text)
+        self._log("行星档案已复制。")
+        notify.success("行星档案已复制。")
+
+    def _read_planet(self) -> None:
+        self._planet_scan()
+
+    def _scan_poi(self, kind: str = "portal", label: str = "") -> None:
+        label = label or {"portal": "传送门", "ruins": "古遗迹",
+                          "freighter": "货船", "ship": "飞船"}.get(kind, "兴趣点")
+        if self._cap_state_known:
+            reason = self._read_block_reason("scan.poi").rstrip("。；; ")
+            if reason:
+                detail = f"{reason}；需要游戏内代理实机校准"
+                self.poi_result.set_unavailable(label, detail)
+                text = f"附近{label}暂不可用：{detail}。"
+                self._log(text)
+                self.error_banner.show_error(text)
+                notify.warn(text)
+                return
+        self.poi_result.set_message(f"正在扫描附近{label}…")
+        self._log(f"扫描附近{label}…")
+        self.loading_overlay.start(f"正在扫描附近{label}…")
+        notify.toast(f"正在扫描附近{label}…")
+
+        def done(res) -> None:
+            res = res if isinstance(res, dict) else {"ok": False, "error": str(res)}
+            self._log(json.dumps(res, ensure_ascii=False, indent=1))
+            if not res.get("ok", False):
+                reason = self._poi_unavailable(res)
+                self.poi_result.set_unavailable(label, reason)
+                text = f"附近{label}暂不可用：{reason}"
+                self._log(text)
+                self.loading_overlay.stop()
+                self.error_banner.show_error(text)
+                notify.warn(text)
+                return
+            rows = (res.get("results") or res.get("pois") or res.get("items")
+                    or res.get("poi") or [])
+            if isinstance(rows, dict):
+                rows = [rows]
+            if not rows:
+                reason = "兴趣点扫描（scan.poi）没有返回结果；需要游戏内代理实机校准"
+                self.poi_result.set_unavailable(label, reason)
+                text = f"附近{label}暂不可用：{reason}。"
+                self._log(text)
+                self.loading_overlay.stop()
+                self.error_banner.show_error(text)
+                notify.warn(text)
+                return
+            self.poi_result.set_pois(label, list(rows))
+            self._log(f"附近{label}已更新。")
+            self.loading_overlay.stop()
+            self.error_banner.clear()
+            notify.success(f"附近{label}已更新。")
+
+        def fail(msg: str) -> None:
+            reason = f"{self._cn(msg)}；需要游戏内代理实机校准"
+            self.poi_result.set_unavailable(label, reason)
+            text = f"附近{label}暂不可用：{reason}"
+            self._log(text)
+            self.loading_overlay.stop()
+            self.error_banner.show_error(text)
+            notify.error(text)
+
+        run_worker(self.svc.agent_call, done, fail, "scan.poi", kind=kind)
+
+    def _poi_unavailable(self, res: dict) -> str:
+        code = str(res.get("code") or "")
+        err = self._cn(str(res.get("error") or res.get("reason") or "")).strip()
+        low = err.lower()
+        if code == "E_AGENT" or "连不上" in err or "响应超时" in err:
+            return "未连接游戏内代理；需要游戏内代理实机校准"
+        if ("还没进入存档" in err or "未进入存档" in err
+                or "玩家状态不可用" in err or "player_state" in low):
+            return "游戏尚未进入存档；需要游戏内代理实机校准"
+        if err and any(x in err for x in ("未知", "未实现", "不支持", "unknown",
+                                          "not implemented")):
+            return "兴趣点扫描（scan.poi）尚未实现；需要游戏内代理实机校准，暂不提供结果"
+        if err:
+            return f"{err}；需要游戏内代理实机校准"
+        return "需要游戏内代理实机校准，暂不提供结果"
 
     # ---------------------------------------------------------------- 写
 
     def _call(self, cmd: str, **params) -> None:
-        self._log(f"{cmd}…")
+        label = _CALL_LABELS.get(cmd, cmd)
+        self._log(f"{label}…")
+        notify.toast(f"正在{label}…")
 
         def done(res: dict) -> None:
             self._log(json.dumps(res, ensure_ascii=False, indent=1))
+            if isinstance(res, dict) and res.get("ok") is False:
+                text = f"{label}失败：{self._cn(str(res.get('error') or res.get('reason') or ''))}"
+                self.error_banner.show_error(text)
+                notify.error(text)
+                return
+            self.error_banner.clear()
+            notify.success(f"{label}完成。")
 
-        run_worker(self.svc.agent_call, done, lambda m: self._log(f"{cmd} 失败：{m}"), cmd, **params)
+        def fail(msg: str) -> None:
+            text = f"{label}失败：{self._cn(msg)}"
+            self._log(text)
+            self.error_banner.show_error(text)
+            notify.error(text)
+
+        run_worker(self.svc.agent_call, done, fail, cmd, **params)
 
     def _teleport(self) -> None:
         glyphs = self.glyphs.text().strip().upper()
         if not glyphs:
-            QMessageBox.information(self, "传送", "先填 12 位符文地址")
+            notify.warn("先填 12 位符文地址。")
+            return
+        mode = self.teleport_mode.currentData()
+        portal = mode == "teleport.portal"
+        if portal and not self._portal_available:
+            notify.warn(self._portal_reason)
+            return
+        if not self._build_verified or self._multiplayer:
+            reason = ("多人模式已启用：高风险写操作被禁用" if self._multiplayer
+                      else "这版未验证：高风险写操作被禁用")
+            notify.warn(reason)
             return
         galaxy = int(self.galaxy.value()) if self.galaxy_mode.currentData() == "custom" else None
+        way = "传送门效果" if portal else "普通写位置"
         if QMessageBox.warning(
                 self, "确认传送",
-                f"将尝试把玩家位置写成 {glyphs}（星系：{galaxy if galaxy is not None else '当前'}）。\n"
+                f"将尝试以{way}把玩家位置写成 {glyphs}"
+                f"（星系：{galaxy if galaxy is not None else '当前'}）。\n"
                 "只支持单人模式。请确认已备份存档。继续？",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            notify.toast("已取消传送。")
             return
-        self._call("teleport", glyphs=glyphs, galaxy=galaxy)
+        notify.toast(f"正在以{way}传送…")
+        if portal:
+            self._call("teleport.portal", glyphs=glyphs, galaxy=galaxy)
+        else:
+            self._call("teleport", glyphs=glyphs, galaxy=galaxy)

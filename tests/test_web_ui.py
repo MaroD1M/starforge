@@ -1,30 +1,5 @@
-"""网页与新增接口的契约测试（页面/静态资源/缩略图/系统/设置/诊断）。"""
-import pytest
-
-from starforge.core import settings as settings_mod
-
-
-def test_index_page_has_four_tabs(client):
-    r = client.get("/")
-    assert r.status_code == 200
-    html = r.data.decode("utf-8")
-    for page in ("page-search", "page-mine", "page-systems", "page-settings"):
-        assert page in html
-    for tab in ('data-tab="search"', 'data-tab="mine"', 'data-tab="systems"', 'data-tab="settings"'):
-        assert tab in html
-    assert "/static/app.js" in html and "/static/viewer.js" in html
-
-
-@pytest.mark.parametrize("name,mime", [("app.css", "text/css"), ("app.js", "text/javascript"),
-                                       ("viewer.js", "text/javascript")])
-def test_static_assets(client, name, mime):
-    r = client.get(f"/static/{name}")
-    assert r.status_code == 200 and r.mimetype == mime and len(r.data) > 500
-
-
-def test_static_traversal_blocked(client):
-    r = client.get("/static/../starforge/core/settings.py")
-    assert r.status_code in (403, 404)
+"""API-only 服务与新增接口的契约测试。"""
+from __future__ import annotations
 
 
 def test_capabilities(client):
@@ -51,6 +26,7 @@ def test_thumb_png(client, game_env):
 
 
 def test_system_current(client, game_env, saves_dir):
+    from starforge.core import settings as settings_mod
     settings_mod.update(saves_dir=str(saves_dir))
     j = client.get("/api/system?current=1").get_json()
     assert j["ok"] and j["planets"] >= 1
@@ -81,7 +57,7 @@ def test_autodetect_readonly_mode(tmp_path, monkeypatch):
     rep = settings_mod.autodetect(apply=False)
     assert rep["found"]["saves_dir"] == str(fake)
     assert rep["applied"] is False
-    assert settings_mod.current().saves_dir == ""       # 未写盘
+    assert settings_mod.current().saves_dir == ""
 
 
 def test_autodetect_api(client, monkeypatch, tmp_path):
@@ -116,7 +92,7 @@ def test_ships_include_class_and_stats(client, game_env, saves_dir):
 
 
 def test_webcheck_command_passes(monkeypatch, tmp_path):
-    """打包后用它验证网页：进程内跑，不依赖端口。"""
+    """打包后用它验证 API-only 服务：进程内跑，不依赖端口。"""
     import io
     import sys
     from starforge.__main__ import cmd_webcheck
@@ -126,27 +102,10 @@ def test_webcheck_command_passes(monkeypatch, tmp_path):
     rc = cmd_webcheck(None)
     out = buf.getvalue()
     assert rc == 0
-    assert "网页自检通过" in out and "page-search" in out
-
-
-def test_static_dir_resolution_finds_assets():
-    from starforge.web.app import _find_static_dir
-    d = _find_static_dir()
-    assert d.endswith("static")
-    assert __import__("os").path.exists(__import__("os").path.join(d, "index.html"))
-
-
-def test_package_includes_static_assets():
-    """打包必须带上静态资源（v0.11.0 首跑就是漏了它导致网页 500）。"""
-    from pathlib import Path
-    wf = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text("utf-8")
-    block = wf.split("pyinstaller --noconfirm")[1].split("冒烟测试")[0]   # 打包命令所在段
-    assert "starforge/web/static;starforge/web/static" in block
-    assert "build/vendor/data;data" in block
+    assert "接口自检通过" in out
 
 
 def test_single_exe_build():
-    """单 exe 方案：不应再有第二个构建目标。"""
     from pathlib import Path
     wf = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text("utf-8")
     assert "starforge-cli" not in wf

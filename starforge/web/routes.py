@@ -46,19 +46,7 @@ def health():
               write_enabled=s.write_enabled,
               shipwright=str(paths.shipwright_root()) if _has_shipwright() else "",
               data_ready=bool(gd), saves_ready=bool(saves),
-              desktop=_desktop_info())
-
-
-def _desktop_info() -> dict:
-    """原生窗口能力（界面用它决定显示"桌面窗口"还是"浏览器模式"+原因）。"""
-    try:
-        from .. import desktop
-        info = desktop.probe()
-        info["mode"] = "desktop" if info.get("available") else "browser"
-        info["fallback_reason"] = desktop.LAST_FALLBACK_REASON or ""
-        return info
-    except Exception as e:                        # noqa: BLE001
-        return {"available": False, "mode": "browser", "reason": f"{type(e).__name__}: {e}"}
+              gui={"available": True, "mode": "native", "framework": "PySide6"})
 
 
 def _has_shipwright() -> bool:
@@ -685,11 +673,6 @@ def api_warm():
     return ok(**warm.status())
 
 
-@bp.get("/desktop")
-def api_desktop():
-    """桌面窗口能力（界面用它决定是否显示"桌面窗口"徽标与提示）。"""
-    from .. import desktop
-    return ok(**desktop.probe())
 
 
 @bp.get("/autodetect")

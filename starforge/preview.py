@@ -14,7 +14,7 @@ from .core import log, paths, settings, strings
 import numpy as np
 
 from . import paint as paint_mod, render, tex as tex_mod
-from .data import load_catalog, load_icons
+from . import parts as parts_mod
 from .data.shipref import PROC_MODELS, ShipRef
 from . import gltf
 
@@ -30,8 +30,14 @@ def level() -> str:
     return "L1" if (_has_exe(s.game_dir) and os.path.isdir(banks)) else "L0"
 
 
+# 缓存代次：旧缓存只有平涂材质，改成贴图版本后必须重新生成，不能继续命中旧 glb。
+_CACHE_SCHEMA = "glb-tex-v1"
+_TEXTURE_MAX_SIDE = 1024      # 预览用贴图上限，避免整艘船的 PNG 把 glb 撑到几十 MB
+
+
 def _cache_key(ref: ShipRef, level_: str) -> str:
-    raw = json.dumps([level_, ref.type, ref.seed, ref.parts, ref.model], sort_keys=True)
+    raw = json.dumps([_CACHE_SCHEMA, level_, ref.type, ref.seed, ref.parts, ref.model],
+                     sort_keys=True)
     return hashlib.sha1(raw.encode()).hexdigest()[:20]
 
 
@@ -41,18 +47,66 @@ def _out_dir() -> str:
     return str(d)
 
 
-def part_icons(ship: str, parts: list[str] | None) -> list[dict]:
-    """L0 用的部件图清单（每项带 URL 与所属插槽组）。"""
-    cat = load_catalog()
-    icons = load_icons()
-    loc = {p.upper(): cat.locate(p) for p in (parts or [])}
-    out = []
-    for p in (parts or []):
-        key = p.upper()
-        groups = sorted({g for _t, g, _w in loc.get(key, [])})
-        out.append({"part": p, "groups": groups,
-                    "icon": f"/api/icons/{p}.png?ship={ship}" if icons.png(p, ship) else None})
+def ensure_texture_paths() -> None:
+    """修一下 Windows 路径分隔符在 Linux 上的上游兼容问题。
+
+    Shipwright 的 ``shiptex.maps_for`` 只按 ``/`` 拆材质路径，而场景文件里的材质名带
+    ``\\``。在 Windows 上碰巧能打开，在 Linux 上材质文件找不到，几何组就丢掉贴图名。
+    这里只把传入路径统一成 ``/``，不改变任何贴图/UV 数据。
+    """
+    try:
+        paths.ensure_shipwright_importable()
+        from nms_procgen import shiptex
+    except Exception:                                      # noqa: BLE001 - 没有上游就保持平涂
+        return
+    orig = getattr(shiptex, "maps_for", None)
+    if orig is None or getattr(orig, "_starforge_path_safe", False):
+        return
+
+    def maps_for(material):
+        return orig(material.replace("\\", "/") if isinstance(material, str) else material)
+
+    maps_for._starforge_path_safe = True                   # type: ignore[attr-defined]
+    shiptex.maps_for = maps_for                            # type: ignore[assignment]
+
+
+def _limit_texture(img: np.ndarray, max_side: int = _TEXTURE_MAX_SIDE) -> np.ndarray:
+    """最近邻缩到 max_side 以内；只用于预览，不改 UV。"""
+    h, w = img.shape[:2]
+    side = max(h, w)
+    if side <= max_side:
+        return img
+    scale = max_side / float(side)
+    nh, nw = max(1, round(h * scale)), max(1, round(w * scale))
+    ys = np.minimum((np.arange(nh) * h // nh), h - 1)
+    xs = np.minimum((np.arange(nw) * w // nw), w - 1)
+    return np.ascontiguousarray(img[ys][:, xs])
+
+
+def _textures_for(groups: dict) -> dict[str, np.ndarray]:
+    """{tex: RGBA}；能解码几张算几张，单张失败只让那一组退回平涂。"""
+    ensure_texture_paths()
+    out: dict[str, np.ndarray] = {}
+    for key in groups:
+        tex = key[1] if isinstance(key, tuple) and len(key) > 1 else ""
+        if not tex or tex in out:
+            continue
+        try:
+            out[tex] = _limit_texture(tex_mod.rgba(tex))
+        except Exception as e:                             # noqa: BLE001
+            log.debug("贴图跳过 %s：%s", tex, e)
     return out
+
+
+def part_icons(ship: str, parts: list[str] | None) -> list[dict]:
+    """L0 用的部件图清单（直接由游戏几何渲染，不依赖 Gagarin 图标）。"""
+    try:
+        tree = parts_mod.tree(ship)
+        group_of = {o["part"].upper(): g["group"] for g in tree for o in g.get("options") or []}
+    except Exception:                                      # noqa: BLE001
+        group_of = {}
+    return [{"part": p, "groups": [group_of[p.upper()]] if p.upper() in group_of else [],
+             "icon": f"/api/part-thumb/{ship}/{p}.png"} for p in (parts or [])]
 
 
 def build(ref: ShipRef, want_glb: bool = True) -> dict:
@@ -88,6 +142,7 @@ def build(ref: ShipRef, want_glb: bool = True) -> dict:
         colours = paint_mod.look(ref.seed, ref.type)
         info["colours"] = {k: paint_mod.hexcol(v) for k, v in colours.items()}
         paths.ensure_shipwright_importable()
+        ensure_texture_paths()
         from nms_procgen import model3d
         t0 = time.time()
         model = model3d.ship_model(ref.seed, ref.type, ref.parts, True, False)
@@ -96,14 +151,17 @@ def build(ref: ShipRef, want_glb: bool = True) -> dict:
         if want_glb:
             blob = model3d.pack(model)
             header, groups = gltf.parse_pack(blob)
-            data = gltf.build_glb(header, groups, colours=colours, name=f"{ref.type}_{ref.seed}")
+            textures = _textures_for(groups)
+            data = gltf.build_glb(header, groups, colours=colours,
+                                  name=f"{ref.type}_{ref.seed}", textures=textures)
             with open(glb_path + ".part", "wb") as f:
                 f.write(data)
             os.replace(glb_path + ".part", glb_path)
-            info.update(bytes=len(data))
+            info.update(bytes=len(data), textures=len(textures))
         info.update(verts=verts, tris=tris, seconds=round(time.time() - t0, 2), cached=False,
                     glb=f"/api/model/{ref.type}/{ref.seed}.glb" if want_glb else None,
                     posable=bool(model.get("posable")), degraded=False, reason="")
+        info.setdefault("textures", 0)
         log.info("L1 预览 %s %s：%d 顶点 / %d 三角 / %.1fs", ref.type, ref.seed, verts, tris,
                  time.time() - t0)
     except Exception as e:                          # noqa: BLE001 - 降级到 L0，但要说原因

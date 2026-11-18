@@ -30,29 +30,22 @@ def _free_port() -> int:
 
 
 def cmd_app(a) -> int:
-    """默认命令：打开原生桌面窗口（不弹浏览器）。"""
+    """默认命令：打开原生桌面窗口。旧 pywebview 回退已移除。"""
     console.hide_console_window()          # 单 exe：双击时把控制台藏掉
     if getattr(a, "browser", False):
-        print("按 --browser 要求，直接用浏览器打开", file=sys.stderr)
-        a.no_browser = False
-        return cmd_serve(a)
-    if not getattr(a, "webview", False):
-        if getattr(a, "safe", False):
-            os.environ["STARFORGE_SAFE"] = "1"
-            os.environ["QT_OPENGL"] = "software"
-        try:
-            from .app.main import run as native_run
-            return native_run([sys.argv[0]])
-        except Exception as e:                             # noqa: BLE001
-            print(f"原生界面不可用（{type(e).__name__}: {e}），回退到 WebView2/浏览器。",
-                  file=sys.stderr)
-    from . import desktop
-    info = desktop.probe()
-    if not info["available"]:
-        print(f"桌面窗口不可用：{info['reason']}", file=sys.stderr)
-        print("将改用浏览器打开（功能完全一致；装 WebView2 后双击 exe 就是原生窗口）。",
+        print("--browser 已移除：原生界面请用 starforge app；调试 API 请用 starforge serve",
               file=sys.stderr)
-    return desktop.run(port=getattr(a, "port", 0), debug=getattr(a, "debug", False))
+        return 2
+    if getattr(a, "safe", False):
+        os.environ["STARFORGE_SAFE"] = "1"
+        os.environ["QT_OPENGL"] = "software"
+    try:
+        from .app.main import run as native_run
+        return native_run([sys.argv[0]])
+    except Exception as e:                                 # noqa: BLE001
+        print(f"原生界面启动失败：{type(e).__name__}: {e}", file=sys.stderr)
+        print("请确认安装包完整，或运行 starforge doctor 查看依赖。", file=sys.stderr)
+        return 5
 
 
 def cmd_serve(a) -> int:
@@ -68,9 +61,8 @@ def cmd_serve(a) -> int:
         print(f"{e}；直接打开 {url} 或先关掉那个实例", file=sys.stderr)
         return 2
     try:
-        if not a.no_browser:
-            threading.Timer(0.6, lambda: webbrowser.open(url)).start()
-        print(f"{strings.APP_TITLE} → {url}   (Ctrl+C 退出)")
+        print(f"{strings.APP_TITLE} JSON API → {url}   (Ctrl+C 退出)")
+        print("原生界面请用 starforge app；该地址只提供 JSON API。", file=sys.stderr)
         app.run(host="127.0.0.1", port=port, threaded=True, use_reloader=False)
     finally:
         lk.release()
@@ -219,6 +211,15 @@ def cmd_internal(a) -> int:
     """隐藏的内部子进程入口：把 unicorn/systemgen 隔离出去。"""
     import json as _json
 
+    # Unicorn 在 Windows 上使用 VEH 按需提交代码页；faulthandler 会抢在它前面
+    # 捕获 access violation，导致 uc_mem_map 崩溃。子进程里必须关掉。
+    try:
+        import faulthandler as _fh
+
+        _fh.disable()
+    except Exception:                                      # noqa: BLE001
+        pass
+
     try:
         payload = _json.loads(a.payload or "{}")
     except ValueError as e:
@@ -272,7 +273,7 @@ def cmd_doctor(a) -> int:
     """环境体检：把"运行时会不会缺东西"一次说清（打包产物排障的第一条命令）。
 
     检查项：Python/平台、关键三方库、unicorn（能不能建 Uc）、系统生成器能不能借用、
-    桌面窗口三件套（pywebview/pythonnet/WebView2）、上游数据层。
+    Qt/PySide6 原生界面、上游数据层。
     """
     import json as _json
     import platform
@@ -303,12 +304,15 @@ def cmd_doctor(a) -> int:
         out["systemgen"] = {"available": system_mod.available()}
     except Exception as e:                                 # noqa: BLE001
         out["systemgen"] = {"available": False, "error": f"{type(e).__name__}: {e}"}
-    # 桌面窗口
+    # 原生界面
     try:
-        from . import desktop
-        out["desktop"] = desktop.probe()
+        import PySide6
+        from PySide6.QtWidgets import QApplication  # noqa: F401
+        out["gui"] = {"available": True, "framework": "PySide6",
+                      "version": getattr(PySide6, "__version__", "?")}
     except Exception as e:                                 # noqa: BLE001
-        out["desktop"] = {"available": False, "reason": f"{type(e).__name__}: {e}"}
+        out["gui"] = {"available": False, "reason": f"{type(e).__name__}: {e}"}
+        out["notes"].append("PySide6/Qt 不可用 → 原生界面无法启动")
     # 上游数据层
     try:
         from .core import paths
@@ -317,31 +321,14 @@ def cmd_doctor(a) -> int:
         out["upstream"] = f"{type(e).__name__}: {e}"
     optional = {"capstone"}
     required_ok = all(v == "ok" for k, v in out["deps"].items() if k not in optional)
-    ok = out["unicorn"]["ok"] and required_ok and bool(out["desktop"].get("available"))
+    ok = out["unicorn"]["ok"] and required_ok and bool(out["gui"].get("available"))
     out["ok"] = ok
     print(_json.dumps(out, ensure_ascii=False, indent=1))
     return 0 if ok else 7
 
 
-def cmd_desktop_check(a) -> int:
-    """原生窗口诊断：把 probe()、pythonnet 各运行时的失败原文、WebView2 检测结果全打出来。
-
-    这条命令是给用户回报用的：出问题时跑一次，把输出整段贴回来即可定位。
-    """
-    import json as _json
-    from . import desktop
-    rep = desktop.probe()
-    wv = desktop.webview2_runtime()
-    clr = desktop.ensure_clr()
-    out = {"probe": rep, "webview2": wv, "pythonnet_runtime": clr,
-           "last_fallback": desktop.LAST_FALLBACK_REASON,
-           "hint": "原生窗口 = pywebview + pythonnet + Edge WebView2 三者齐备；缺哪个看上面 reason"}
-    print(_json.dumps(out, ensure_ascii=False, indent=1))
-    return 0 if rep.get("available") else 6
-
-
 def cmd_glyph_overlay(a) -> int:
-    from . import glyphs as glyph_mod, overlay
+    from . import glyphs as glyph_mod
     try:
         digits = glyph_mod.digits_for(a.glyphs)
         png = glyph_mod.panel_png(digits, tile=a.tile)
@@ -349,49 +336,43 @@ def cmd_glyph_overlay(a) -> int:
         print(f"符文串无效：{e}", file=sys.stderr)
         return 2
     try:
-        overlay.show(digits, png, alpha=a.alpha, click_through=a.click_through, scale=a.scale)
-    except overlay.OverlayUnsupported as e:
-        print(f"无法显示置顶窗口：{e}\n可改用：python -m starforge serve（浏览器里的符文弹层）",
-              file=sys.stderr)
+        from .app.overlay import show as qt_show
+
+        qt_show(digits, png, alpha=a.alpha, click_through=a.click_through, scale=a.scale)
+        return 0
+    except Exception as e:                                  # noqa: BLE001
+        print(f"Qt 浮窗不可用：{type(e).__name__}: {e}", file=sys.stderr)
         return 3
-    return 0
 
 
 def cmd_webcheck(a) -> int:
-    """打包后验证网页可用（不占端口、不起子进程）：首页 + 静态资源 + 关键接口。"""
+    """打包后验证 API-only 服务：不占端口、不起子进程。"""
     from .web.app import create_app
     app = create_app()
     c = app.test_client()
-    checks = []
-    # 这些依赖游戏文件：没有游戏时 404（带 JSON 原因）也算"模块正常"
     optional = {"/api/catalog/fighter", "/api/part-thumb/sentinel/_PIT_A.png"}
-    # `/api/galaxy/stats` 与 `/api/creatures/capabilities` 是 v0.13 新增模块（galaxy/creature），
-    # 放进 webcheck 就能在打包产物里证明这两个模块真的进去了（否则会 AttributeError/ImportError）。
-    for path in ("/", "/static/app.js", "/static/app.css", "/static/viewer.js",
-                 "/api/health", "/api/settings", "/api/capabilities",
+    checks = []
+    for path in ("/", "/api/health", "/api/settings", "/api/capabilities",
                  "/api/textures/status", "/api/catalog/fighter",
-                 "/api/part-thumb/sentinel/_PIT_A.png", "/api/desktop", "/api/warm",
+                 "/api/part-thumb/sentinel/_PIT_A.png", "/api/warm",
                  "/api/galaxy/stats", "/api/creatures/capabilities"):
         r = c.get(path)
         if path in optional:
-            ok = (r.status_code == 200 and len(r.data) > 50) or (
+            ok = (r.status_code == 200 and len(r.data) > 20) or (
                 r.status_code == 404 and r.mimetype == "application/json")
         else:
-            ok = r.status_code == 200 and len(r.data) > 50
+            ok = r.status_code == 200 and len(r.data) > 20
         checks.append((path, r.status_code, len(r.data), ok))
-    html = c.get("/").data.decode("utf-8", "replace")
-    checks.append(("首页含 page-search", 200, len(html), "page-search" in html))
-    cat = c.get("/api/catalog")                      # 没游戏/没数据时 404 属正常，只报告
-    print(f"· /api/catalog {cat.status_code}（无游戏数据时为 404，属正常）")
+    root = c.get("/").get_json() or {}
+    checks.append(("根路径为 JSON API", 200, 0, root.get("service") == "starforge-api"))
     bad = [c_ for c_ in checks if not c_[3]]
     for path, code, size, ok in checks:
-        print(f"{'✓' if ok else '✗'} {path:22s} {code} {size:>8d}B")
+        print(f"{'✓' if ok else '✗'} {path:30s} {code} {size:>8d}B")
     if bad:
-        print(f"网页自检失败：{len(bad)} 项", file=sys.stderr)
+        print(f"接口自检失败：{len(bad)} 项", file=sys.stderr)
         return 1
-    print("网页自检通过")
+    print("接口自检通过")
     return 0
-
 
 def cmd_selftest(a) -> int:
     from .data import load_catalog, load_icons
@@ -458,13 +439,12 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("app", help="打开桌面窗口（默认原生）")
     p.add_argument("--browser", action="store_true", help="强制用浏览器打开（调试用）")
-    p.add_argument("--webview", action="store_true", help="回退到旧的 pywebview 外壳")
     p.add_argument("--safe", action="store_true", help="安全模式：软件 OpenGL，排查显卡驱动崩溃")
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--debug", action="store_true")
     p.set_defaults(func=cmd_app)
 
-    p = sub.add_parser("serve", help="只用浏览器打开（调试用）")
+    p = sub.add_parser("serve", help="本地 JSON API 调试（无静态网页）")
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--no-browser", action="store_true")
     p.set_defaults(func=cmd_serve)
@@ -511,17 +491,14 @@ def main(argv=None) -> int:
     p.add_argument("--payload", default="{}")
     p.set_defaults(func=cmd_internal)
 
-    p = sub.add_parser("doctor", help="环境体检（依赖/unicorn/窗口/上游）")
+    p = sub.add_parser("doctor", help="环境体检（依赖/unicorn/Qt/上游）")
     p.set_defaults(func=cmd_doctor)
-
-    p = sub.add_parser("desktop-check", help="原生窗口诊断（回报时跑这条）")
-    p.set_defaults(func=cmd_desktop_check)
 
     p = sub.add_parser("agent", help="游戏内代理（M4）：hello / 能力表")
     p.add_argument("action", choices=["hello"], nargs="?", default="hello")
     p.set_defaults(func=cmd_agent)
 
-    p = sub.add_parser("webcheck", help="验证网页与静态资源（打包后必跑）")
+    p = sub.add_parser("webcheck", help="验证 API 与关键接口（打包后必跑）")
     p.set_defaults(func=cmd_webcheck)
 
     p = sub.add_parser("selfcheck", help="端到端自检（写入只在存档副本上）")

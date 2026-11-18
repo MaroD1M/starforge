@@ -1,5 +1,39 @@
 # 更新记录
 
+## v0.14.5
+
+### 原生界面与交互
+
+- 新增「设计器」页面：船型/部件树 → 原生 3D 预览 → 已选摘要与种子搜索；3D 失败时退回服务端 PNG。
+- 新增 `AppContext` 跨页面上下文，以及统一的 Toast / 空态 / 加载遮罩 / 错误横幅组件。
+- 飞船列表改用卡片 delegate（缩略图、类型/等级、悬停/选中态）；新增行星档案、同伴列表、页面标题等组件。
+- 补齐导航快捷键（Ctrl+1…7）、F5 刷新、Ctrl+L 聚焦筛选、Ctrl+Shift+T 任务栏，并整理 Tab 顺序、可访问名称与提示。
+- 新增可选无人深空氛围主题（默认关闭）；设置页与状态芯片显示更明确的运行/写入状态。
+- 收藏夹与分享码、最近活动历史改为本地持久化；新增地址工作台、船级/属性编辑、备份、对比等对话框逻辑与测试。
+- 任务栏支持取消进行中任务、清空已结束任务，并在服务层记录成功/失败历史。
+
+### 功能与游戏内代理
+
+- agent 新增只读 `planet.scan`（行星完整档案，单字段失败会标记 unsupported）与实验性 `teleport/portal` 端点。
+- `teleport.portal` 在 API 未实机校准或未显式开启时返回明确的 `E_UNSUPPORTED`，不会假装成功。
+- 新增游戏 build 闸门：未验证 build 默认只允许只读能力；高风险写操作需 `allow_unverified_agent` 显式开启。
+- 新增多人模式保护：`teleport` / `restore` / 扫描写操作 / portal 传送在多人大厅中被强制禁用；`scan.discover` 继续保持关闭。
+- 系统生成/unicorn 继续隔离在子进程；补充 `0xC0000409` 的诊断提示，主界面不随子进程崩溃。
+- 服务层为搜索、扫描、写回、备份、恢复、agent 操作统一记录最近活动，异常不会影响主流程。
+
+### 安全与依赖
+
+- 默认依赖移除 `pywebview` / `pythonnet` / `clr_loader` / `tkinter`；旧窗口能力已从默认包移除，不再提供 pywebview 回退。
+- PyInstaller 显式排除旧窗口、tkinter 与未使用的 Qt 模块，发布包默认走 PySide6 原生界面。
+- agent runtime 改为 `NMSpy --no-deps` + `pymhf[http_api]`，不安装 DearPyGUI，并裁剪 pywin32 开发件/字节码/静态库。
+
+### 包体与文档
+
+- 新增 `scripts/size_report.py` 与包体裁剪流程：Qt 翻译/插件、unicorn 静态库/头文件、numpy 测试/头文件、agent 冗余文件；支持目录/zip、分类聚合与裁剪前后对比。
+- 新增 `scripts/selfcheck_release.py`：发布前检查版本/CHANGELOG/tag、必需文件、文档链接、遗留依赖与 TODO 统计，支持 `--json` 与 `--fail-on error`。
+- 新增并索引 `GAP-ANALYSIS.md`、`COMMUNITY-UI-ROADMAP.md`、`INGAME-SCAN-FEASIBILITY.md`、`UI-TERMS.md`、`PACKAGING.md`、`SAVE-API-INVENTORY.md`。
+- `PACKAGING.md` 补充自检命令与发布前检查清单。
+
 ## v0.14.4-beta（3D 绘制/Unicorn 隔离/运行时识别修复）
 
 - 修复 `glDrawElements(..., None)` 的 PySide6 参数错误：索引偏移改为 `0`。
@@ -307,7 +341,7 @@
 
 ## v0.12.0-beta（重构 v2）
 中文化 + 更接近真实建模的渲染 + 部件级预览 + 贴图管线 + 零配置自愈。
-详见 [docs/PLAN-V2.md](docs/PLAN-V2.md)。
+详见 [docs/archive/PLAN-V2.md](docs/archive/PLAN-V2.md)。
 
 - **中文化**：插槽组与部件词根中英映射（编号保留、重名加序号），群系/哨兵/种族/船池类别
   全部中文；原名保留在 tooltip

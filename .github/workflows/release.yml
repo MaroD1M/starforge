@@ -13,6 +13,11 @@ permissions:
 env:
   PYTHONIOENCODING: utf-8      # 防止 cp1252 控制台下打印非 ASCII 直接崩
   PYTHONUTF8: "1"
+  # 默认裁掉 Qt 的软件 OpenGL（opengl32sw.dll，未压缩约 20 MB）。无 GPU/远程桌面下
+  # 3D 预览会退回服务端 PNG；需要保留“安全模式”软件渲染时改成 "1"。
+  STARFORGE_KEEP_SOFTWARE_OPENGL: "0"
+  # 最终 zip 的硬预算（MiB）；先保证从 131 MB 降下来，实测稳定后再收紧到 100/90。
+  STARFORGE_SIZE_BUDGET_MIB: "110"
 
 jobs:
   windows:
@@ -40,11 +45,6 @@ jobs:
           pip install -r requirements.txt pyinstaller
           pip install .
 
-      - name: 验证打包内含 tkinter（符文置顶窗口需要）
-        shell: pwsh
-        run: |
-          python -c "import tkinter; print('tkinter available:', tkinter.TkVersion)"
-
       - name: 自检（不依赖游戏文件）
         shell: pwsh
         env:
@@ -57,9 +57,28 @@ jobs:
         shell: pwsh
         run: python packaging/vendor.py --shipwright upstream-shipwright --dest build/vendor
 
-      - name: 构建游戏内 agent 的独立 Python 运行时
+      # 分两步构建：先保留未裁剪的 runtime 记录基线，再单独裁剪并对比。
+      # build_agent_runtime.py 用 NMSpy --no-deps + pymhf[http_api]，不会装 DearPyGUI。
+      - name: 构建游戏内 agent 的独立 Python 运行时（先不裁剪）
         shell: pwsh
-        run: python packaging/build_agent_runtime.py
+        run: python packaging/build_agent_runtime.py --no-prune
+
+      - name: 体积报告（agent runtime 裁剪前）
+        shell: pwsh
+        run: |
+          $before = Join-Path $env:RUNNER_TEMP "size-agent-before.json"
+          python scripts/size_report.py build/agent-runtime --top 15 --by package --json |
+            Set-Content -Encoding utf8 $before
+          if ($LASTEXITCODE -ne 0) { throw "agent runtime 裁剪前体积报告失败" }
+
+      - name: 裁剪 agent runtime（去掉 DearPyGUI/pywin32 开发件/字节码）并对比
+        shell: pwsh
+        run: |
+          $before = Join-Path $env:RUNNER_TEMP "size-agent-before.json"
+          python packaging/build_agent_runtime.py --prune-only
+          if ($LASTEXITCODE -ne 0) { throw "agent runtime 裁剪或 import 自检失败" }
+          python scripts/size_report.py build/agent-runtime --top 15 --by package --compare $before
+          if ($LASTEXITCODE -ne 0) { throw "agent runtime 裁剪后体积报告失败" }
 
       - name: 打包（单 exe：双击=桌面窗口并隐藏控制台，带子命令=命令行；入口 packaging/entry.py）
         shell: pwsh
@@ -70,17 +89,119 @@ jobs:
             --add-data "build/vendor/data;data" `
             --add-data "build/vendor/THIRD_PARTY_SHIPWRIGHT_LICENSE.txt;." `
             --collect-all hgpaktool --collect-all numpy --collect-all flask `
-            --collect-all texture2ddecoder --collect-all webview `
-            --collect-all pythonnet --collect-all clr_loader --hidden-import clr `
+            --collect-all texture2ddecoder `
             --collect-all unicorn --collect-all pefile `
-            --collect-submodules starforge --hidden-import tkinter `
-            --add-data "starforge/web/static;starforge/web/static" `
+            --collect-submodules starforge `
             --add-data "starforge/agent;starforge/agent" `
             --add-data "starforge/live/builds;starforge/live/builds" `
             --exclude-module numpy.f2py --exclude-module numpy.distutils `
             --exclude-module pymhf --exclude-module nmspy `
             --exclude-module starforge.agent.starforge_agent `
+            --exclude-module tkinter --exclude-module _tkinter `
+            --exclude-module webview --exclude-module pythonnet --exclude-module clr_loader `
+            --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick `
+            --exclude-module PySide6.QtQuick3D --exclude-module PySide6.QtWebEngineCore `
+            --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.QtWebEngineQuick `
+            --exclude-module PySide6.QtMultimedia --exclude-module PySide6.QtCharts `
+            --exclude-module PySide6.QtDataVisualization --exclude-module PySide6.QtBluetooth `
+            --exclude-module PySide6.QtNfc --exclude-module PySide6.QtSerialPort `
+            --exclude-module PySide6.QtSql --exclude-module PySide6.QtTest `
+            --exclude-module PySide6.QtHelp --exclude-module PySide6.QtDesigner `
+            --exclude-module PySide6.QtUiTools --exclude-module PySide6.QtScxml `
+            --exclude-module PySide6.QtStateMachine --exclude-module PySide6.QtSvg `
             packaging/entry.py
+
+      - name: 体积报告（_internal 裁剪前基线）
+        shell: pwsh
+        run: |
+          $before = Join-Path $env:RUNNER_TEMP "size-internal-before.json"
+          python scripts/size_report.py dist/starforge/_internal --top 25 --by package --json |
+            Set-Content -Encoding utf8 $before
+          if ($LASTEXITCODE -ne 0) { throw "裁剪前体积报告失败" }
+
+      - name: 裁剪包内安全冗余（Qt 翻译/插件、unicorn 静态库、numpy 测试）
+        shell: pwsh
+        run: |
+          $internal = "dist/starforge/_internal"
+          if (-not (Test-Path $internal)) { throw "没有找到 $internal" }
+          function Remove-Path($p) {
+            if (Test-Path $p) { Remove-Item -Recurse -Force $p -ErrorAction SilentlyContinue }
+          }
+
+          # unicorn：运行时只需要 unicorn/ Python 包 + lib/unicorn.dll；
+          # lib/unicorn.lib 是 49.9 MB 的链接期静态库，include/ 是 C 头文件。
+          Remove-Path "$internal/unicorn/include"
+          Get-ChildItem "$internal/unicorn/lib" -Filter "*.lib" -File -ErrorAction SilentlyContinue |
+            Remove-Item -Force
+
+          # Qt：界面文案在 Python/QSS 里，未安装 QTranslator，qt/qtbase 翻译不会被加载。
+          Remove-Path "$internal/PySide6/translations"
+          Remove-Path "$internal/PySide6/qml"
+
+          # Qt 插件：只保留 Windows 平台插件、ICO 解码、原生样式和 offscreen（CI 无桌面时用）。
+          foreach ($d in @("designer", "qmltooling", "sqldrivers", "tls",
+                           "networkinformation", "networkaccess", "vectorimageformats",
+                           "platforminputcontexts", "generic")) {
+            Remove-Path "$internal/PySide6/plugins/$d"
+          }
+          $img = "$internal/PySide6/plugins/imageformats"
+          if (Test-Path $img) {
+            Get-ChildItem $img -Filter "*.dll" -File |
+              Where-Object { $_.Name -ne "qico.dll" } | Remove-Item -Force
+          }
+          $platforms = "$internal/PySide6/plugins/platforms"
+          if (Test-Path $platforms) {
+            Get-ChildItem $platforms -Filter "*.dll" -File |
+              Where-Object { $_.Name -notin @("qwindows.dll", "qoffscreen.dll") } |
+              Remove-Item -Force
+          }
+
+          # 已 exclude 的 Qt 模块仍可能被插件依赖带回；DLL 不在就一并清掉。
+          $qtJunk = @(
+            "Qt6Svg.dll", "Qt6Network.dll", "Qt6Qml.dll", "Qt6QmlModels.dll",
+            "Qt6QmlCompiler.dll", "Qt6Quick.dll", "Qt6Quick3D.dll",
+            "Qt6QuickControls2.dll", "Qt6QuickTemplates2.dll", "Qt6Designer.dll",
+            "Qt6DesignerComponents.dll", "Qt6Help.dll", "Qt6Sql.dll", "Qt6Test.dll",
+            "Qt6Multimedia.dll", "Qt6Charts.dll", "Qt6DataVisualization.dll",
+            "Qt6Bluetooth.dll", "Qt6Nfc.dll", "Qt6SerialPort.dll", "Qt6UiTools.dll",
+            "Qt6Scxml.dll", "Qt6StateMachine.dll", "Qt6WebEngineCore.dll",
+            "Qt6WebEngineWidgets.dll", "Qt6WebEngineQuick.dll", "pyside6qml.abi3.dll"
+          )
+          foreach ($name in $qtJunk) {
+            Get-ChildItem $internal -Recurse -Filter $name -File -ErrorAction SilentlyContinue |
+              Remove-Item -Force
+          }
+
+          # 软件 OpenGL 兜底（安全模式/无显卡驱动时用）；默认关闭以换取体积。
+          if ($env:STARFORGE_KEEP_SOFTWARE_OPENGL -ne "1") {
+            Remove-Path "$internal/PySide6/opengl32sw.dll"
+            Remove-Path "$internal/opengl32sw.dll"
+            Write-Host "已移除 opengl32sw.dll（安全模式 3D 将退回服务端 PNG）"
+          }
+
+          # numpy：--collect-all 会带 tests/f2py/头文件/静态库/类型存根，运行时都不需要。
+          Remove-Path "$internal/numpy/f2py"
+          Remove-Path "$internal/numpy/distutils"
+          Remove-Path "$internal/numpy/_core/include"
+          Get-ChildItem "$internal/numpy" -Recurse -Directory -Filter "tests" -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force
+          Get-ChildItem "$internal/numpy" -Recurse -File -Include "*.pyi", "*.lib", "*.a" -ErrorAction SilentlyContinue |
+            Remove-Item -Force
+
+          # PyInstaller 一般不会再带这些；保险起见统一清掉。
+          Get-ChildItem $internal -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force
+          Get-ChildItem $internal -Recurse -File -Include "*.pyc", "*.pyo", "*.pdb" -ErrorAction SilentlyContinue |
+            Remove-Item -Force
+
+          Write-Host "裁剪完成：$internal"
+
+      - name: 体积报告（裁剪后的 _internal，对比裁剪前）
+        shell: pwsh
+        run: |
+          $before = Join-Path $env:RUNNER_TEMP "size-internal-before.json"
+          python scripts/size_report.py dist/starforge/_internal --top 25 --by package --compare $before
+          if ($LASTEXITCODE -ne 0) { throw "裁剪后体积报告失败" }
 
       - name: 冒烟测试打包产物（抓漏依赖：v0.9.0-beta 曾漏掉 numpy）
         shell: pwsh
@@ -99,9 +220,8 @@ jobs:
           foreach ($bundle in @("dist/starforge/_internal")) {
             # 这里只查"必须在磁盘上有文件"的二进制/数据依赖；纯 Python 包（capstone/pefile）
             # 会进 PYZ，磁盘上找不到属正常 —— 它们由下一步 doctor 用 import 验证。
-            foreach ($p in @("numpy", "flask", "werkzeug", "_tkinter", "lz4", "hgpaktool",
-                             "texture2ddecoder", "webview", "pythonnet", "clr_loader",
-                             "Python.Runtime.dll", "mapping.json")) {
+            foreach ($p in @("numpy", "flask", "werkzeug", "lz4", "hgpaktool",
+                             "texture2ddecoder", "mapping.json")) {
               $hit = Get-ChildItem -Recurse -Path $bundle -Filter "*$p*" -ErrorAction SilentlyContinue
               if (-not $hit) { throw "打包缺少依赖：$p（$bundle）" }
             }
@@ -128,29 +248,23 @@ jobs:
           }
           Write-Host "doctor 检查通过"
 
-      - name: 原生窗口依赖自检（pythonnet 运行时 + WebView2）
+      - name: 原生 Qt 依赖自检
         shell: pwsh
-        env:
-          STARFORGE_HOME: ${{ runner.temp }}/sfhome-desktop
         run: |
-          $exe = "dist/starforge/starforge.exe"
-          $out = & $exe desktop-check 2>&1 | Out-String
-          $out | Out-Host
-          $rc = $LASTEXITCODE
-          if ($rc -ne 0 -or $out -notmatch '"available": true') {
-            Write-Host "::warning::原生窗口依赖不全（exit $rc）——包仍会发布，但用户会落到浏览器模式，见上面 reason"
-          } else {
-            Write-Host "原生窗口依赖检查通过"
+          foreach ($p in @("PySide6", "Qt6Core.dll", "Qt6Widgets.dll", "Qt6OpenGLWidgets.dll")) {
+            $hit = Get-ChildItem -Recurse -Path "dist/starforge/_internal" -Filter "*$p*" -ErrorAction SilentlyContinue
+            if (-not $hit) { throw "打包缺少原生 Qt 依赖：$p" }
           }
+          Write-Host "原生 Qt 依赖检查通过"
 
-      - name: 网页冒烟（进程内自检，不依赖端口）
+      - name: API 冒烟（进程内自检，不依赖端口）
         shell: pwsh
         env:
           STARFORGE_HOME: ${{ runner.temp }}/sfhome-web
         run: |
           $exe = "dist/starforge/starforge.exe"
           & $exe webcheck
-          if ($LASTEXITCODE -ne 0) { throw "网页自检失败（exit $LASTEXITCODE）" }
+          if ($LASTEXITCODE -ne 0) { throw "接口自检失败（exit $LASTEXITCODE）" }
 
       - name: 起服务冒烟（失败时打印子进程日志）
         shell: pwsh
@@ -174,8 +288,8 @@ jobs:
               throw "服务没起来（端口 8899）"
             }
             $r2 = Invoke-WebRequest -Uri "http://127.0.0.1:8899/" -UseBasicParsing -TimeoutSec 5
-            if ($r2.Content -notmatch "page-search") { throw "首页内容不对" }
-            Write-Host "起服务冒烟通过"
+            if ($r2.Content -notmatch '"service": "starforge-api"') { throw "根路径不是 API-only JSON" }
+            Write-Host "API 服务冒烟通过"
           } finally {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           }
@@ -188,6 +302,13 @@ jobs:
           }
           Set-Content -Path "dist/starforge/starforge-safe.bat" -Encoding ascii -Value '@echo off','"%~dp0starforge.exe" app --safe','pause'
           Compress-Archive -Path dist/starforge/* -DestinationPath "dist/starforge-${{ github.ref_name }}-win64.zip"
+
+      - name: 体积报告与预算（最终 zip）
+        shell: pwsh
+        run: |
+          $zip = "dist/starforge-${{ github.ref_name }}-win64.zip"
+          python scripts/size_report.py $zip --top 25 --by category --fail-over $env:STARFORGE_SIZE_BUDGET_MIB
+          if ($LASTEXITCODE -ne 0) { throw "包体超过预算 $env:STARFORGE_SIZE_BUDGET_MIB MiB" }
 
       - name: 发布
         uses: softprops/action-gh-release@v2

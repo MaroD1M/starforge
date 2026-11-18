@@ -68,6 +68,9 @@ class AgentClient:
     def planet(self) -> dict:
         return self._call("/planet")
 
+    def planet_scan(self) -> dict:
+        return self._call("/planet/scan")
+
     def ships(self) -> dict:
         return self._call("/ships")
 
@@ -75,6 +78,11 @@ class AgentClient:
 
     def teleport(self, glyphs: str, galaxy: int | None = None) -> dict:
         return self._call("/teleport", method="PUT",
+                          params={"glyphs": glyphs, "galaxy": galaxy if galaxy is not None else -1},
+                          timeout=15.0)
+
+    def teleport_portal(self, glyphs: str, galaxy: int | None = None) -> dict:
+        return self._call("/teleport/portal", method="PUT",
                           params={"glyphs": glyphs, "galaxy": galaxy if galaxy is not None else -1},
                           timeout=15.0)
 
@@ -91,8 +99,10 @@ class AgentClient:
         """受限白名单：界面只能通过这些命令，未知命令本地拒绝。"""
         fn = {
             "hello": self.hello, "player": self.player, "system": self.system,
-            "planet": self.planet, "ships": self.ships,
+            "planet": self.planet, "planet.scan": self.planet_scan, "ships": self.ships,
             "teleport": lambda: self.teleport(params.get("glyphs", ""), params.get("galaxy")),
+            "teleport.portal": lambda: self.teleport_portal(
+                params.get("glyphs", ""), params.get("galaxy")),
             "scan": lambda: self.scan(params.get("mode", "read")),
             "scan.instant": lambda: self.scan_instant(bool(params.get("on", True))),
             "restore": self.restore,

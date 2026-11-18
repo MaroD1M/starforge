@@ -91,6 +91,6 @@ def test_local_origin_allowed(client):
     assert r.status_code == 200
 
 
-def test_index_page(client):
-    r = client.get("/")
-    assert r.status_code == 200 and b"starforge" in r.data.lower() or b"\xe9\xa3\x9e\xe8\x88\xb9" in r.data
+def test_index_page_is_api_only(client):
+    j = client.get("/").get_json()
+    assert j["ok"] and j["service"] == "starforge-api"

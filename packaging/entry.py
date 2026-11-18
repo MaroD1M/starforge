@@ -17,10 +17,7 @@ except Exception as _e:                                      # noqa: BLE001
 import flask  # noqa: F401
 import lz4.block  # noqa: F401
 import hgpaktool  # noqa: F401
-try:                         # 旧桌面壳（可选回退）
-    import webview  # noqa: F401
-except Exception:            # noqa: BLE001
-    pass
+# 旧 pywebview 外壳已从默认包移除；需要时安装 [legacy] extra。
 try:                         # 原生界面（默认）
     import PySide6  # noqa: F401
 except Exception:            # noqa: BLE001
@@ -46,8 +43,6 @@ try:
     import starforge.gltf  # noqa: F401
     import starforge.galaxy  # noqa: F401
     import starforge.creature  # noqa: F401
-    import starforge.overlay  # noqa: F401
-    import starforge.desktop  # noqa: F401
     import starforge.zh  # noqa: F401
     import starforge.tex  # noqa: F401
     import starforge.paint  # noqa: F401

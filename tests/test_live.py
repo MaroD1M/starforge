@@ -233,31 +233,20 @@ def test_template_mod_endpoint(client, tmp_path):
     assert j["ok"] and j["entries"] and len(j["entries"]) == 8
 
 
-# ---------------------------------------------------------------- 符文置顶窗口（不依赖图形环境）
+# ---------------------------------------------------------------- 符文置顶窗口（纯函数）
 
 def test_overlay_panel_spec():
-    from starforge import overlay
-    spec = overlay.panel_spec("1043FEE69929", tile=64, gap=8)
+    from starforge.app.overlay import panel_spec
+    spec = panel_spec("1043FEE69929", tile=64, gap=8)
     assert len(spec["digits"]) == 12
     assert spec["width"] == 12 * 64 + 11 * 8 + 24
     assert spec["height"] == 64 + 56
 
 
 def test_overlay_rejects_empty():
-    from starforge import overlay
+    from starforge.app.overlay import panel_spec
     with pytest.raises(ValueError):
-        overlay.panel_spec("   ")
-
-
-def test_overlay_without_display_degrades_cleanly():
-    from starforge import glyphs, overlay
-    png = glyphs.panel_png("1043FEE69929", tile=32)
-    try:
-        overlay.show("1043FEE69929", png)
-    except overlay.OverlayUnsupported as e:
-        assert "tkinter" in str(e) or "图形" in str(e)
-    else:                                    # 有显示环境时不该抛错（测试机上一般走不到）
-        pytest.skip("当前环境有可用显示")
+        panel_spec("   ")
 
 
 # ---------------------------------------------------------------- 单次扫描 + 只读诊断

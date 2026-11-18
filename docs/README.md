@@ -2,17 +2,47 @@
 
 | 文件 | 内容 |
 |---|---|
-| [USAGE.md](USAGE.md) | **逐屏使用指南**：安装 → 搜船 → 我的船 → 写回 → 星球 → 送进游戏 → 排障 |
-| [VERIFY-WINDOWS.md](VERIFY-WINDOWS.md) | Windows 真机验收清单（A–E 分段，含通过标准与常见报错） |
-| [MANUAL.md](MANUAL.md) | **软件手册**：产品定位、13 项功能、五页界面线框、符文浮窗规范、接口、运维、验收、里程碑 |
-| [DESIGN.md](DESIGN.md) | 设计方案：架构与进程模型、七个关键决策（含实测数据）、API 契约、性能预算、风险登记 |
-| [CAPABILITIES.md](CAPABILITIES.md) | 能力清单与实机效果：每项功能的判定（可用 / 需实现 / 需游戏内）与真实跑出的结果 |
 | [FEATURE-MAP.md](FEATURE-MAP.md) | **功能地图**：界面 → 服务 → 后端状态，标出已接/占位/待实现 |
+| [GAP-ANALYSIS.md](GAP-ANALYSIS.md) | **差距分析**：30 个缺口、功能矩阵、P0–P3 路线、包体/agent/UI 专项 |
+| [COMMUNITY-UI-ROADMAP.md](COMMUNITY-UI-ROADMAP.md) | **社区 UI/UX 研究**：坐标/符文、存档、搜索筛选、NMS 氛围层与实施阶段 |
+| [PACKAGING.md](PACKAGING.md) | **打包与体积**：131MB 构成、削减项、体积报告与目标 |
+| [INGAME-SCAN-FEASIBILITY.md](INGAME-SCAN-FEASIBILITY.md) | **游戏内扫描可行性**：矿物/动植物/POI/传送门的字段、函数与实机边界 |
+| [UI-TERMS.md](UI-TERMS.md) | **界面术语表**：中文/英文/使用场景，避免中英混用 |
+| [SAVE-API-INVENTORY.md](SAVE-API-INVENTORY.md) | **存档 API 盘点**：读写能力、风险分级、写事务缺口与接入顺序 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **架构研究与重构方案**：分层、AppContext、任务模型、Strangler 迁移、测试与打包 |
 | [UI-REDESIGN.md](UI-REDESIGN.md) | **界面重构设计**：Command Deck 布局、设计令牌、组件库、六个页面与迁移计划 |
+| [CLEANUP-AUDIT.md](CLEANUP-AUDIT.md) | **过时资源清理审计**：旧 Web/desktop/文档/依赖盘点与安全删除顺序 |
 | [PLAN-V4.md](PLAN-V4.md) | **全功能路线图**：离线 / 存档 / 外部实时 / 进程内 agent 四条线，M0–M8 阶段与 Windows 实测轮次 |
 | [AGENT.md](AGENT.md) | **agent 是什么**：为什么传送/扫描必须在进程内、DLL 代理如何工作、build 绑定与安全边界 |
 | [AGENT-PROTOCOL.md](AGENT-PROTOCOL.md) | agent 命名管道协议 v1：帧格式、命令表、错误码、能力协商 |
+
+## 历史参考
+
+以下文档描述旧网页/旧版本，保留用于追溯；当前实现以 ARCHITECTURE / UI-REDESIGN / FEATURE-MAP / GAP-ANALYSIS / PLAN-V4 为准。
+
+| 文件 | 内容 |
+|---|---|
+| [USAGE.md](USAGE.md) | 旧逐屏使用指南（待按 7 页原生界面重写） |
+| [MANUAL.md](MANUAL.md) | 旧 nmshunter 软件手册 |
+| [DESIGN.md](DESIGN.md) | 旧网页架构设计 |
+| [CAPABILITIES.md](CAPABILITIES.md) | 旧能力快照 |
+| [VERIFY-WINDOWS.md](VERIFY-WINDOWS.md) | 旧 Windows 验收单 |
+| [VERIFY-AGENT-WINDOWS.md](VERIFY-AGENT-WINDOWS.md) | agent 验收单（需按 pymhf 更新） |
+| [archive/PLAN-V2.md](archive/PLAN-V2.md) | 已归档的旧方案 |
+| [archive/PLAN-V3.md](archive/PLAN-V3.md) | 已归档的旧方案 |
+
+## 发布前自检
+
+发布前在仓库根目录运行（纯 stdlib，只读；详细清单见 [PACKAGING.md](PACKAGING.md#8-发布前自检selfcheck_releasepy)）：
+
+```bash
+python3 scripts/selfcheck_release.py
+python3 scripts/selfcheck_release.py --json
+python3 scripts/selfcheck_release.py --fail-on error
+```
+
+它检查版本号/CHANGELOG/tag、必需文件、文档相对链接、已移除依赖和 TODO 统计；
+默认发现 `error` 时退出码为 1。`--json` 输出适合 CI 或发布脚本消费。
 
 ## 快速事实
 

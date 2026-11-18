@@ -23,7 +23,28 @@ DEFAULTS = {
     "backup_keep": 0,                # 0 = 永不删备份（与 Shipwright 一致）
     "port": 0,                       # 0 = 随机空闲端口
     "theme": "dark",
+    "atmosphere": False,             # 可选无人深空氛围；默认中性深色，需显式开启
+    "allow_unverified_agent": False, # 显式允许未验证 build 的实验性 agent 写命令
 }
+
+
+_TRUE_WORDS = {"1", "true", "yes", "on", "enabled", "无人深空", "深空"}
+_FALSE_WORDS = {"0", "false", "no", "off", "disabled", "neutral", "中性", ""}
+
+
+def _as_bool(value: object, default: bool) -> bool:
+    """宽松解析旧配置里的布尔值；无法识别时保持默认，避免把 "false" 当成 True。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _TRUE_WORDS:
+            return True
+        if text in _FALSE_WORDS:
+            return False
+    return default
 
 
 @dataclass
@@ -36,6 +57,8 @@ class Settings:
     backup_keep: int = 0
     port: int = 0
     theme: str = "dark"
+    atmosphere: bool = False
+    allow_unverified_agent: bool = False
 
     @classmethod
     def load(cls) -> "Settings":
@@ -44,9 +67,11 @@ class Settings:
         if f.exists():
             try:
                 data.update(json.loads(f.read_text("utf-8")))
-            except (OSError, ValueError):
+            except (OSError, ValueError, TypeError):
                 pass
         known = {k: v for k, v in data.items() if k in DEFAULTS}
+        if "atmosphere" in known:
+            known["atmosphere"] = _as_bool(known["atmosphere"], DEFAULTS["atmosphere"])
         return cls(**known)
 
     def save(self) -> None:

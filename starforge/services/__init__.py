@@ -14,12 +14,37 @@ from typing import Any
 
 from ..core import log, paths, settings, strings
 from ..core.errors import BadRequest, NotFound
+from . import history
 
 log = log.get("services")
+
+_HIGH_RISK_CAPABILITIES = frozenset({
+    "teleport", "restore", "scan.discover", "scan.instant", "teleport.portal",
+})
+# 显式开启 allow_unverified_agent 后，允许在未验证 build 上测试的写命令；
+# scan.discover 仍保持关闭（会写发现列表）。多人模式始终禁用。
+_EXPERIMENTAL_WRITE_CAPABILITIES = frozenset({
+    "teleport", "restore", "scan.instant", "teleport.portal",
+})
+_MULTIPLAYER_REASON = "多人模式已启用：高风险写操作被禁用"
 
 
 def _ok(**kw: Any) -> dict:
     return {"ok": True, **kw}
+
+
+def _brief(value: Any, limit: int = 240) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _record(kind: str, title: str, detail: Any = "", ref: str | None = None,
+            ok: bool = True) -> None:
+    """写一条最近活动；历史异常绝不能影响主流程。"""
+    try:
+        history.record(kind, title, _brief(detail), ref=ref, ok=ok)
+    except Exception:                                       # noqa: BLE001
+        pass
 
 
 def _labels(tree: list[dict]) -> list[dict]:
@@ -55,8 +80,10 @@ class Services:
         else:
             cmd = [sys.executable, "-m", "starforge", "_internal", kind, "--payload", body]
         flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+        env = dict(os.environ)
+        env["PYTHONFAULTHANDLER"] = "0"
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout, creationflags=flags)
+                           errors="replace", timeout=timeout, creationflags=flags, env=env)
         out = (r.stdout or "").strip()
         data = None
         for line in reversed(out.splitlines()):
@@ -66,6 +93,11 @@ class Services:
             except ValueError:
                 continue
         if data is None:
+            if r.returncode == 3221226505:  # 0xC0000409
+                raise RuntimeError(
+                    "系统生成子进程被 Windows 终止（0xC0000409）。这通常是 Unicorn 在 Windows 上"
+                    "与 faulthandler/VEH 的冲突；主界面已隔离，不会跟着崩。请把日志发回，"
+                    "必要时改用 unicorn==2.0.1.post1。")
             raise RuntimeError(f"内部任务没有返回 JSON（code={r.returncode}）：{(r.stderr or out)[-500:]}")
         if r.returncode != 0 or not data.get("ok", True):
             raise RuntimeError(data.get("error") or f"内部任务失败（code={r.returncode}）")
@@ -132,6 +164,7 @@ class Services:
             "backup_keep": s.backup_keep,
             "port": s.port,
             "theme": s.theme,
+            "allow_unverified_agent": s.allow_unverified_agent,
         }, resolved={
             "saves_dir": str(saves) if saves else "",
             "gamedata_dir": str(gd) if gd else "",
@@ -205,7 +238,13 @@ class Services:
     def search(self, payload: dict, job=None) -> dict:
         from ..search import run
 
-        rows = run(self._query(payload), job=job)
+        query = self._query(payload)
+        try:
+            rows = run(query, job=job)
+        except Exception as e:                              # noqa: BLE001
+            _record("search", "搜索失败", f"{type(e).__name__}: {e}", "search", False)
+            raise
+        _record("search", "搜索完成", f"{query.ship} · 找到 {len(rows)} 个结果", "search")
         return _ok(results=rows, count=len(rows))
 
     def search_estimate(self, payload: dict) -> dict:
@@ -220,7 +259,17 @@ class Services:
 
         query = self._query(payload)
         job = REGISTRY.create("search")
-        run_in_thread(job, lambda j: run(query, job=j))
+
+        def _run(j):
+            try:
+                rows = run(query, job=j)
+            except Exception as e:                          # noqa: BLE001
+                _record("search", "搜索失败", f"{type(e).__name__}: {e}", "search", False)
+                raise
+            _record("search", "搜索完成", f"{query.ship} · 找到 {len(rows)} 个结果", "search")
+            return rows
+
+        run_in_thread(job, _run)
         return job
 
     # ------------------------------------------------------------ 任务
@@ -273,7 +322,18 @@ class Services:
 
         p = str(library.resolve(path))
         ref = coerce(source)
-        return _ok(**writer.apply_seed(p, int(slot), ref, confirm=confirm, copy=copy))
+        try:
+            res = writer.apply_seed(p, int(slot), ref, confirm=confirm, copy=copy)
+        except Exception as e:                              # noqa: BLE001
+            _record("write", "写回存档失败",
+                    f"槽位 {slot} · {ref.type} {ref.seed} · {type(e).__name__}: {e}",
+                    "mine", False)
+            raise
+        _record("write", "写回存档成功",
+                f"槽位 {res.get('slot', slot)} · {res.get('type', ref.type)} "
+                f"{res.get('after', ref.seed)} · 备份 {res.get('backup') or '无'}",
+                "mine")
+        return _ok(**res)
 
     def apply_class(self, path: str, slot: int, ship_class: str = "",
                     values: dict | None = None, best: bool = False,
@@ -281,20 +341,46 @@ class Services:
         from ..save import library, writer
 
         p = str(library.resolve(path))
-        return _ok(**writer.apply_class(p, int(slot), ship_class=ship_class, values=values,
-                                        best=best, confirm=confirm, copy=copy))
+        try:
+            res = writer.apply_class(p, int(slot), ship_class=ship_class, values=values,
+                                     best=best, confirm=confirm, copy=copy)
+        except Exception as e:                              # noqa: BLE001
+            _record("write", "修改船级失败",
+                    f"槽位 {slot} · {type(e).__name__}: {e}", "mine", False)
+            raise
+        before = (res.get("before") or {}).get("class") or "?"
+        after = (res.get("after") or {}).get("class") or "?"
+        _record("write", "修改船级成功",
+                f"槽位 {res.get('slot', slot)} · {before} → {after} · "
+                f"备份 {res.get('backup') or '无'}", "mine")
+        return _ok(**res)
 
     def backups(self, path: str) -> dict:
         from ..save import library, writer
 
         p = str(library.resolve(path))
-        return _ok(path=p, backups=writer.backups(p))
+        try:
+            rows = writer.backups(p)
+        except Exception as e:                              # noqa: BLE001
+            _record("backup", "查看备份失败",
+                    f"{p} · {type(e).__name__}: {e}", "mine", False)
+            raise
+        _record("backup", "查看备份", f"{p} · {len(rows)} 个可用备份", "mine")
+        return _ok(path=p, backups=rows)
 
     def restore(self, path: str, backup_path: str, confirm: bool = False) -> dict:
         from ..save import library, writer
 
         p = str(library.resolve(path))
-        return _ok(**writer.restore(p, backup_path, confirm=confirm))
+        try:
+            res = writer.restore(p, backup_path, confirm=confirm)
+        except Exception as e:                              # noqa: BLE001
+            _record("restore", "恢复备份失败",
+                    f"{p} · {type(e).__name__}: {e}", "mine", False)
+            raise
+        _record("restore", "恢复备份成功",
+                f"{p} · 来源 {res.get('restored_from') or backup_path}", "mine")
+        return _ok(**res)
 
     # ------------------------------------------------------------ 预览
 
@@ -338,6 +424,13 @@ class Services:
         from .. import preview
 
         return preview.part_png(ship, part, size=size)
+
+    def part_icon(self, ship: str, part: str, size: int = 32) -> bytes | None:
+        """部件树小图标：直接从游戏几何渲染（带磁盘缓存），不依赖 Gagarin。"""
+        try:
+            return self.part_thumb(ship, part, size=max(32, size))
+        except Exception:                                  # noqa: BLE001
+            return None
 
     def preview_png(self, ship: str, seed: str, parts: list[str] | None = None,
                     size: int = 240) -> bytes:
@@ -391,8 +484,19 @@ class Services:
                    "systems_per_region": systems_per_region, "filters": filters or {},
                    "limit": limit, "save_path": save_path}
         job = REGISTRY.create("system-scan")
-        run_in_thread(job, lambda _j: self._internal("system-scan", payload, timeout=900.0)
-                      .get("result") or [])
+
+        def _run(_j):
+            try:
+                result = self._internal("system-scan", payload, timeout=900.0).get("result") or []
+            except Exception as e:                          # noqa: BLE001
+                _record("scan", "星系扫描失败", f"{type(e).__name__}: {e}", "systems", False)
+                raise
+            hits = result if isinstance(result, list) else (result.get("hits") or [])
+            _record("scan", "星系扫描完成",
+                    f"命中 {len(hits)} 个结果 · 每区 {systems_per_region} 个系统", "systems")
+            return result
+
+        run_in_thread(job, _run)
         return job
 
     def galaxy_stats(self) -> dict:
@@ -445,8 +549,23 @@ class Services:
                    "systems_per_region": systems_per_region, "filters": filters or {},
                    "limit": limit, "save_path": save_path}
         job = REGISTRY.create("galaxy-scan")
-        run_in_thread(job, lambda _j: self._internal("galaxy-scan", payload, timeout=1800.0)
-                      .get("result") or {})
+
+        def _run(_j):
+            try:
+                result = self._internal("galaxy-scan", payload, timeout=1800.0).get("result") or {}
+            except Exception as e:                          # noqa: BLE001
+                _record("scan", "银河扫描失败", f"{type(e).__name__}: {e}", "systems", False)
+                raise
+            if isinstance(result, dict):
+                scanned = int(result.get("scanned") or 0)
+                hits = result.get("hits") or []
+                detail = f"扫描 {scanned} 个星系 · 命中 {len(hits)} 个"
+            else:
+                detail = f"命中 {len(result or [])} 个结果"
+            _record("scan", "银河扫描完成", detail, "systems")
+            return result
+
+        run_in_thread(job, _run)
         return job
 
     # ------------------------------------------------------------ 符文
@@ -503,17 +622,40 @@ class Services:
     def agent_launch(self, attach: bool = True) -> dict:
         from ..live import agent_install
 
-        return agent_install.launch(attach=attach)
+        try:
+            res = agent_install.launch(attach=attach)
+        except Exception as e:                              # noqa: BLE001
+            _record("agent", "启动游戏内代理失败",
+                    f"{'连接' if attach else '启动'} · {type(e).__name__}: {e}", "live", False)
+            raise
+        _record("agent", "启动游戏内代理",
+                "连接已运行的游戏" if attach else "启动游戏并注入", "live",
+                bool(res.get("ok", True)))
+        return res
 
     def agent_stop(self) -> dict:
         from ..live import agent_install
 
-        return agent_install.stop()
+        try:
+            res = agent_install.stop()
+        except Exception as e:                              # noqa: BLE001
+            _record("agent", "停止游戏内代理失败", f"{type(e).__name__}: {e}", "live", False)
+            raise
+        _record("agent", "停止游戏内代理", "", "live", bool(res.get("ok", True)))
+        return res
 
     def agent_wait(self, timeout: float = 20.0) -> dict:
         from ..live import agent_install
 
-        return agent_install.wait_ready(timeout)
+        try:
+            res = agent_install.wait_ready(timeout)
+        except Exception as e:                              # noqa: BLE001
+            _record("agent", "连接游戏失败", f"{type(e).__name__}: {e}", "live", False)
+            raise
+        ok = bool(res.get("ok", True))
+        _record("agent", "连接游戏成功" if ok else "连接游戏失败",
+                "" if ok else _brief(res.get("error") or "等待超时", 120), "live", ok)
+        return res
 
     def agent_client(self):
         from ..live.agent_client import AgentClient
@@ -521,18 +663,41 @@ class Services:
         return AgentClient()
 
     def live_capabilities(self) -> dict:
-        """给"游戏内"页用的能力表：agent 已连接时用 hello 的真实能力。"""
+        """给"游戏内"页用的能力表：agent hello + build 闸门 + 多人闸门。
+
+        返回结构保持兼容：仍然有 ``attached/reachable/note/capabilities/status/build``，
+        只给每个能力追加 ``blocked_by``（build/multiplayer）方便界面解释原因。
+        即使 agent hello 声称 teleport=true，未验证 build 或多人模式下也会被强制降级。
+        """
         from ..live import agent_install, build
 
         st = agent_install.status()
         hello = st.get("hello") or {}
         real = hello.get("capabilities") or {}
+        multiplayer = bool(hello.get("multiplayer"))
+        build_info = st.get("build")
+        if not isinstance(build_info, dict) or not ("verified" in build_info
+                                                     or "write_allowed" in build_info):
+            try:
+                build_info = build.summary()
+            except Exception as e:                          # noqa: BLE001
+                build_info = {"error": f"{type(e).__name__}: {e}", "verified": False,
+                              "write_allowed": False,
+                              "reason": f"无法确认游戏 build：{type(e).__name__}: {e}；只允许只读能力"}
+        write_allowed = bool(build_info.get("write_allowed",
+                                            build_info.get("verified", False)))
+        build_reason = build_info.get("reason") or "这版未验证：只允许只读能力"
+        allow_unverified = bool(settings.current().allow_unverified_agent)
         caps = {
             "player": (bool(real.get("player")), "读取玩家 UA/坐标/位置", "low"),
             "system": (bool(real.get("system")), "读取当前星系/行星表", "low"),
             "planet": (bool(real.get("planet")), "读取当前行星天气/资源/动植物", "low"),
+            "planet.scan": (bool(real.get("planet.scan")),
+                            "读取当前行星完整档案（实验只读）", "mid"),
             "ships": (bool(real.get("ships")), "读取游戏内 12 个船槽", "low"),
             "teleport": (bool(real.get("teleport")), "写入位置并触发加载；可用 restore 还原", "high"),
+            "teleport.portal": (bool(real.get("teleport.portal")),
+                                "实验：cGcPortalComponent portal warp（未校准默认不可用）", "high"),
             "scan": (bool(real.get("scan")), "读取行星扫描数据", "mid"),
             "scan.discover": (bool(real.get("scan.discover")), "写入发现列表（暂未开放）", "high"),
             "scan.instant": (bool(real.get("scan.instant")), "游戏内扫描条立即完成", "mid"),
@@ -540,16 +705,100 @@ class Services:
         }
         table = {k: {"available": ok, "reason": reason if not ok else "", "risk": risk}
                  for k, (ok, reason, risk) in caps.items()}
-        try:
-            build_info = build.summary()
-        except Exception as e:                              # noqa: BLE001
-            build_info = {"error": f"{type(e).__name__}: {e}"}
+        for key in _HIGH_RISK_CAPABILITIES:
+            item = table.get(key)
+            if item is None:
+                continue
+            if not write_allowed:
+                if allow_unverified and key in _EXPERIMENTAL_WRITE_CAPABILITIES:
+                    item["experimental"] = True
+                    item["unverified_allowed"] = True
+                else:
+                    item["available"] = False
+                    item["reason"] = build_reason
+                    item["blocked_by"] = "build"
+                    continue
+            if multiplayer:
+                item["available"] = False
+                item["reason"] = _MULTIPLAYER_REASON
+                item["blocked_by"] = "multiplayer"
         return {"attached": bool(st.get("game_running")), "reachable": bool(st.get("reachable")),
                 "note": st.get("note") or "", "capabilities": table,
-                "status": st, "build": build_info}
+                "status": st, "build": build_info, "multiplayer": multiplayer,
+                "write_allowed": write_allowed}
+
+    @staticmethod
+    def _is_high_risk_agent_cmd(cmd: str, params: dict | None = None) -> bool:
+        if cmd in _HIGH_RISK_CAPABILITIES:
+            return True
+        if cmd == "scan":
+            return str((params or {}).get("mode") or "read").lower() == "discover"
+        return False
+
+    _AGENT_TITLES = {
+        "hello": "连接游戏",
+        "player": "读取玩家位置",
+        "system": "读取当前星系",
+        "planet": "读取当前行星",
+        "planet.scan": "行星扫描",
+        "ships": "读取游戏内船槽",
+        "teleport": "传送",
+        "teleport.portal": "传送门传送",
+        "scan": "扫描",
+        "scan.discover": "发现扫描",
+        "scan.instant": "即时扫描",
+        "scan.poi": "兴趣点扫描",
+        "restore": "恢复游戏内快照",
+    }
 
     def agent_call(self, cmd: str, **params: Any) -> dict:
+        res = self._agent_call_unrecorded(cmd, **params)
+        ok = bool(res.get("ok", True))
+        label = self._AGENT_TITLES.get(cmd, f"游戏内操作 {cmd}")
+        detail = ""
+        if cmd in ("teleport", "teleport.portal"):
+            glyphs = str(params.get("glyphs") or "")
+            galaxy = params.get("galaxy")
+            detail = f"目标 {glyphs}" + (f" · 星系 {galaxy}" if galaxy is not None else "")
+        elif cmd == "scan":
+            detail = f"模式 {params.get('mode') or 'read'}"
+        elif cmd == "scan.poi":
+            detail = f"类型 {params.get('kind') or 'portal'}"
+        if not ok:
+            err = res.get("error") or res.get("code") or ""
+            detail = f"{detail} · {err}" if detail else err
+        _record("agent", f"{label}{'成功' if ok else '失败'}", detail, "live", ok)
+        return res
+
+    def _agent_call_unrecorded(self, cmd: str, **params: Any) -> dict:
+        """调用 agent；写命令先经 build/多人闸门，再走客户端白名单。"""
+        from ..live import build
+
+        high_risk = self._is_high_risk_agent_cmd(cmd, params)
+        allow_experimental = (bool(settings.current().allow_unverified_agent)
+                              and cmd in _EXPERIMENTAL_WRITE_CAPABILITIES)
+        if high_risk and not allow_experimental:
+            try:
+                build_info = build.summary()
+            except Exception as e:                          # noqa: BLE001
+                build_info = {"verified": False, "write_allowed": False,
+                              "reason": f"无法确认游戏 build：{type(e).__name__}: {e}；"
+                                        "只允许只读能力"}
+            if not build_info.get("write_allowed",
+                                  build_info.get("verified", False)):
+                return {"ok": False, "code": "E_BUILD_UNVERIFIED",
+                        "error": build_info.get("reason") or "这版未验证：高风险写操作已禁用",
+                        "build": build_info}
         client = self.agent_client()
+        if high_risk:
+            try:
+                hello = client.call("hello")
+            except Exception as e:                          # noqa: BLE001
+                return {"ok": False, "code": "E_AGENT",
+                        "error": f"{type(e).__name__}: {e}"}
+            if hello.get("multiplayer"):
+                return {"ok": False, "code": "E_MULTIPLAYER", "error": _MULTIPLAYER_REASON,
+                        "multiplayer": True}
         try:
             return {"ok": True, **client.call(cmd, **params)}
         except Exception as e:                              # noqa: BLE001
@@ -564,8 +813,16 @@ class Services:
     def live_push(self, type_: str, seed: str | int) -> dict:
         from ..live import mem, writer
 
-        with mem.attach("NMS.exe") as proc:
-            return _ok(**writer.push(proc, type_, seed))
+        try:
+            with mem.attach("NMS.exe") as proc:
+                res = writer.push(proc, type_, seed)
+        except Exception as e:                              # noqa: BLE001
+            _record("agent", "送进游戏失败",
+                    f"{type_} {seed} · {type(e).__name__}: {e}", "live", False)
+            raise
+        _record("agent", "送进游戏成功", f"{type_} {seed}", "live",
+                bool(res.get("ok", True)))
+        return _ok(**res)
 
     def live_template_mod(self, dest: str | None = None) -> dict:
         from .. import paths as _paths
@@ -611,4 +868,4 @@ def get_services() -> Services:
     return SERVICES
 
 
-__all__ = ["SERVICES", "Services", "get_services"]
+__all__ = ["SERVICES", "Services", "get_services", "history"]
