@@ -217,7 +217,8 @@ def cmd_doctor(a) -> int:
            "frozen": bool(getattr(sys, "frozen", False)), "deps": {}, "notes": []}
     for mod, why in (("numpy", "渲染/几何"), ("flask", "本地服务"), ("lz4", "存档解压"),
                      ("hgpaktool", "pak 解包"), ("texture2ddecoder", "BC7 贴图"),
-                     ("pefile", "exe 反射（生物角色表）"), ("capstone", "反汇编（签名扫描）")):
+                     ("pefile", "exe 反射（生物角色表）"),
+                     ("capstone", "反汇编（仅开发期分析用，运行时不需要）")):
         try:
             __import__(mod)
             out["deps"][mod] = "ok"
@@ -251,8 +252,9 @@ def cmd_doctor(a) -> int:
         out["upstream"] = paths.ensure_shipwright_importable()
     except Exception as e:                                 # noqa: BLE001
         out["upstream"] = f"{type(e).__name__}: {e}"
-    ok = (out["unicorn"]["ok"] and all(v == "ok" for v in out["deps"].values())
-          and bool(out["desktop"].get("available")))
+    optional = {"capstone"}
+    required_ok = all(v == "ok" for k, v in out["deps"].items() if k not in optional)
+    ok = out["unicorn"]["ok"] and required_ok and bool(out["desktop"].get("available"))
     out["ok"] = ok
     print(_json.dumps(out, ensure_ascii=False, indent=1))
     return 0 if ok else 7

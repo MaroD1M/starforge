@@ -1,5 +1,13 @@
 # 更新记录
 
+## v0.13.5-beta（pefile 进依赖、capstone 降为可选）
+
+- **`pefile` 补进 `requirements.txt`**：上游 `nms_save.gamemeta` 用它读 `NMS.exe` 反射
+  （生物角色表、类布局反推都依赖），此前只在开发机上有——用户机上装不了就等于功能缺失。
+- **`capstone` 降为可选**：它只在开发期反汇编用，运行时不需要；doctor 仍会报告，
+  但不再影响 `ok` 判定，CI 也不再断言（v0.13.4 就栽在"断言一个没装的包"上）。
+- 其余同 v0.13.3/0.13.4（unicorn 打包、pythonnet 运行时兜底、doctor/desktop-check）。
+
 ## v0.13.4-beta（修 CI 的依赖断言）
 
 - v0.13.3 的 CI 在“冒烟测试”步骤失败：磁盘依赖白名单里加了 `capstone`/`pefile`，但这两者

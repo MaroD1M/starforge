@@ -13,3 +13,5 @@ hgpaktool>=1.1.3
 unicorn>=2.0; platform_system != "Darwin"
 # 符文图标需要解码游戏内的 BC7 贴图（缺它时自动退回内置位图字体）
 texture2ddecoder>=1.0.6
+# 读 NMS.exe 的反射数据（生物角色表 / 类布局反推）；缺它时相关功能明确降级
+pefile>=2023.2.7

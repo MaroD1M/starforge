@@ -68,7 +68,7 @@ jobs:
             --collect-all hgpaktool --collect-all numpy --collect-all flask `
             --collect-all texture2ddecoder --collect-all webview `
             --collect-all pythonnet --collect-all clr_loader --hidden-import clr `
-            --collect-all unicorn --collect-all capstone --collect-all pefile `
+            --collect-all unicorn --collect-all pefile `
             --collect-submodules starforge --hidden-import tkinter `
             --add-data "starforge/web/static;starforge/web/static" `
             --exclude-module numpy.f2py --exclude-module numpy.distutils `
@@ -115,7 +115,7 @@ jobs:
           $out | Out-Host
           # doctor 的退出码含"桌面窗口可用"这一项，CI 环境不保证，所以只断言关键依赖
           if ($out -match '"unicorn":\s*\{\s*"ok": false') { throw "打包产物里 unicorn 不可用（星系/行星生成会失效）" }
-          foreach ($dep in @("numpy", "flask", "lz4", "hgpaktool", "texture2ddecoder", "pefile", "capstone")) {
+          foreach ($dep in @("numpy", "flask", "lz4", "hgpaktool", "texture2ddecoder", "pefile")) {
             if ($out -notmatch ('"' + $dep + '": "ok"')) { throw "依赖不可用：$dep" }
           }
           Write-Host "doctor 检查通过"

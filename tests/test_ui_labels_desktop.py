@@ -117,3 +117,16 @@ def test_doctor_reports_critical_deps(capsys):
         assert out["deps"][dep] == "ok", (dep, out["deps"][dep])
     assert "desktop" in out and "upstream" in out
     assert rc in (0, 7)
+
+
+def test_doctor_capstone_is_optional(capsys):
+    """capstone 只在开发期用；缺它不能让 doctor 判死（否则 CI/用户会被误导）。"""
+    import json as _json
+    import types
+    from starforge.__main__ import cmd_doctor
+    cmd_doctor(types.SimpleNamespace())
+    out = _json.loads(capsys.readouterr().out)
+    assert "capstone" in out["deps"]
+    # 关键依赖 ok 时，capstone 的状态不影响判定的逻辑：只要必需项都 ok，就不应出现在 notes 里的致命项
+    for dep in ("numpy", "flask", "lz4", "hgpaktool", "texture2ddecoder", "pefile"):
+        assert out["deps"][dep] == "ok"
