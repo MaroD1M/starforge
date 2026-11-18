@@ -1,5 +1,15 @@
 # 更新记录
 
+## v0.14.0-beta（原生界面 + 应用内游戏 agent）
+
+- **原生桌面界面**：PySide6 Widgets + 原生 OpenGL 3D 视口；`starforge app` 默认原生，`--webview` 保留旧壳回退。
+- **服务层**：新增 `starforge/services`，原生 UI 与可选网页共用同一套用例入口。
+- **应用内游戏控制台**：准备 Python 运行时、安装/更新组件、安装 Mod、注入并连接、读取玩家/星系/行星/船槽、传送/还原、扫描读取与即时扫描；全程不需要 PowerShell。
+- **游戏内 agent**：基于 pymhf + NMSpy 的 Python Mod，NMSpy 版本按游戏 build 自动选择（当前 185034.0）；本机 HTTP JSON 调用。
+- **版本自适应**：新增 `starforge/live/build.py` 与 `live/builds/185034.json`；外部模板槽仍走 AOB + 结构校验，不硬编码偏移。
+- **打包**：Release 构建包含独立 agent Python 运行时、agent Mod 与地址书；PyInstaller 超时提升到 45 分钟。
+- **测试**：新增服务层/原生壳/agent HTTP 契约测试；全量 243 项通过。
+
 ## v0.13.5-beta（pefile 进依赖、capstone 降为可选）
 
 - **`pefile` 补进 `requirements.txt`**：上游 `nms_save.gamemeta` 用它读 `NMS.exe` 反射

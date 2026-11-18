@@ -12,8 +12,12 @@ import numpy  # noqa: F401
 import flask  # noqa: F401
 import lz4.block  # noqa: F401
 import hgpaktool  # noqa: F401
-try:                         # 桌面窗口
+try:                         # 旧桌面壳（可选回退）
     import webview  # noqa: F401
+except Exception:            # noqa: BLE001
+    pass
+try:                         # 原生界面（默认）
+    import PySide6  # noqa: F401
 except Exception:            # noqa: BLE001
     pass
 try:                         # 可选：解码游戏内 BC7 符文图标
@@ -35,6 +39,11 @@ import starforge.galaxy  # noqa: F401  （M3 银河索引：SQLite 落库/查询
 import starforge.creature  # noqa: F401  （M8-lite 同伴 + T8 角色表）
 import starforge.overlay  # noqa: F401
 import starforge.desktop  # noqa: F401
+import starforge.services  # noqa: F401
+try:                         # PySide6 缺失时仍可回退旧壳
+    import starforge.app.main  # noqa: F401
+except Exception:            # noqa: BLE001
+    pass
 
 # 显式导入，保证这些模块一定进 PYZ（v0.12.0 曾无法确认 zh/tex 是否被打进去）
 import starforge.zh  # noqa: F401
@@ -59,6 +68,9 @@ import starforge.live.mem  # noqa: F401
 import starforge.live.writer  # noqa: F401
 import starforge.live.compat  # noqa: F401
 import starforge.live.exml  # noqa: F401
+import starforge.live.build  # noqa: F401
+import starforge.live.agent_client  # noqa: F401
+import starforge.live.agent_install  # noqa: F401
 import starforge.data.catalog  # noqa: F401
 import starforge.data.icons  # noqa: F401
 import starforge.data.shipref  # noqa: F401

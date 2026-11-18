@@ -54,7 +54,7 @@ starforge 把该输的 12 个符文放大置顶显示，你照着传送门点即
 
 ## 桌面应用（默认形态）
 
-双击 `starforge.exe` 会打开一个**原生窗口**（Windows 上用 Edge WebView2 渲染；双击时会自动隐藏黑控制台，也不需要装 Python）：
+双击 `starforge.exe` 会打开一个**原生 Qt 窗口**（PySide6 Widgets + 原生 OpenGL 3D；双击时会自动隐藏黑控制台，也不需要装 Python）。旧的 WebView2 外壳保留为回退（`--webview`），不再默认使用。
 
 - 路径全部自动检测；设置页有「浏览…」原生目录选择框，不用手打
 - 数据层已内置（NMS-Shipwright, MIT），**不需要额外安装任何东西**
@@ -76,7 +76,8 @@ export STARFORGE_SHIPWRIGHT=/path/to/NMS-Shipwright
 export STARFORGE_GAMEDATA=/path/to/NoMansSky/GAMEDATA
 
 python -m starforge selftest     # 自检：上游 / 数据 / 存档 / 游戏
-python -m starforge serve        # 打开本地网页（127.0.0.1，随机端口）
+python -m starforge app          # 原生窗口（默认）
+python -m starforge serve        # 可选：浏览器调试（127.0.0.1，随机端口）
 ```
 
 **一条命令自检**（写入只在存档副本上发生）：
@@ -119,6 +120,14 @@ starforge **不重复造轮子**，而是把三个开源项目缝成一个产品
 [能力清单](docs/CAPABILITIES.md) · [Windows 验收清单](docs/VERIFY-WINDOWS.md)。
 
 ---
+
+## 游戏内通道（可选，全部在应用内操作）
+
+设置/游戏内页提供：准备运行时 → 安装/更新组件（自动匹配游戏 build 的 NMSpy）→ 安装 Mod →
+注入并连接 → 读取玩家/星系/行星/船槽 → 传送/还原 → 扫描读取。不需要 PowerShell 或单独命令行。
+
+> 原理：pymhf 把 `starforge_agent.py` 注入 NMS.exe，NMSpy 提供当前 build 的结构体/函数签名；
+> 应用通过 `127.0.0.1:5000` 调用。仅单人模式，默认不安装，可随时停止/删除。
 
 ## 首次启动会自动找路径
 

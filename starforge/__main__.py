@@ -32,11 +32,18 @@ def _free_port() -> int:
 def cmd_app(a) -> int:
     """默认命令：打开原生桌面窗口（不弹浏览器）。"""
     console.hide_console_window()          # 单 exe：双击时把控制台藏掉
-    from . import desktop
     if getattr(a, "browser", False):
         print("按 --browser 要求，直接用浏览器打开", file=sys.stderr)
         a.no_browser = False
         return cmd_serve(a)
+    if not getattr(a, "webview", False):
+        try:
+            from .app.main import run as native_run
+            return native_run([sys.argv[0]])
+        except Exception as e:                             # noqa: BLE001
+            print(f"原生界面不可用（{type(e).__name__}: {e}），回退到 WebView2/浏览器。",
+                  file=sys.stderr)
+    from . import desktop
     info = desktop.probe()
     if not info["available"]:
         print(f"桌面窗口不可用：{info['reason']}", file=sys.stderr)
@@ -393,8 +400,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="starforge", description=strings.APP_TITLE)
     sub = ap.add_subparsers(dest="cmd")
 
-    p = sub.add_parser("app", help="打开桌面窗口（默认）")
+    p = sub.add_parser("app", help="打开桌面窗口（默认原生）")
     p.add_argument("--browser", action="store_true", help="强制用浏览器打开（调试用）")
+    p.add_argument("--webview", action="store_true", help="回退到旧的 pywebview 外壳")
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--debug", action="store_true")
     p.set_defaults(func=cmd_app)

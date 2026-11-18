@@ -17,7 +17,7 @@ env:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -57,6 +57,10 @@ jobs:
         shell: pwsh
         run: python packaging/vendor.py --shipwright upstream-shipwright --dest build/vendor
 
+      - name: 构建游戏内 agent 的独立 Python 运行时
+        shell: pwsh
+        run: python packaging/build_agent_runtime.py
+
       - name: 打包（单 exe：双击=桌面窗口并隐藏控制台，带子命令=命令行；入口 packaging/entry.py）
         shell: pwsh
         run: |
@@ -71,7 +75,12 @@ jobs:
             --collect-all unicorn --collect-all pefile `
             --collect-submodules starforge --hidden-import tkinter `
             --add-data "starforge/web/static;starforge/web/static" `
+            --add-data "starforge/agent;starforge/agent" `
+            --add-data "starforge/live/builds;starforge/live/builds" `
+            --add-data "build/agent-runtime;agent-runtime" `
             --exclude-module numpy.f2py --exclude-module numpy.distutils `
+            --exclude-module pymhf --exclude-module nmspy `
+            --exclude-module starforge.agent.starforge_agent `
             packaging/entry.py
 
       - name: 冒烟测试打包产物（抓漏依赖：v0.9.0-beta 曾漏掉 numpy）
@@ -172,9 +181,12 @@ jobs:
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           }
 
-      - name: 压缩产物（GUI + CLI 打进同一个包）
+      - name: 压缩产物（GUI + CLI + agent 运行时）
         shell: pwsh
         run: |
+          if (Test-Path "build/agent-runtime") {
+            Copy-Item -Recurse -Force "build/agent-runtime" "dist/starforge/agent-runtime"
+          }
           Compress-Archive -Path dist/starforge/* -DestinationPath "dist/starforge-${{ github.ref_name }}-win64.zip"
 
       - name: 发布

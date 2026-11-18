@@ -1,0 +1,26 @@
+{
+  "build": "185034",
+  "sha256": "092236962EE050E419424699B5C343A0173F7773D5AD0866B7EC366D334C07D4",
+  "size": 89540680,
+  "version": "185034",
+  "mtime": "2026-11-18T00:06:40.5526270Z",
+  "game": "No Man's Sky",
+  "status": "unverified",
+  "notes": "用户 Windows 实机指纹（2026-11-18）。签名/偏移待 agent M4 实机校准后补全；在此之前只允许只读能力。",
+  "signatures": {},
+  "offsets": {},
+  "capabilities": {
+    "player.ua": "pending",
+    "player.position": "pending",
+    "system.current": "pending",
+    "planet.current": "pending",
+    "ship.read": "pending",
+    "teleport.system": "pending",
+    "teleport.position": "pending",
+    "scan.planet": "pending",
+    "scan.discover": "pending",
+    "build.anywhere": "pending",
+    "recolour": "pending",
+    "limit.unlock": "pending"
+  }
+}
