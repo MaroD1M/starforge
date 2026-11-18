@@ -45,7 +45,20 @@ def health():
               game_dir=game or "",
               write_enabled=s.write_enabled,
               shipwright=str(paths.shipwright_root()) if _has_shipwright() else "",
-              data_ready=bool(gd), saves_ready=bool(saves))
+              data_ready=bool(gd), saves_ready=bool(saves),
+              desktop=_desktop_info())
+
+
+def _desktop_info() -> dict:
+    """原生窗口能力（界面用它决定显示"桌面窗口"还是"浏览器模式"+原因）。"""
+    try:
+        from .. import desktop
+        info = desktop.probe()
+        info["mode"] = "desktop" if info.get("available") else "browser"
+        info["fallback_reason"] = desktop.LAST_FALLBACK_REASON or ""
+        return info
+    except Exception as e:                        # noqa: BLE001
+        return {"available": False, "mode": "browser", "reason": f"{type(e).__name__}: {e}"}
 
 
 def _has_shipwright() -> bool:
@@ -73,7 +86,9 @@ def api_catalog():
             failed[t] = str(e)
     if not ships:
         raise NotFound("取不到任何船型的部件表：请确认游戏目录，或安装 Gagarin 的 GAMEDATA")
+    from ..data.shipref import TYPE_LABELS
     payload = {"source": src, "ships": ships,
+               "ship_labels": {t: TYPE_LABELS.get(t, t) for t in ships},
                "note": {"gagarin": "来自 Gagarin 目录（带权重与缩略图）",
                         "game": "从游戏资源推导（无权重/缩略图，需游戏目录）"}.get(src, "")}
     if failed:

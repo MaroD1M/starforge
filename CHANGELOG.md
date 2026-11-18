@@ -1,5 +1,24 @@
 # 更新记录
 
+## v0.13.2-beta（按你实测反馈修 4 处）
+
+- **船型中文化**：船型按钮与详情标题此前渲染的是英文 id（`fighter`/`sentinel`…），现在统一走中文表
+  （异星 / 探索舰 / 战斗机 / 运输舰 / 生物舰 / 拦截机 / 穿梭机 / 太阳帆），`title` 保留英文原名便于对照。
+  根因：`ShipRef.type_label` 是 property，`to_dict()` 用 `asdict()` 不带它；`/api/catalog` 也没给标签表。
+- **涂装筛选"没生效"**：实际是**控件语义重叠**——总开关未勾时 `buildLook()` 直接返回 `null`，
+  而下面还有两个独立的"启用"小勾（截图里正是这个状态）。现在合并为：勾总开关即按「主色」筛，
+  另可勾「副色也要像」；结果栏显示"已按涂装过滤（主色 Δ≤0.18）"，0 结果时直接提示"容差太严，调到 0.18/0.28 或取消副色"。
+- **3D 观感不如缩略图**（三条实因，逐条修）：
+  1. glb 材质对未知类（发光件）回退成**主色** → 现在回退 `_GROUP_COLOR`，并把 `glow` 定为固定暖色 + `emissiveFactor`；
+     实测同一艘拦截机 glb：`glow base=[1.0,0.62,0.22] emissive=[1.0,0.62,0.22]`、`metal [0.573,0.584,0.573]`、`paint [0.969,0.816,0.42]`；
+  2. 查看器着色器：加 sRGB→线性、**三点光**（主/补/轮廓）、Blinn 高光、输出 gamma——不再"一片平涂"；
+  3. 渲染分辨率提到 `dpr × 1.5`（封顶 3）做超采样，观感更接近服务端光栅化。
+- **原生窗口**：`desktop.probe()` 增加 **Edge WebView2 运行时检测**（注册表 + 常见安装路径），
+  `/api/health` 暴露 `desktop:{available,mode,reason}`；顶部芯片在浏览器模式下可**点开**看原因与安装指引；
+  设置页新增「原生窗口」诊断行与「诊断 / 怎么装 WebView2」；
+  `starforge app --browser` 可显式用浏览器（调试），双击 exe 仍然默认原生窗口。
+- 新增测试 7 项（中文标签、catalog 标签表、glb 材质回退、glow 自发光、paint 的 glow 槽、health 的 desktop 段、probe 原因可执行）。
+
 ## v0.13.1-beta（打包自检覆盖新模块）
 
 - `webcheck` 增加 `/api/galaxy/stats` 与 `/api/creatures/capabilities` 两项——这两个模块（`galaxy` / `creature`）

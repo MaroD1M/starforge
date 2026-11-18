@@ -88,6 +88,7 @@
     if (remember) location.hash = tab;
     if (tab === 'mine' && !S.mine.length) openSave();
     if (tab === 'systems' && !$('#sysBadge').dataset.loaded) loadCurrentSystem();
+    if (tab === 'settings') renderDesktop();
   }
   $$('.nav').forEach(b => b.onclick = () => goto(b.dataset.tab));
   addEventListener('hashchange', () => goto((location.hash || '#search').slice(1), false));
@@ -141,8 +142,23 @@
       try {
         const d = await api('/api/desktop');
         if (!DESKTOP.ready) {
+          const why = (d.desktop && (d.desktop.fallback_reason || d.desktop.reason)) || d.reason || '';
           $('#shell').textContent = d.available ? '桌面窗口（可用）' : '浏览器模式';
-          if (!d.available && d.reason) $('#shell').title = d.reason;
+          if (!d.available) {
+            $('#shell').title = why || '原生窗口不可用';
+            $('#shell').style.cursor = 'pointer';
+            $('#shell').onclick = () => dialog({
+              title: '为什么现在是浏览器模式',
+              body: `<p>${esc(why || '未知原因')}</p>
+                     <div class="warnbox">原生窗口用 <b>Microsoft Edge WebView2</b> 渲染（多数 Windows 自带，
+                       少数机器没有）。装一次即可：
+                       <a href="https://developer.microsoft.com/microsoft-edge/webview2/" target="_blank">WebView2 运行时</a>，
+                       选 “Evergreen Standalone Installer（x64）”，装完重开应用。</div>
+                     <p class="tiny">另外：直接双击 <code>starforge.exe</code> 才会走原生窗口；
+                       <code>starforge.exe serve</code> 是有意用浏览器的调试模式。</p>`,
+              okText: '知道了', cancelText: '', onOk: () => true,
+            });
+          }
         }
       } catch (e) { /* 忽略 */ }
       await loadShips();
@@ -238,8 +254,10 @@
     const cat = await api('/api/catalog');
     S.catalog = cat;
     const ships = Object.keys(cat.ships);
+    S.shipLabels = cat.ship_labels || S.shipLabels || {};
+    const shipLabel = t => (S.shipLabels && S.shipLabels[t]) || t;
     $('#shipPills').innerHTML = ships.map(s =>
-      `<span class="pill ${s === S.ship ? 'on' : ''}" data-ship="${s}">${s}</span>`).join('');
+      `<span class="pill ${s === S.ship ? 'on' : ''}" data-ship="${s}" title="${esc(s)}">${esc(shipLabel(s))}</span>`).join('');
     $$('#shipPills .pill').forEach(el => el.onclick = () => {
       S.ship = el.dataset.ship; S.want.clear(); S.avoid.clear();
       $$('#shipPills .pill').forEach(x => x.classList.toggle('on', x === el));
@@ -401,6 +419,7 @@
     $('#resultInfo').textContent = '搜索中…';
     try {
       localStorage.setItem('sf.query', JSON.stringify({ ship: S.ship, want: [...S.want], avoid: [...S.avoid] }));
+      S.lastLook = look;
       const r = await post('/api/search', {
         ship: S.ship, want: [...S.want], avoid: [...S.avoid], look,
         limit: +$('#limit').value || 12, max_seeds: +$('#maxSeeds').value, time_limit: 30, workers: 1,
@@ -448,18 +467,24 @@
   function buildLook() {
     if (!$('#lookOn')?.checked) return null;
     const look = { tol: +($('#lookTol')?.value || 0.18) };
-    if ($('#lookPrimaryOn')?.checked) {
-      const c = hexToRgb($('#lookPrimary')?.value);
-      if (c) look.primary = c;
-    }
+    const p = hexToRgb($('#lookPrimary')?.value);
+    if (p) look.primary = p;                    // 主色总是参与（勾了总开关就是"照这个主色找"）
     if ($('#lookSecondaryOn')?.checked) {
-      const c = hexToRgb($('#lookSecondary')?.value);
-      if (c) look.secondary = c;
+      const s = hexToRgb($('#lookSecondary')?.value);
+      if (s) look.secondary = s;
     }
     return (look.primary || look.secondary) ? look : null;
   }
+  function lookSummary(look) {
+    if (!look) return '';
+    const tol = (+look.tol).toFixed(2);
+    const bits = [];
+    if (look.primary) bits.push(`主色 Δ≤${tol}`);
+    if (look.secondary) bits.push(`副色 Δ≤${tol}`);
+    return bits.length ? `已按涂装过滤（${bits.join(' · ')}）` : '';
+  }
   $('#lookOn') && ($('#lookOn').onchange = () => {
-    document.querySelectorAll('#lookPrimary, #lookPrimaryOn, #lookSecondary, #lookSecondaryOn, #lookTol')
+    document.querySelectorAll('#lookPrimary, #lookSecondary, #lookSecondaryOn, #lookTol')
       .forEach(el => { el.disabled = !$('#lookOn').checked; });
   });
 
@@ -516,11 +541,14 @@
   function onSearchDone(j) {
     if (j.status === 'failed') { $('#searchMsg').textContent = '搜索失败：' + j.error; return; }
     S.results = j.result || [];
-    $('#resultInfo').textContent = `${S.results.length} 个结果`;
+    const tag = lookSummary(S.lastLook);
+    $('#resultInfo').textContent = `${S.results.length} 个结果${tag ? ' · ' + tag : ''}`;
     $('#exportResults').classList.toggle('hide', !S.results.length);
     if (!S.results.length) {
       $('#grid').innerHTML = ''; $('#gridEmpty').classList.remove('hide');
-      $('#gridEmpty').querySelector('p').textContent = '没有命中：放宽条件，或把「搜索预算」调大';
+      $('#gridEmpty').querySelector('p').innerHTML = S.lastLook
+        ? '没有命中：涂装容差太严了（主色/副色同时要求）。把容差调到「接近 0.18」或「宽松 0.28」，或取消副色再试'
+        : '没有命中：放宽条件，或把「搜索预算」调大';
       return;
     }
     renderGrid();
@@ -656,7 +684,7 @@
           <a class="btn small" href="/api/model/${ref.type}/${ref.seed}.glb${qs}" download>glb</a>
         </div>
       </div>
-      <h3>${esc(ref.type)} · <code>${esc(ref.seed)}</code></h3>
+      <h3>${esc(ref.type_label || (S.shipLabels && S.shipLabels[ref.type]) || ref.type)} · <code>${esc(ref.seed)}</code></h3>
       <div class="actions">
         <button class="btn small" data-a="copy">复制种子</button>
         <button class="btn small" data-a="share">分享码</button>
@@ -1203,6 +1231,36 @@
   };
 
   /* ---------------- 设置 ---------------- */
+  async function renderDesktop() {
+    let d = null;
+    try { d = await api('/api/desktop'); } catch (e) { /* 忽略 */ }
+    const host = $('#deskStatus');
+    if (!host) return;
+    if (!d) { host.textContent = '读取失败'; return; }
+    const ok = !!d.available;
+    const wv = d.webview2 === true ? '已装' : d.webview2 === false ? '缺失' : (d.windows ? '未知' : '—');
+    host.innerHTML = `${ok ? '✓ 可用（双击 exe 即是原生窗口）' : '✗ 当前是浏览器模式'}` +
+      ` · pywebview ${d.pywebview ? 'OK' : '缺失'} · pythonnet ${d.pythonnet === true ? 'OK' : d.pythonnet === false ? '缺失' : '—'}` +
+      ` · WebView2 ${wv}` + (d.reason ? `<br><span class="tiny" style="opacity:.8">${esc(d.reason)}</span>` : '');
+  }
+  const deskDiag = $('#deskDiag');
+  if (deskDiag) deskDiag.onclick = async () => {
+    const d = await api('/api/desktop').catch(() => ({}));
+    dialog({
+      title: '原生窗口诊断',
+      body: `<div class="kvbox">
+               <div class="kvrow"><span>pywebview</span><span>${d.pywebview ? '已装' : '缺失'}</span></div>
+               <div class="kvrow"><span>pythonnet</span><span>${d.pythonnet === true ? '已装' : d.pythonnet === false ? '缺失' : '—'}</span></div>
+               <div class="kvrow"><span>WebView2 运行时</span><span>${d.webview2 === true ? '已装' : d.webview2 === false ? '缺失' : '未知'}</span></div>
+               <div class="kvrow"><span>当前模式</span><span>${esc(d.mode || '—')}</span></div>
+             </div>
+             ${d.reason ? `<div class="warnbox">${esc(d.reason)}</div>` : ''}
+             <p class="tiny">修复方式：装 <a href="https://developer.microsoft.com/microsoft-edge/webview2/" target="_blank">Microsoft Edge WebView2 运行时</a>
+               （Evergreen Standalone x64）；然后直接双击 <code>starforge.exe</code>（不要加 <code>serve</code>）。</p>`,
+      okText: '知道了', cancelText: '', onOk: () => true,
+    });
+  };
+
   function showChecks(checks) {
     const map = { game_dir: '#gameDir', saves_dir: '#savesDir', gamedata_dir: '#gameData' };
     Object.entries(map).forEach(([k, sel]) => {

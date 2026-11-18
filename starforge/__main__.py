@@ -33,10 +33,15 @@ def cmd_app(a) -> int:
     """默认命令：打开原生桌面窗口（不弹浏览器）。"""
     console.hide_console_window()          # 单 exe：双击时把控制台藏掉
     from . import desktop
+    if getattr(a, "browser", False):
+        print("按 --browser 要求，直接用浏览器打开", file=sys.stderr)
+        a.no_browser = False
+        return cmd_serve(a)
     info = desktop.probe()
     if not info["available"]:
         print(f"桌面窗口不可用：{info['reason']}", file=sys.stderr)
-        print("将改用浏览器打开（功能完全一致）。", file=sys.stderr)
+        print("将改用浏览器打开（功能完全一致；装 WebView2 后双击 exe 就是原生窗口）。",
+              file=sys.stderr)
     return desktop.run(port=getattr(a, "port", 0), debug=getattr(a, "debug", False))
 
 
@@ -317,6 +322,7 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd")
 
     p = sub.add_parser("app", help="打开桌面窗口（默认）")
+    p.add_argument("--browser", action="store_true", help="强制用浏览器打开（调试用）")
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--debug", action="store_true")
     p.set_defaults(func=cmd_app)

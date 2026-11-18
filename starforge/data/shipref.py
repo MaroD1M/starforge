@@ -136,7 +136,8 @@ class ShipRef:
         return self.model.upper().endswith(want)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        """给前端的字典：**带上中文标签**（`type_label` 是 property，asdict 不会包含它）。"""
+        return {**asdict(self), "type_label": self.type_label}
 
 
 def stats_summary(raw_stats: dict) -> dict:

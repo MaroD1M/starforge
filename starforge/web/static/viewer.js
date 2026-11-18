@@ -5,15 +5,30 @@
   const VS = `
     attribute vec3 aPos; attribute vec3 aNrm;
     uniform mat4 uMvp; uniform mat3 uNormal;
-    varying vec3 vN;
-    void main(){ vN = uNormal * aNrm; gl_Position = uMvp * vec4(aPos, 1.0); }`;
+    varying vec3 vN; varying vec3 vP;
+    void main(){ vN = normalize(uNormal * aNrm); vP = aPos; gl_Position = uMvp * vec4(aPos, 1.0); }`;
+  // 三点光（主光/补光/轮廓光）+ Blinn 高光的简化模型；末段做 gamma，接近缩略图的观感。
   const FS = `
     precision mediump float;
-    varying vec3 vN; uniform vec3 uColor; uniform vec3 uLight;
+    varying vec3 vN; varying vec3 vP;
+    uniform vec3 uColor; uniform vec3 uLight; uniform float uEmissive;
+    vec3 srgb2lin(vec3 c){ return pow(c, vec3(2.2)); }
+    vec3 lin2srgb(vec3 c){ return pow(c, vec3(1.0 / 2.2)); }
     void main(){
-      float d = max(dot(normalize(vN), normalize(uLight)), 0.0);
-      vec3 c = uColor * (0.34 + 0.66 * d);
-      gl_FragColor = vec4(c, 1.0);
+      vec3 n = normalize(vN);
+      vec3 base = srgb2lin(uColor);
+      vec3 key  = normalize(uLight);
+      vec3 fill = normalize(vec3(-0.6, 0.25, -0.5));
+      vec3 rim  = normalize(vec3(0.2, -0.8, 0.6));
+      float dk = max(dot(n, key),  0.0);
+      float df = max(dot(n, fill), 0.0) * 0.35;
+      float dr = max(dot(n, rim),  0.0) * 0.22;
+      vec3 viewDir = normalize(-vP);
+      vec3 h = normalize(key + viewDir);
+      float spec = pow(max(dot(n, h), 0.0), 28.0) * 0.35;
+      vec3 c = base * (0.30 + 0.75 * dk + df + dr) + vec3(spec) + base * uEmissive;
+      if (uEmissive > 0.5) { c = base * 1.25; }     // 发光件：自发光
+      gl_FragColor = vec4(lin2srgb(clamp(c, 0.0, 1.0)), 1.0);
     }`;
 
   function mat4Mul(a, b) {                       // column-major
@@ -83,7 +98,8 @@
       return p;
     })();
     const loc = n => gl.getUniformLocation(prog, n);
-    const U = { mvp: loc('uMvp'), normal: loc('uNormal'), color: loc('uColor'), light: loc('uLight') };
+    const U = { mvp: loc('uMvp'), normal: loc('uNormal'), color: loc('uColor'), light: loc('uLight'),
+                emissive: loc('uEmissive') };
 
     let prims = [], radius = 3, alive = true;
     let yaw = 0.6, pitch = 0.35, dist = 1.0, spin = false, dirty = true;
@@ -99,8 +115,10 @@
           const idx = pr.indices != null ? accArray(gltf, bin, pr.indices) : null;
           const mat = mats[pr.material] || {};
           const c = (mat.pbrMetallicRoughness && mat.pbrMetallicRoughness.baseColorFactor) || [0.72, 0.72, 0.74, 1];
+          const em = (mat.emissiveFactor && (mat.emissiveFactor[0] + mat.emissiveFactor[1] + mat.emissiveFactor[2]) > 0.2)
+            ? 1.0 : 0.0;
           const b = { pos: gl.createBuffer(), nrm: gl.createBuffer(), idx: gl.createBuffer(),
-                      count: idx ? idx.length : pos.length / 3, color: c.slice(0, 3) };
+                      count: idx ? idx.length : pos.length / 3, color: c.slice(0, 3), emissive: em };
           gl.bindBuffer(gl.ARRAY_BUFFER, b.pos); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
           gl.bindBuffer(gl.ARRAY_BUFFER, b.nrm);
           gl.bufferData(gl.ARRAY_BUFFER, nrm || new Float32Array(pos.length).fill(0).map((_, i) => (i % 3 === 1 ? 1 : 0)), gl.STATIC_DRAW);
@@ -119,7 +137,7 @@
 
     function draw() {
       if (!alive) return;
-      const dpr = Math.min(devicePixelRatio || 1, 2);
+      const dpr = Math.min((devicePixelRatio || 1) * 1.5, 3);   // 超采样：观感更接近服务端光栅化
       const w = canvas.clientWidth * dpr | 0, h = canvas.clientHeight * dpr | 0;
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; dirty = true; }
       if (spin) { yaw += 0.008; dirty = true; }
@@ -143,6 +161,7 @@
           const aNrm = gl.getAttribLocation(prog, 'aNrm');
           gl.enableVertexAttribArray(aNrm); gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 0, 0);
           gl.uniform3fv(U.color, p.color);
+          if (U.emissive) gl.uniform1f(U.emissive, p.emissive || 0.0);
           gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, p.idx);
           gl.drawElements(gl.TRIANGLES, p.count, gl.UNSIGNED_INT, 0);
         }

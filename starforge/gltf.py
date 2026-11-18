@@ -36,7 +36,9 @@ _GROUP_COLOR = {"paint": (0.55, 0.62, 0.78), "secondary": (0.30, 0.33, 0.40),
 
 
 def _material(cls: str, colours: dict) -> dict:
-    c = colours.get(cls) or colours.get("paint") or _GROUP_COLOR.get(cls, (0.7, 0.7, 0.72))
+    # 回退顺序：本类配色 → 该类默认色（_GROUP_COLOR） → 主色 → 灰。
+    # 早期版本直接回退到主色，导致发光件/金属件被涂成船身色，3D 看起来"一片同色"。
+    c = colours.get(cls) or _GROUP_COLOR.get(cls) or colours.get("paint") or (0.7, 0.7, 0.72)
     c = [float(x) for x in list(c)[:3]]
     if cls == "glow":
         return {"name": cls, "pbrMetallicRoughness": {"baseColorFactor": c + [1.0],

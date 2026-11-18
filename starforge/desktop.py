@@ -22,6 +22,9 @@ from .core import log, paths, settings, strings
 
 log = log.get("desktop")
 
+# 回退原因（界面/诊断要用）：native 窗口没起来时写明为什么
+LAST_FALLBACK_REASON = ""
+
 
 def _free_port() -> int:
     with socket.socket() as s:
@@ -160,11 +163,14 @@ def run(port: int = 0, width: int = 1440, height: int = 900, debug: bool = False
 
     url = f"http://127.0.0.1:{port}/"
     info = probe()
+    global LAST_FALLBACK_REASON
     if not info["available"]:
+        LAST_FALLBACK_REASON = info.get("reason") or "未知原因"
         log.warning("窗口不可用：%s", info["reason"])
     try:
         import webview
     except Exception as e:                                # noqa: BLE001
+        LAST_FALLBACK_REASON = f"pywebview 不可用：{type(e).__name__}: {e}"
         log.warning("pywebview 不可用（%s），改用浏览器", e)
         print(f"没装 pywebview，已改用浏览器打开：{url}", file=__import__("sys").stderr)
         webbrowser.open(url)
@@ -207,6 +213,53 @@ def run(port: int = 0, width: int = 1440, height: int = 900, debug: bool = False
     return 0
 
 
+def webview2_runtime() -> dict:
+    """Windows 上检测 Edge WebView2 运行时（pywebview 的 Edge 后端必须依赖它）。
+
+    检测顺序：注册表（EdgeUpdate Clients 的固定 GUID）→ 文件系统常见路径。
+    找不到时把"去哪装"写进 reason，界面直接展示给用户。
+    """
+    out = {"present": None, "path": "", "reason": ""}
+    if os.name != "nt":
+        out["reason"] = "非 Windows：不需要 WebView2"
+        return out
+    guid = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    try:
+        import winreg
+        keys = [
+            (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\" + guid),
+            (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\" + guid),
+            (winreg.HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\" + guid),
+        ]
+        for root, key in keys:
+            try:
+                with winreg.OpenKey(root, key) as k:
+                    ver, _ = winreg.QueryValueEx(k, "pv")
+                    loc, _ = winreg.QueryValueEx(k, "InstallLocation")
+                    if ver:
+                        out.update(present=True, path=str(loc or ""), version=str(ver))
+                        return out
+            except OSError:
+                continue
+    except Exception:                                          # noqa: BLE001
+        pass
+    for base in (os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                 os.environ.get("ProgramFiles", r"C:\Program Files")):
+        p = os.path.join(base, "Microsoft", "EdgeWebView", "Application")
+        if os.path.isdir(p):
+            try:
+                vers = sorted(os.listdir(p), reverse=True)
+            except OSError:
+                vers = []
+            if vers:
+                out.update(present=True, path=os.path.join(p, vers[0]), version=vers[0])
+                return out
+    out["present"] = False
+    out["reason"] = ("缺少 Microsoft Edge WebView2 运行时（原生窗口需要）——"
+                     "装一次即可：https://developer.microsoft.com/microsoft-edge/webview2/")
+    return out
+
+
 def probe() -> dict:
     """窗口能力自检：pywebview / pythonnet（Windows Edge 后端需要）/ WebView2 运行时。"""
     out = {"pywebview": False, "pythonnet": None, "windows": os.name == "nt",
@@ -216,7 +269,8 @@ def probe() -> dict:
         out["pywebview"] = True
         out["version"] = getattr(webview, "__version__", "")
     except Exception as e:                                 # noqa: BLE001
-        out["reason"] = f"没装 pywebview（{type(e).__name__}）"
+        out["reason"] = (f"没装 pywebview（{type(e).__name__}）——"
+                         "换成官方发布的 exe 包会自带它；源码运行请 pip install pywebview")
         return out
     if os.name == "nt":
         try:
@@ -224,7 +278,16 @@ def probe() -> dict:
             out["pythonnet"] = True
         except Exception:                                  # noqa: BLE001
             out["pythonnet"] = False
-            out["reason"] = "缺少 pythonnet（Windows Edge 窗口需要；将退回浏览器）"
+            out["reason"] = ("缺少 pythonnet（Windows Edge 窗口需要）——"
+                             "官方 exe 包自带；源码运行请 pip install pythonnet")
+        wv = webview2_runtime()
+        out["webview2"] = wv.get("present")
+        out["webview2_path"] = wv.get("path", "")
+        out["webview2_reason"] = wv.get("reason", "")
+        if out["pythonnet"] and wv.get("present") is False:
+            out["available"] = False
+            out["reason"] = wv["reason"]
+            return out
     out["available"] = out["pywebview"] and (out["pythonnet"] in (True, None))
     if out["available"]:
         out["reason"] = ""

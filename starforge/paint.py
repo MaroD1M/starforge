@@ -14,6 +14,9 @@ _CACHE: dict[tuple[str, str], dict] = {}
 # 材质类 → 用哪个颜色槽
 MAP = {"paint": "primary", "secondary": "secondary", "dark": "undercoat",
        "metal": "undercoat", "glass": "undercoat"}
+# 发光件没有"调色板槽位"，用固定暖色（与缩略图 render.GROUP_COLOR["glow"] 对齐），
+# 否则 3D 里它会被当成船身色，观感与缩略图不一致。
+GLOW = [1.0, 0.62, 0.22]
 
 
 def look(seed: str, ship: str) -> dict[str, list[float]]:
@@ -25,7 +28,7 @@ def look(seed: str, ship: str) -> dict[str, list[float]]:
         paths.ensure_shipwright_importable()
         from nms_procgen import textures
         cols = textures.ship_look(seed, ship).get("colours") or {}
-        out = {}
+        out = {"glow": list(GLOW)}
         for cls, slot in MAP.items():
             v = cols.get(slot)
             rgb = v.get("rgb") if isinstance(v, dict) else v
