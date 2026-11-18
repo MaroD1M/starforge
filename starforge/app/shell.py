@@ -19,11 +19,11 @@ from PySide6.QtWidgets import (
 from ..core import paths, strings
 from ..services import get_services
 from .pages.home import HomePage
-from .pages.live import LivePage
-from .pages.mine import MinePage
-from .pages.search import SearchPage
+from .pages.game_link import GameLinkPage
+from .pages.fleet import FleetPage
+from .pages.ship_lab import ShipLabPage
 from .pages.settings import SettingsPage
-from .pages.systems import SystemsPage
+from .pages.galaxy import GalaxyPage
 from .widgets.command_palette import CommandPalette
 from .widgets.job_dock import JobDock
 from .widgets.worker import run as run_worker
@@ -76,10 +76,10 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.pages = {
             "home": HomePage(),
-            "search": SearchPage(),
-            "mine": MinePage(),
-            "systems": SystemsPage(),
-            "live": LivePage(),
+            "search": ShipLabPage(),
+            "mine": FleetPage(),
+            "systems": GalaxyPage(),
+            "live": GameLinkPage(),
             "settings": SettingsPage(),
         }
         self.pages["home"].navigate.connect(self.goto)

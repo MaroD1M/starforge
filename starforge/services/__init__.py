@@ -303,6 +303,22 @@ class Services:
 
         return preview.part_png(ship, part, size=size)
 
+    def preview_png(self, ship: str, seed: str, parts: list[str] | None = None,
+                    size: int = 240) -> bytes:
+        from .. import render
+
+        return render.ship_png(ship, seed, parts, size=(size, size), raster=size >= 260)
+
+    def glyph_png(self, digit: str) -> bytes | None:
+        from .. import glyphs as glyph_mod
+
+        return glyph_mod.icon_png(digit)
+
+    def glyph_strip_png(self, text: str | int) -> bytes:
+        from .. import glyphs as glyph_mod
+
+        return glyph_mod.panel_png(glyph_mod.digits_for(text))
+
     # ------------------------------------------------------------ 星系/星球
 
     def system(self, ua: int | None = None, glyphs: str | None = None,
