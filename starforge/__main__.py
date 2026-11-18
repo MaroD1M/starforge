@@ -225,10 +225,13 @@ def cmd_webcheck(a) -> int:
     checks = []
     # 这些依赖游戏文件：没有游戏时 404（带 JSON 原因）也算"模块正常"
     optional = {"/api/catalog/fighter", "/api/part-thumb/sentinel/_PIT_A.png"}
+    # `/api/galaxy/stats` 与 `/api/creatures/capabilities` 是 v0.13 新增模块（galaxy/creature），
+    # 放进 webcheck 就能在打包产物里证明这两个模块真的进去了（否则会 AttributeError/ImportError）。
     for path in ("/", "/static/app.js", "/static/app.css", "/static/viewer.js",
                  "/api/health", "/api/settings", "/api/capabilities",
                  "/api/textures/status", "/api/catalog/fighter",
-                 "/api/part-thumb/sentinel/_PIT_A.png", "/api/desktop", "/api/warm"):
+                 "/api/part-thumb/sentinel/_PIT_A.png", "/api/desktop", "/api/warm",
+                 "/api/galaxy/stats", "/api/creatures/capabilities"):
         r = c.get(path)
         if path in optional:
             ok = (r.status_code == 200 and len(r.data) > 50) or (
