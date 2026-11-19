@@ -6,6 +6,45 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen
 from PySide6.QtWidgets import QListWidget, QStyle, QStyledItemDelegate
 
 
+def card_accessibility(row: dict | None, fallback_seed: str = "",
+                       in_compare: bool = False) -> tuple[str, str]:
+    """卡片给屏幕阅读器的名称/描述：类型、等级、种子与命中部件。"""
+    data = row or {}
+    type_label = str(data.get("type_label") or data.get("type") or "未知类型")
+    ship_class = str(data.get("ship_class") or "").strip()
+    seed = str(data.get("seed") or fallback_seed or "")
+    name = str(data.get("name") or "").strip()
+    parts = [str(part) for part in (data.get("parts") or []) if str(part).strip()]
+
+    bits = [type_label]
+    if ship_class:
+        bits.append(f"{ship_class} 级")
+    if seed:
+        bits.append(f"种子 {seed}")
+    text = "，".join(bits)
+    if name:
+        text = f"{name}，{text}"
+
+    desc = [f"类型：{type_label}"]
+    if ship_class:
+        desc.append(f"等级：{ship_class}")
+    if seed:
+        desc.append(f"种子：{seed}")
+    if parts:
+        desc.append("部件：" + " ".join(parts))
+    if in_compare:
+        desc.append("已加入对比")
+    return text, "；".join(desc)
+
+
+def set_card_accessibility(item, row: dict | None, fallback_seed: str = "",
+                           in_compare: bool = False) -> None:
+    """把可访问文本写到 item 的 AccessibleText/Description 角色。"""
+    text, desc = card_accessibility(row, fallback_seed, in_compare)
+    item.setData(Qt.AccessibleTextRole, text)
+    item.setData(Qt.AccessibleDescriptionRole, desc)
+
+
 class ShipCardDelegate(QStyledItemDelegate):
     def __init__(self, parent=None, icon_size: int = 110):
         super().__init__(parent)

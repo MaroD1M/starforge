@@ -21,7 +21,7 @@
 | 本星系船池（含拦截机种子） | ✅ 实测 50 条/系统 |
 | **传送门符文**（地址 → 12 个符文，网页浮层/弹窗） | ✅ 原生界面可用；独立 Qt 置顶窗口 |
 | 同型换种子写回存档（备份 + 原子写 + 读回 + 回滚） | ✅ 已实现并测试（跨型明确拒绝） |
-| 游戏内实时通道（模板槽写 seed，仅 Windows，默认关闭） | ✅ 定位/写入/回读已实现；模板 Mod 一键生成 |
+| 游戏内实时通道（模板槽写 seed，仅 Windows，默认关闭） | 🟡 定位/写入/回读代码已接；原生页面未接“送进游戏”，未实机验证 |
 
 **实时通道（可选）**：只写 8 字节种子到"模板槽"，不碰你的船；定位靠出厂种子 + `Slots` 结构自洽，
 多个候选同样可信时**拒绝写入**；写后立刻回读校验。仅 Windows，默认关闭，需显式确认。
@@ -54,15 +54,15 @@ starforge 把该输的 12 个符文放大置顶显示，你照着传送门点即
 
 ## 桌面应用（默认形态）
 
-双击 `starforge.exe` 会打开一个**原生 Qt 窗口**（PySide6 Widgets + 原生 OpenGL 3D；双击时会自动隐藏黑控制台，也不需要装 Python）。旧 WebView2/pywebview 外壳已移除；默认就是原生 Qt。
+双击 `starforge.exe` 会打开一个**原生 Qt 窗口**（PySide6 Widgets + 原生 OpenGL 3D；无控制台，也不需要装 Python）。旧 WebView2/pywebview 外壳已移除；默认就是原生 Qt。
 
 - 路径全部自动检测；设置页有「浏览…」原生目录选择框，不用手打
 - 数据层已内置（NMS-Shipwright, MIT），**不需要额外安装任何东西**
 - 没有 Gagarin 数据也能用：部件树从游戏 pak 自己推导
 - 3D 用**种子真实配色**渲染（从游戏数据解出主色/副色/底漆）
 
-> 命令行：单 exe 版本用 `starforge.exe <子命令>`；v0.11.x 的包里是 `starforge-cli\starforge-cli.exe <子命令>`。
-> 可用子命令：`serve`（可选 JSON API 调试）、`ships`、`selfcheck`、`webcheck`、`glyph-overlay`、`live probe`。
+> 命令行：`starforge.exe <子命令>` 会转发给同目录的 `starforge-cli.exe`；若终端没有输出，直接运行 `starforge-cli.exe <子命令>`。
+> 可用子命令：`app`（原生窗口）、`serve`（可选 JSON API 调试）、`ships`、`saves`、`catalog`、`icon`、`settings`、`doctor`、`agent`、`selfcheck`、`selftest`、`webcheck`、`glyph-overlay`、`live probe`。
 
 ## 快速开始
 
@@ -91,8 +91,11 @@ python -m starforge selfcheck
 
 ```bash
 python -m starforge ships --path save.hg      # 列存档里的船
+python -m starforge saves                     # 扫描存档目录
+python -m starforge settings                   # 查看/修改设置
+python -m starforge doctor                     # 环境体检
 python -m starforge glyph-overlay 1043FEE69929 --click-through   # 符文置顶条
-python -m starforge live probe                # 只读探测模板槽（Windows）
+python -m starforge live probe                 # 只读探测模板槽（Windows）
 ```
 
 `STARFORGE_HOME`（默认 `~/.starforge`）存放设置、日志与缓存，可整目录删。
@@ -113,7 +116,7 @@ starforge **不重复造轮子**，而是把三个开源项目缝成一个产品
 
 ---
 
-## 界面（设计稿）
+## 界面
 
 七页：概览 / 飞船实验室 / 设计器 / 我的船队 / 星图 / 游戏内代理 / 设置 + 独立 Qt 符文浮窗。
 文档：[架构](docs/ARCHITECTURE.md) · [界面重构](docs/UI-REDESIGN.md) · [功能地图](docs/FEATURE-MAP.md) ·
@@ -138,9 +141,9 @@ starforge 会尝试自动发现：游戏目录（`NMS_DIR` → Steam/GOG → 注
 
 starforge 会读游戏内存（可选的实时通道）并修改你自己的存档文件，这两件事都是杀软启发式的重点：
 
-- **只在你点「送进游戏」时才读内存**，且只写 8 字节种子到模板槽；
+- **只在你显式操作实时通道时读内存**；模板槽推送只写 8 字节种子（原生页面暂无“送进游戏”入口，仅 Web API 调试路由）；
 - 存档写入前自动备份、写后读回、失败回滚；
-- 不联网（除你主动点检查更新）、不驻留后台、不开机自启。
+- 默认不联网；只有你主动安装/更新游戏内组件时才会联网下载、不驻留后台、不开机自启。
 
 如果你不放心：不要打开「允许写入」，只用搜索/预览/星球/符文——这些完全离线且不碰游戏进程。
 发布包的哈希在 Release 页面，可自行核对。
@@ -150,7 +153,7 @@ starforge 会读游戏内存（可选的实时通道）并修改你自己的存�
 * 只监听 `127.0.0.1`，校验 `Host`/`Origin`（防 CSRF / DNS rebinding）。
 * 写入默认关闭；开启后仍需二次确认；写前备份、写后读回、失败回滚。
 * 覆盖层是**独立置顶窗口**，不注入游戏进程；请把游戏设为"无边框窗口"模式。
-* 不联网（除你主动点"检查更新"）。
+* 默认不联网；只有你主动安装/更新游戏内组件时才会联网下载。
 
 ---
 

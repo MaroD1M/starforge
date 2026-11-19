@@ -6,12 +6,18 @@ import pytest
 pytest.importorskip("PySide6")
 
 from starforge.app.pages.ship_designer import (  # noqa: E402
+    design_document,
+    design_payload,
+    normalize_design_seed,
     normalize_result,
     preview_params,
+    read_design_file,
     result_summary,
     selected_parts,
+    selection_from_parts,
     selection_rows,
     single_choice,
+    write_design_file,
 )
 
 EXAMPLE_SEED = "0x992C8A47F60A6B10"
@@ -71,3 +77,50 @@ def test_result_fields_are_stable_and_empty_safe():
     assert result_summary(row) == "战斗机  0x8BA812880CFAAA1C"
     assert normalize_result(None) == {"type": "", "type_label": "", "seed": "",
                                       "parts": []}
+
+
+def test_design_payload_normalizes_parts_and_seeds():
+    doc = design_payload("  我的设计  ", "fighter",
+                         {"_PIT_": "_PIT_A", "_WINGS_": "_WING_B"}, GROUPS,
+                         ["0xabc", "0xABC", "bad"])
+    assert doc["name"] == "我的设计"
+    assert doc["ship"] == "fighter"
+    assert doc["want"] == ["_PIT_A", "_WING_B"]
+    assert doc["found_seeds"] == ["0x0000000000000ABC"]
+    assert doc["made_with"] == "NMS Starforge"
+
+    with pytest.raises(ValueError):
+        design_payload("空设计", "fighter", {}, GROUPS)
+
+
+def test_design_document_validates_ship_and_known_parts():
+    doc = design_document({"name": "导入", "ship": "fighter",
+                           "want": ["_pit_a", "_WING_B", None],
+                           "found_seeds": ["0x1", "nope"]}, GROUPS)
+    assert doc["want"] == ["_PIT_A", "_WING_B"]
+    assert doc["found_seeds"] == ["0x0000000000000001"]
+
+    with pytest.raises(ValueError):
+        design_document({"ship": "banana", "want": ["_PIT_A"]}, GROUPS)
+    with pytest.raises(ValueError):
+        design_document({"ship": "fighter", "want": []}, GROUPS)
+    with pytest.raises(ValueError):
+        design_document({"ship": "fighter", "want": ["_NOPE"]}, GROUPS)
+
+
+def test_selection_from_parts_follows_group_order_and_ignores_unknown():
+    assert selection_from_parts(["_WING_B", "_PIT_A", "_NOPE"], GROUPS) == {
+        "_PIT_": "_PIT_A", "_WINGS_": "_WING_B"}
+    assert selection_from_parts([], GROUPS) == {}
+
+
+def test_design_file_roundtrip(tmp_path):
+    doc = design_payload("夜莺", "fighter", {"_PIT_": "_PIT_B"}, GROUPS,
+                         ["0x1234"])
+    path = tmp_path / "nightingale.nmsdesign.json"
+    write_design_file(path, doc)
+    loaded = read_design_file(path, GROUPS)
+    assert loaded["name"] == "夜莺"
+    assert loaded["want"] == ["_PIT_B"]
+    assert loaded["found_seeds"] == ["0x0000000000001234"]
+    assert normalize_design_seed("0xZZ") == ""

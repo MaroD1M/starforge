@@ -167,13 +167,13 @@ class EmptyState(QFrame):
                 border: 1px solid #1e2432;
                 border-radius: 12px;
             }
-            QLabel#emptyIcon { color: #5ad7ff; font-size: 34px; }
-            QLabel#emptyTitle { color: #e6ecf5; font-size: 16px; font-weight: 700; }
-            QLabel#emptyDescription { color: #8b95a7; font-size: 12px; }
+            QLabel#emptyIcon { color: #5ad7ff; font-size: 28px; }
+            QLabel#emptyTitle { color: #e6ecf5; font-size: 15px; font-weight: 700; }
+            QLabel#emptyDescription { color: #8b95a7; font-size: 11.5px; }
         """)
         v = QVBoxLayout(self)
-        v.setContentsMargins(28, 26, 28, 26)
-        v.setSpacing(10)
+        v.setContentsMargins(20, 18, 20, 18)
+        v.setSpacing(8)
         v.setAlignment(Qt.AlignCenter)
         self.icon_label = QLabel()
         self.icon_label.setObjectName("emptyIcon")
@@ -202,6 +202,17 @@ class EmptyState(QFrame):
         self.button.setVisible(bool(button_text))
         self.button.clicked.connect(self.actionTriggered)
         v.addWidget(self.button, 0, Qt.AlignCenter)
+
+    def resizeEvent(self, event) -> None:       # noqa: N802 - Qt 回调
+        super().resizeEvent(event)
+        # QLabel 的 wordWrap 在 150%/200% 缩放下可能按未受限宽度计算高度，
+        # 导致说明文字底部被裁掉；这里按实际宽度补足最小高度。
+        try:
+            need = self.description_label.heightForWidth(self.description_label.width())
+            if need > self.description_label.minimumHeight():
+                self.description_label.setMinimumHeight(need)
+        except Exception:                                    # noqa: BLE001
+            pass
 
     def set_action(self, text: str, callback=None) -> None:
         self.button.setText(text or "操作")

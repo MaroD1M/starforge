@@ -115,3 +115,16 @@ def test_apply_to_copy_leaves_original_untouched(save_copy):
     edited, _ = library.open_ships(res["path"])
     assert next(s for s in edited if s.slot == slot).seed.upper() == "0XFEDCBA9876543210"
     assert next(s for s in ships if s.slot == slot).seed == seed_before
+
+
+def test_backup_keep_prunes_old_backups(tmp_path):
+    from starforge.core import settings as settings_mod
+    from starforge.save import writer
+
+    src = tmp_path / "save.hg"
+    src.write_bytes(b"x")
+    settings_mod.update(backup_keep=2)
+    for _ in range(4):
+        writer._backup(str(src))
+    backups = sorted(tmp_path.glob("save.hg.*.bak"))
+    assert len(backups) == 2

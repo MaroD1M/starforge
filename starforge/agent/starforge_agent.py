@@ -1,5 +1,5 @@
 # /// script
-# dependencies = ["NMSpy==185034.0", "pymhf[http_api]>=0.2.5"]
+# dependencies = ["NMSpy==185034.0", "pymhf[http_api]==0.2.5"]
 #
 # [tool.pymhf]
 # exe = "NMS.exe"
@@ -36,10 +36,15 @@
 from __future__ import annotations
 
 import ctypes
+import hmac
+import json
 import logging
+import os
 import queue
 import threading
+import time
 from functools import wraps
+from pathlib import Path
 from typing import Any
 
 import nmspy.data.basic_types as basic
@@ -50,6 +55,71 @@ from pymhf import Mod
 from pymhf.core.http_api import endpoint
 
 log = logging.getLogger("starforge.agent")
+
+# launch() 每次启动生成一次性 token，通过子进程环境注入；pymhf endpoint 没有稳定
+# 的 request header 读取接口，所以客户端用 ?token=... 传。为空表示用户手动启动
+# （未经过 starforge），只报告 auth=disabled，不假装有认证。
+_AGENT_TOKEN = os.environ.get("STARFORGE_AGENT_TOKEN", "").strip()
+_SNAPSHOT_LIMIT = 20
+
+
+def _auth_block(token: str = "") -> dict | None:
+    if not _AGENT_TOKEN:
+        return None
+    if hmac.compare_digest(str(token or ""), _AGENT_TOKEN):
+        return None
+    return {"ok": False, "code": "E_AUTH",
+            "error": "agent token 无效或缺失（通过 ?token= 传递）"}
+
+
+def _snapshot_path() -> Path:
+    home = os.environ.get("STARFORGE_HOME")
+    base = Path(home) if home else (Path.home() / ".starforge")
+    return base / "agent" / "snapshots.json"
+
+
+def _read_snapshot_file() -> list[dict]:
+    try:
+        data = json.loads(_snapshot_path().read_text("utf-8"))
+        rows = data.get("snapshots") if isinstance(data, dict) else None
+        return [r for r in (rows or []) if isinstance(r, dict)]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _persist_snapshot(location: dict, dest: dict, glyphs: str = "") -> dict:
+    """传送前把快照写进 ~/.starforge/agent/snapshots.json；失败则不传送。"""
+    path = _snapshot_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = _read_snapshot_file()
+    record = {
+        "time": time.time(),
+        "location": dict(location),
+        "destination": dict(dest),
+        "glyphs": str(glyphs).upper(),
+    }
+    rows.append(record)
+    data = {"version": 1, "updated": time.time(), "snapshots": rows[-_SNAPSHOT_LIMIT:]}
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return record
+
+
+def _latest_snapshot() -> dict | None:
+    rows = _read_snapshot_file()
+    for row in reversed(rows):
+        if isinstance(row.get("location"), dict):
+            return row["location"]
+    return None
 
 
 def _game_thread(fn):
@@ -338,7 +408,10 @@ class StarforgeAgent(Mod):
 
     @endpoint("/hello")
     @_game_thread
-    def hello(self) -> dict:
+    def hello(self, token: str = "") -> dict:
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         try:
             import nmspy
 
@@ -356,6 +429,8 @@ class StarforgeAgent(Mod):
         return {"ok": True, "agent": self.__version__, "nmspy": version,
                 "game_attached": app is not None, "in_game": in_game,
                 "multiplayer": multiplayer,
+                "auth": "token-query" if _AGENT_TOKEN else "disabled",
+                "snapshots": str(_snapshot_path()),
                 "capabilities": {
                     "player": True, "system": True, "planet": True,
                     "planet.scan": True, "ships": True,
@@ -367,7 +442,10 @@ class StarforgeAgent(Mod):
 
     @endpoint("/player")
     @_game_thread
-    def player(self) -> dict:
+    def player(self, token: str = "") -> dict:
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         loc = _location()
         if loc is None:
             return {"ok": False, "error": "玩家状态不可用（是否已进入存档？）"}
@@ -398,7 +476,10 @@ class StarforgeAgent(Mod):
 
     @endpoint("/ships")
     @_game_thread
-    def ships(self) -> dict:
+    def ships(self, token: str = "") -> dict:
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         try:
             ps = gameData.player_state
             if ps is None:
@@ -422,7 +503,10 @@ class StarforgeAgent(Mod):
 
     @endpoint("/system")
     @_game_thread
-    def system(self) -> dict:
+    def system(self, token: str = "") -> dict:
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         loc = _location()
         if loc is None:
             return {"ok": False, "error": "玩家状态不可用"}
@@ -446,7 +530,10 @@ class StarforgeAgent(Mod):
 
     @endpoint("/planet")
     @_game_thread
-    def planet(self) -> dict:
+    def planet(self, token: str = "") -> dict:
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         loc = _location()
         if loc is None:
             return {"ok": False, "error": "玩家状态不可用"}
@@ -462,8 +549,11 @@ class StarforgeAgent(Mod):
 
     @endpoint("/planet/scan")
     @_game_thread
-    def planet_scan(self) -> dict:
+    def planet_scan(self, token: str = "") -> dict:
         """只读：当前行星完整档案（PlanetInfo + 物质/生物/额外资源提示）。"""
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         loc = _location()
         if loc is None:
             return {"ok": False, "error": "玩家状态不可用"}
@@ -500,7 +590,10 @@ class StarforgeAgent(Mod):
 
     @endpoint("/teleport", method="PUT")
     @_game_thread
-    def teleport(self, glyphs: str = "", galaxy: int = -1) -> dict:
+    def teleport(self, glyphs: str = "", galaxy: int = -1, token: str = "") -> dict:
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         blocked = _multiplayer_block()
         if blocked:
             return blocked
@@ -513,24 +606,36 @@ class StarforgeAgent(Mod):
                 dest["reality"] = cur["reality"]
             else:
                 dest["reality"] = max(0, min(254, int(galaxy)))
+            try:
+                record = _persist_snapshot(cur, dest, glyphs)
+            except Exception as e:                         # noqa: BLE001
+                return {"ok": False, "code": "E_SNAPSHOT",
+                        "error": f"无法持久化传送快照，已取消传送：{type(e).__name__}: {e}"}
             self._snapshot = dict(cur)
             log.info("teleport %s -> %s", cur, dest)
             self._write_location(dest)
             self._trigger_load()
             return {"ok": True, "before": cur, "after": dest,
-                    "glyphs": glyphs.upper(), "note": "已写入并触发加载；若未生效请用 restore 还原"}
+                    "glyphs": glyphs.upper(), "snapshot": record,
+                    "snapshot_file": str(_snapshot_path()),
+                    "confirmed": False, "confirmation": "pending",
+                    "note": "已写入并触发加载；应用会读回位置确认，未生效请用 restore 还原"}
         except Exception as e:                             # noqa: BLE001
             self._last_error = f"{type(e).__name__}: {e}"
             return {"ok": False, "error": self._last_error}
 
     @endpoint("/teleport/portal", method="PUT")
     @_game_thread
-    def teleport_portal(self, glyphs: str = "", galaxy: int = -1) -> dict:
+    def teleport_portal(self, glyphs: str = "", galaxy: int = -1,
+                        token: str = "") -> dict:
         """实验：尝试用 cGcPortalComponent 走游戏 portal warp。
 
         API/偏移未实机校准前一律返回 ``ok:false`` + ``本版未实现/需实机校准``；
         旧 ``teleport``（写位置 + APPLOCALLOAD）保持不变。
         """
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         blocked = _multiplayer_block()
         if blocked:
             return blocked
@@ -543,6 +648,11 @@ class StarforgeAgent(Mod):
                 dest["reality"] = cur["reality"]
             else:
                 dest["reality"] = max(0, min(254, int(galaxy)))
+            try:
+                record = _persist_snapshot(cur, dest, glyphs)
+            except Exception as e:                         # noqa: BLE001
+                return {"ok": False, "code": "E_SNAPSHOT",
+                        "error": f"无法持久化传送快照，已取消传送：{type(e).__name__}: {e}"}
             log.info("teleport.portal %s -> %s", cur, dest)
             result = _portal_warp(dest)
             buffer = result.pop("_buffer", None)
@@ -550,6 +660,7 @@ class StarforgeAgent(Mod):
                 self._portal_buffer = buffer
             result.setdefault("before", cur)
             result.setdefault("after", dest)
+            result.setdefault("snapshot", record)
             return result
         except Exception as e:                             # noqa: BLE001
             self._last_error = f"{type(e).__name__}: {e}"
@@ -557,23 +668,36 @@ class StarforgeAgent(Mod):
 
     @endpoint("/restore", method="PUT")
     @_game_thread
-    def restore(self) -> dict:
+    def restore(self, token: str = "") -> dict:
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         blocked = _multiplayer_block()
         if blocked:
             return blocked
-        if not self._snapshot:
-            return {"ok": False, "error": "没有可还原的快照"}
+        snapshot = self._snapshot
+        from_disk = False
+        if not snapshot:
+            snapshot = _latest_snapshot()
+            from_disk = bool(snapshot)
+        if not snapshot:
+            return {"ok": False, "error": "没有可还原的快照（内存和 snapshots.json 都为空）"}
         try:
-            self._write_location(self._snapshot)
+            self._write_location(snapshot)
             self._trigger_load()
-            return {"ok": True, "restored": self._snapshot}
+            return {"ok": True, "restored": snapshot, "from_disk": from_disk,
+                    "confirmed": False, "confirmation": "pending"}
         except Exception as e:                             # noqa: BLE001
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     # ------------------------------------------------------------ 扫描
 
     @endpoint("/scan/instant", method="PUT")
-    def scan_instant(self, on: bool = True) -> dict:
+    @_game_thread
+    def scan_instant(self, on: bool = True, token: str = "") -> dict:
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         blocked = _multiplayer_block()
         if blocked:
             return blocked
@@ -582,20 +706,24 @@ class StarforgeAgent(Mod):
                 "note": "开启后游戏内扫描条会立即完成；不写发现列表"}
 
     @endpoint("/scan", method="PUT")
-    def scan(self, mode: str = "read") -> dict:
+    @_game_thread
+    def scan(self, mode: str = "read", token: str = "") -> dict:
         """当前实现：read=读取行星完整信息；discover=暂不直接写发现。
 
         扫描“即时完成”由 Mod 在游戏内把扫描条拉满即可；这里返回当前行星数据，
         让界面能显示天气/资源/动植物。写发现（scan.discover）需要确认发现管理器偏移，
         暂不开放，避免把错误数据写进发现列表。
         """
+        blocked = _auth_block(token)
+        if blocked:
+            return blocked
         if mode not in ("read", "discover"):
             return {"ok": False, "error": "mode 只能是 read/discover"}
         if mode == "discover":
             blocked = _multiplayer_block()
             if blocked:
                 return blocked
-        data = self.planet()
+        data = self.planet(token=token)
         if not data.get("ok"):
             return data
         return {"ok": True, "mode": mode, "planet": data["planet"],

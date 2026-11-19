@@ -5,26 +5,32 @@
 """
 from __future__ import annotations
 
-import os
+import json
+from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
-    QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
-    QVBoxLayout,
     QWidget,
 )
 
 from ...services import get_services
+from .. import notify
+from ..dialogs.design_write import DesignWriteDialog
+from ..widgets.page import PageSplitter, page_layout
+from ..widgets.page_header import PageHeader
 from ..widgets.ship_viewer import ShipViewer
 from ..widgets.ui import Card, icon_from_png, muted, placeholder_icon
 from ..widgets.worker import run as run_worker
@@ -34,6 +40,11 @@ SHIPS = [("sentinel", "拦截机"), ("fighter", "战斗机"), ("hauler", "运输
          ("living", "生物舰"), ("solar", "太阳帆")]
 
 EXAMPLE_SEED = "0x992C8A47F60A6B10"
+
+
+def _slug(name: str) -> str:
+    text = "".join(ch if ch.isalnum() else "_" for ch in str(name or "").lower())
+    return text.strip("_") or "design"
 
 
 # ---------------------------------------------------------------- 纯逻辑
@@ -117,6 +128,113 @@ def result_summary(row: dict | None) -> str:
     return f"{label}  {data['seed']}".strip()
 
 
+# ---------------------------------------------------------------- 设计文件（本地 JSON）
+
+DESIGN_SUFFIX = ".nmsdesign.json"
+DESIGN_MAKER = "NMS Starforge"
+
+
+def normalize_design_seed(value) -> str:
+    """把 0x 开头的种子规范成 16 位大写；非法值返回空串。"""
+    text = str(value or "").strip()
+    if not text.lower().startswith("0x"):
+        return ""
+    digits = text[2:]
+    if not digits or len(digits) > 16:
+        return ""
+    try:
+        number = int(digits, 16)
+    except (TypeError, ValueError):
+        return ""
+    return f"0x{number & ((1 << 64) - 1):016X}"
+
+
+def design_payload(name: str, ship: str, selection: dict[str, str] | None,
+                   groups: list[dict] | None, seeds: list[str] | None = None,
+                   notes: str = "") -> dict:
+    """生成可保存的设计 JSON；部件必须来自当前船型部件树。"""
+    want = selected_parts(selection, groups)
+    if not want:
+        raise ValueError("请先至少选择一个部件，再保存设计")
+    found = []
+    for seed in seeds or []:
+        clean = normalize_design_seed(seed)
+        if clean and clean not in found:
+            found.append(clean)
+    return {
+        "name": str(name or "").strip()[:60] or "未命名设计",
+        "ship": str(ship or ""),
+        "notes": str(notes or "")[:2000],
+        "want": want,
+        "avoid": [],
+        "found_seeds": found,
+        "made_with": DESIGN_MAKER,
+    }
+
+
+def design_document(data: dict, groups: list[dict] | None = None) -> dict:
+    """校验并整理一个设计文件；未知船型/空部件会被拒绝，不猜测。"""
+    if not isinstance(data, dict):
+        raise ValueError("这不是设计文件（顶层必须是 JSON 对象）")
+    ship = str(data.get("ship") or "")
+    if ship not in {key for key, _label in SHIPS}:
+        raise ValueError(f"设计文件里的船型未知：{ship!r}")
+    raw_want = data.get("want") or []
+    if isinstance(raw_want, str):
+        raw_want = [p for p in raw_want.replace(",", " ").split() if p]
+    want = [str(p).strip().upper() for p in raw_want
+            if p is not None and str(p).strip()]
+    if not want:
+        raise ValueError("设计文件里没有部件")
+    if groups:
+        known = {str(opt.get("part") or "").upper()
+                 for group in groups for opt in group.get("options") or []}
+        unknown = [p for p in want if p not in known]
+        if unknown:
+            raise ValueError(f"这些部件不属于当前船型：{', '.join(unknown[:6])}")
+    seeds = []
+    for seed in data.get("found_seeds") or data.get("seeds") or []:
+        clean = normalize_design_seed(seed)
+        if clean and clean not in seeds:
+            seeds.append(clean)
+    return {
+        "name": str(data.get("name") or "导入的设计").strip()[:60],
+        "ship": ship,
+        "notes": str(data.get("notes") or "")[:2000],
+        "want": want,
+        "avoid": [str(p).strip().upper() for p in data.get("avoid") or [] if str(p).strip()],
+        "found_seeds": seeds,
+        "made_with": str(data.get("made_with") or DESIGN_MAKER),
+    }
+
+
+def selection_from_parts(parts: list[str] | None, groups: list[dict] | None) -> dict[str, str]:
+    """把设计文件里的部件列表还原成 {group: part}；未知部件直接忽略。"""
+    wanted = {str(p).upper() for p in parts or []}
+    out: dict[str, str] = {}
+    for group in groups or []:
+        gid, _label, options = _group_options(group)
+        for part in options:
+            if part.upper() in wanted and gid not in out:
+                out[gid] = part
+                break
+    return out
+
+
+def read_design_file(path: str | Path, groups: list[dict] | None = None) -> dict:
+    try:
+        data = json.loads(Path(path).read_text("utf-8"))
+    except (OSError, ValueError) as e:
+        raise ValueError(f"无法读取设计文件：{e}") from e
+    return design_document(data, groups)
+
+
+def write_design_file(path: str | Path, document: dict) -> str:
+    target = Path(path)
+    target.write_text(json.dumps(document, ensure_ascii=False, indent=1), "utf-8")
+    return str(target)
+
+
 # ---------------------------------------------------------------- 页面
 
 class ShipDesignerPage(QWidget):
@@ -131,6 +249,7 @@ class ShipDesignerPage(QWidget):
         self._render_token = 0
         self._updating_tree = False
         self._search_job = None
+        self._pending_design: dict | None = None
         self._icon_queue: list[tuple[QTreeWidgetItem, str, str]] = []
         self._icon_timer = QTimer(self)
         self._icon_timer.setSingleShot(True)
@@ -148,15 +267,19 @@ class ShipDesignerPage(QWidget):
     # ------------------------------------------------------------ UI
 
     def _build_ui(self) -> None:
-        root = QHBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 8)
-        split = QSplitter(Qt.Horizontal)
-        root.addWidget(split)
+        root = page_layout(self)
+        self.header = PageHeader(
+            "飞船设计器",
+            "逐个选择部件即时查看 3D 组合，再用这套部件搜索可用种子。")
+        root.addWidget(self.header)
+        split = PageSplitter("ship_designer")
+        root.addWidget(split, 1)
         split.addWidget(self._build_parts())
         split.addWidget(self._build_preview())
         split.addWidget(self._build_actions())
-        split.setSizes([320, 620, 430])
         split.setStretchFactor(1, 1)
+        split.set_default_sizes([300, 600, 380])
+        split.restore()
 
     def _build_parts(self) -> QWidget:
         wrap = Card("船型与部件", "每组单选一个部件")
@@ -179,8 +302,9 @@ class ShipDesignerPage(QWidget):
         v.addLayout(row)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["部件", "组"])
-        self.tree.setColumnWidth(0, 210)
+        self.tree.setHeaderLabels(["部件"])
+        self.tree.setColumnCount(1)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.setIconSize(QSize(40, 40))
         self.tree.setStyleSheet("QTreeWidget::item { height: 38px; }")
         self.tree.itemChanged.connect(self._on_tree_changed)
@@ -263,12 +387,22 @@ class ShipDesignerPage(QWidget):
         self.results.itemSelectionChanged.connect(self._select_result)
         v.addWidget(self.results, 1)
 
-        self.write_btn = QPushButton("写入存档（暂不可用）")
-        self.write_btn.setEnabled(False)
-        self.write_btn.setToolTip("直接写部件到存档的后端尚未验证，本页不开放此操作")
-        v.addWidget(self.write_btn)
-        v.addWidget(muted("说明：直接写部件到存档的后端尚未验证，本页刻意禁用；"
-                          "如需写入，请使用「飞船实验室」的完整流程。"))
+        files = QHBoxLayout()
+        self.save_design_btn = QPushButton("保存设计…")
+        self.save_design_btn.setToolTip("把当前船型与部件保存为本地 .nmsdesign.json；不写存档")
+        self.save_design_btn.clicked.connect(self._save_design)
+        files.addWidget(self.save_design_btn)
+        self.load_design_btn = QPushButton("载入设计…")
+        self.load_design_btn.setToolTip("从本地 .nmsdesign.json 恢复部件与种子；不写存档")
+        self.load_design_btn.clicked.connect(self._load_design)
+        files.addWidget(self.load_design_btn)
+        v.addLayout(files)
+
+        self.write_design_btn = QPushButton("写入存档…")
+        self.write_design_btn.setToolTip("把当前种子写入新船槽或替换现有槽；先备份，可写入副本")
+        self.write_design_btn.clicked.connect(self._write_design)
+        v.addWidget(self.write_design_btn)
+        v.addWidget(muted("设计文件只保存在本地；写入存档会走备份、二次确认、读回校验与回滚。"))
         return wrap
 
     # ------------------------------------------------------------ 数据
@@ -302,6 +436,9 @@ class ShipDesignerPage(QWidget):
             self.parts_count.setText(f"{len(self._groups)} 个组 / {total} 个部件")
             self._update_summary()
             self._schedule_preview()
+            if self._pending_design is not None:
+                pending, self._pending_design = self._pending_design, None
+                self._apply_design(pending, quiet=True)
 
         def fail(msg: str) -> None:
             if token != self._catalog_token:
@@ -428,6 +565,138 @@ class ShipDesignerPage(QWidget):
         self._selection = {}
         self._update_summary()
         self._schedule_preview()
+
+    def _apply_design(self, document: dict, quiet: bool = False) -> None:
+        wanted = {p.upper() for p in document.get("want") or []}
+        selection = selection_from_parts(document.get("want"), self._groups)
+        self._updating_tree = True
+        try:
+            for index in range(self.tree.topLevelItemCount()):
+                top = self.tree.topLevelItem(index)
+                for child_index in range(top.childCount()):
+                    child = top.child(child_index)
+                    part = str(child.data(0, Qt.UserRole) or "").upper()
+                    child.setCheckState(0, Qt.Checked if part in wanted else Qt.Unchecked)
+        finally:
+            self._updating_tree = False
+        self._selection = selection
+        seeds = document.get("found_seeds") or []
+        if seeds:
+            self.seed_edit.setText(seeds[0])
+        self._update_summary()
+        self._schedule_preview()
+        if not quiet:
+            self.search_status.setText(
+                f"已载入设计「{document.get('name') or '未命名'}」："
+                f"{len(selection)} 个组 / {len(document.get('want') or [])} 个部件")
+
+    def _save_design(self) -> None:
+        if not selected_parts(self._selection, self._groups):
+            notify.warn("请先至少选择一个部件，再保存设计")
+            self.search_status.setText("空设计不能保存：请先选择部件")
+            return
+        ship = str(self.ship.currentData() or "")
+        label = self.ship.currentText() or ship
+        name, ok = QInputDialog.getText(self, "保存设计", "设计名称：",
+                                        text=f"{label} 设计")
+        if not ok:
+            return
+        seeds = []
+        for index in range(self.results.count()):
+            row = self.results.item(index).data(Qt.UserRole) or {}
+            seed = normalize_design_seed(row.get("seed"))
+            if seed and seed not in seeds:
+                seeds.append(seed)
+        try:
+            document = design_payload(name, ship, self._selection, self._groups, seeds)
+        except ValueError as e:
+            notify.warn(str(e))
+            self.search_status.setText(str(e))
+            return
+        start = str(Path.home() / f"{_slug(document['name'])}{DESIGN_SUFFIX}")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存设计文件", start, f"设计文件 (*{DESIGN_SUFFIX});;JSON (*.json)")
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += DESIGN_SUFFIX
+        try:
+            write_design_file(path, document)
+        except OSError as e:
+            notify.error(f"保存设计失败：{e}")
+            self.search_status.setText(f"保存设计失败：{e}")
+            return
+        notify.success(f"设计已保存：{Path(path).name}")
+        self.search_status.setText(f"设计已保存到 {path}（未写存档）")
+
+    def _load_design(self) -> None:
+        start = str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self, "载入设计文件", start,
+            f"设计文件 (*{DESIGN_SUFFIX});;JSON (*.json);;所有文件 (*)")
+        if not path:
+            return
+        try:
+            data = json.loads(Path(path).read_text("utf-8"))
+        except (OSError, ValueError) as e:
+            notify.error(f"无法读取设计文件：{e}")
+            self.search_status.setText(f"无法读取设计文件：{e}")
+            return
+        ship = str((data or {}).get("ship") or "") if isinstance(data, dict) else ""
+        current = str(self.ship.currentData() or "")
+        try:
+            if ship and ship != current:
+                document = design_document(data)
+                self._pending_design = document
+                index = self.ship.findData(ship)
+                if index < 0:
+                    raise ValueError(f"当前设计器没有这个船型：{ship!r}")
+                self.ship.setCurrentIndex(index)
+                self.search_status.setText(f"已切换到 {self.ship.currentText()}，正在载入设计…")
+                return
+            document = design_document(data, self._groups)
+        except ValueError as e:
+            notify.warn(str(e))
+            self.search_status.setText(str(e))
+            return
+        self._apply_design(document)
+        notify.success(f"设计已载入：{document['name']}")
+
+    def _current_design(self) -> dict:
+        seeds = []
+        for index in range(self.results.count()):
+            row = self.results.item(index).data(Qt.UserRole) or {}
+            seed = normalize_design_seed(row.get("seed"))
+            if seed and seed not in seeds:
+                seeds.append(seed)
+        current = normalize_design_seed(self.seed_edit.text())
+        if current and current not in seeds:
+            seeds.insert(0, current)
+        try:
+            return design_payload(f"{self.ship.currentText()} 设计",
+                                  str(self.ship.currentData() or ""),
+                                  self._selection, self._groups, seeds)
+        except ValueError:
+            return {"name": f"{self.ship.currentText()} 设计",
+                    "ship": str(self.ship.currentData() or ""),
+                    "want": [], "found_seeds": seeds}
+
+    def _write_design(self) -> None:
+        document = self._current_design()
+        seeds = document.get("found_seeds") or []
+        seed = normalize_design_seed(seeds[0]) if seeds else ""
+        if not seed:
+            self.search_status.setText("没有可用种子：请先搜索并选中一个结果")
+            notify.warn("没有可用种子，请先搜索并选中一个结果")
+            return
+        document["found_seeds"] = [seed] + [s for s in document.get("found_seeds") or []
+                                            if s != seed]
+        dialog = DesignWriteDialog(document, self)
+        if dialog.exec() == dialog.Accepted:
+            result = dialog.result or {}
+            self.search_status.setText(
+                f"写入成功 · {result.get('what') or ('槽位 ' + str(result.get('slot')))}")
+            notify.success("设计已写入存档，并通过读回校验")
 
     def _update_summary(self) -> None:
         rows = selection_rows(self._selection, self._groups)

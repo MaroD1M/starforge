@@ -98,11 +98,11 @@ def _poi_row(row, kind_label: str) -> list[str]:
     glyphs = _text(row.get("glyphs"))
     ua = _text(row.get("ua") or row.get("galactic_address"))
     if glyphs and ua:
-        address = f"传送门符文（glyphs）：{glyphs}；银河地址（UA）：{ua}"
+        address = f"传送门符文：{glyphs}；银河地址：{ua}"
     elif glyphs:
-        address = f"传送门符文（glyphs）：{glyphs}"
+        address = f"传送门符文：{glyphs}"
     elif ua:
-        address = f"银河地址（UA）：{ua}"
+        address = f"银河地址：{ua}"
     else:
         address = MISSING
     note = _text(row.get("note") or row.get("hint")) or MISSING

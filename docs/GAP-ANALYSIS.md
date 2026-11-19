@@ -1,23 +1,24 @@
 # Starforge 差距分析（GAP-ANALYSIS）
 
-> 分析日期：2026-11-18  
-> 分析对象：`/workspace/nms/starforge`（`main` @ `3e2a7a5` + 工作区未提交改动）  
-> 分析方式：**只读**。未修改代码、未 commit/push、未构建。本文是唯一新增文档。  
+> 分析日期：2026-11-18；**状态复核 2026-11-19**
+> 分析对象：`/workspace/nms/starforge`（`main` @ `3e2a7a5` + 工作区未提交改动）
+> 分析方式：**只读**。未修改代码、未 commit/push、未构建。
+> 说明：2026-11-19 只按当前工作区代码复核表格与结论；**不代表 Windows 实机通过**。
 > 参考项目：`/workspace/nms/Gagarin_Titov`、`/workspace/nms/NMS-Shipwright`、`/workspace/nms/NMS-Super-Ship-Hunter`；社区资料见文末“参考来源”。
 
 ---
 
 ## 0. 执行摘要
 
-当前 starforge 已经完成“离线搜索 + 原生 3D 几何 + 存档读写 + 星系生成 + 符文解码 + 应用内 agent 雏形”的主干，但**产品闭环仍缺三块**：
+当前 starforge 已经完成“离线搜索 + 原生 3D 几何 + 存档读写 + 星系生成 + 符文解码 + 应用内 agent”的主干；**2026-11-19 复核后，原先的三块前端/安全缺口大部分已接**：
 
-1. **界面没有接完后端**：`services` 里已有 `apply_class`、`creatures`、`live_push`、`live_template_mod`、`start_galaxy_scan`、`diagnostics` 等能力，但原生页面没有入口；README/PLAN 宣称的“送进游戏”“同伴”“船级修改”在 UI 上并不存在。
-2. **星系扫描与银河索引断开**：`GalaxyPage._scan` 调的是 `start_system_scan`（只返回命中、不落库），而“银河索引”查询/CSV 读的是 `galaxy.db`。用户扫完再查索引通常会为空（除非此前通过 API/CLI 写过库）。这是当前最影响可信度的功能 bug。
-3. **agent 只有“代码”没有“实机证明”**：`starforge_agent.py` 的 `teleport/restore/scan` 已写好，但 `live/builds/185034.json` 仍是 `unverified`，`live_capabilities` 却按 agent `hello` 的 `true` 显示可用；没有 build 闸门、没有多人模式强制、没有 token/端口防护，也没有 Windows 实机回归记录。
+1. **界面已接的后端**：ShipLab 的种子→星系反查、搜索估算、并行线程、收藏/收藏夹、分享码、2–3 艘对比、可访问性；Fleet 的护卫舰/多用途工具/货船只读标签与库存/词语/知识/任务/奖励扩展编辑；Designer 的 `.nmsdesign.json` 保存/载入与写入新槽/替换槽/涂装；Settings 的 `confirm_writes/backup_keep/workers`、build/agent 状态、日志复制/摘要、诊断 ZIP。上述写操作均走备份/确认/读回/回滚，但**未在 Windows 实机验证**。
+2. **星系扫描已入库**：`GalaxyPage._scan` 现调用 `services.start_galaxy_scan` 写入 `galaxy.db`，并提供「取消扫描」；「银河索引」查询/CSV 与扫描同源。剩余小缺口：扫描进度可能到结束才更新（子进程未流式上报）。
+3. **agent 安全/韧性已补，但仍未实机证明**：已有一次性 token（query）、5000 端口冲突检测、快照持久化、写后位置读回、build 闸门、多人闸门、runtime manifest。`live/builds/185034.json` 仍是 `unverified`，因此传送/还原/扫描仍只能标“代码已接、未实机验证”。
 
-此外，131 MB 包体存在明确可削减项（尤其 `--collect-all unicorn` 很可能把 50 MB 的 `unicorn.lib` 和头文件收进包），UI 的空态/错误态/键盘/可访问性仍停留在“能点”的水平，3D 只有“几何 + 平涂配色”，没有游戏贴图。
+仍缺后端/入口：货船/护卫舰/中队写回、同伴写回/3D、行星天气/资源/3D 字段、银河地图、原生“送进游戏（模板槽）”入口。131 MB 包体、空态/键盘/可访问性、3D 贴图仍按原计划推进。
 
-**结论：P0 应先修正确性与安全，P1 再补离线闭环，P2 才进入实机 agent 深水区；未实机校准的传送/扫描/建造不能标记为完成。**
+**结论：离线 P0/P1 多数已落地；下一优先级是 Windows 实机回归 agent（R3–R6），未通过前不能把传送/扫描/建造标 ✅。**
 
 ---
 
@@ -47,7 +48,7 @@
 ### 1.3 重要前提与声明
 
 - 仓库里没有 `dist/`，无法逐字节核对 131 MB 包。本文的包体构成按 `.github/workflows/release.yml` 的 PyInstaller 参数 + Windows wheel 体积**估算**，并给出可验证的削减方法；最终应以 `pyi-archive_viewer` 或解压目录实测为准。
-- 当前工作区有未提交改动（`ship_lab.py` 收藏/分享、`favorites.py`、`backup.py`、`galaxy.py` 银河索引、`settings.py` 重构等）。本文按**当前工作区**实现判断，不按 `HEAD` 判断；因此 `FEATURE-MAP.md` 的“占位”描述已经部分过时。
+- 当前工作区有未提交改动（`ship_lab.py` 收藏/分享/反查/对比、`fleet.py` 标签与编辑、`ship_designer.py`/`design_write.py`、`save/extras.py`、`settings.py`、agent token/闸门/快照、`packaging/launcher.py`、`page.py` 分栏记忆等）。本文按**当前工作区**实现判断，不按 `HEAD` 判断；`FEATURE-MAP.md`/`CAPABILITIES.md` 已同步复核。
 - “守卫舰”在本文按三种可能分别讨论：**哨兵拦截机（Sentinel Interceptor）**、**护卫舰 Corvette**、**舰队护卫舰 Frigate / 货船 Freighter**。请在后续需求中明确具体指哪一个。
 
 ---
@@ -60,22 +61,22 @@
 |---|---|---|---|
 | 按部件/涂装搜种子 | ✅ | `starforge/search.py:run` → `nms_procgen.fastsearch.fast_search`；`starforge/app/pages/ship_lab.py:_start_search` | 搜索主链可用；搜索预算/时间限制有 UI |
 | 想要/不要条件 | ✅ | `ShipLabPage._checked`、`SearchQuery.want/avoid`、`search.validate` | 同插槽组多选只在提交时由后端拒绝，UI 无即时提示 |
-| 涂装筛选（主色/副色） | 🟡 | `search.look_kind/colour_matches`；UI `ShipLabPage._pick_color` | **UI 只把主色传给 `look`**，副色按钮存在但 `_start_search` 未使用；无索引模式、undercoat、mode、容差滑块 |
-| 多核搜索 | 🟡 | `fast_search(workers=...)` | `Services._query` 默认 `workers=1`，UI 不传 `workers`；实际基本单核 |
-| 搜索进度/ETA/取消 | 🟡 | `jobs.Job.update`、`fast_search(should_stop)`、`ShipLabPage._poll_job` | 有进度；**UI 没有取消按钮**，`JobDock` 也不能取消 |
-| 搜索估算 | 🟡 | `services.search_estimate`、`search.explain` | 后端有，原生 UI 未调用 |
-| 结果网格/列表 | ✅ | `QListWidget` + `ShipCardDelegate` + `install_card_delegate` | 无排序、筛选、多选、对比 |
+| 涂装筛选（主色/副色） | ✅ | `search.look_kind/colour_matches`；`ShipLabPage._start_search` | 主色/副色/容差已传入 `look`；索引模式/undercoat 仍未做 |
+| 多核搜索 | ✅ | `fast_search(workers=...)`；`ShipLabPage` 线程数 | UI 传 `workers`，默认 min(4, CPU)，设置页可覆盖；实机吞吐未回归 |
+| 搜索进度/ETA/取消 | ✅ | `jobs.Job.update`、`fast_search(should_stop)`、`ShipLabPage._poll_job` | 进度/估算/取消已接；取消为协作式，当前轮次完成后停止 |
+| 搜索估算 | ✅ | `services.search_estimate`、`search.explain`；`ShipLabPage._show_estimate` | 条件栏显示 1 in N / 预计秒数 / 线程数 |
+| 结果网格/列表 | ✅ | `QListWidget` + `ShipCardDelegate` + `install_card_delegate` | 支持 1–3 艘多选对比；仍无排序/筛选 |
 | 缩略图 | ✅ | `services.preview_png` → `render.ship_png`；`_next_thumb` | 串行排队，30–50 ms 一个；无并发/取消 |
 | 原生 3D | 🟡 | `ShipViewer`、`services.preview_mesh` | 有几何/旋转/缩放/预设视角/自转/截图；**无贴图、无部件高亮、无 LOD** |
 | 复制种子 | ✅ | `ShipLabPage._copy_seed` | — |
-| 收藏 | 🟡 | `services/favorites.py`、`ShipLabPage._toggle_fav` | 可收藏/取消；**没有收藏列表页/管理/导入导出 UI** |
-| 分享码 | 🟡 | `favorites.encode_share/decode_share`、`_copy_share/_import_share` | 可用；无批量分享、无二维码、无版本迁移 |
-| 写回存档 | ✅ | `WriteBackDialog` → `services.apply_seed` → `save/writer.apply_seed` | 仅同型、单槽；批量/新建槽未接 |
+| 收藏 | ✅ | `services/favorites.py`、`FavoritesDialog`、`ShipLabPage._toggle_fav` | 收藏/取消/收藏夹载入已接；无批量导入导出 |
+| 分享码 | ✅ | `favorites.encode_share/decode_share`、`_copy_share/_import_share` | 复制/导入已接；仍无批量分享/二维码 |
+| 写回存档 | ✅ | `WriteBackDialog` → `services.apply_seed` → `save/writer.apply_seed` | 同型/单槽；新建槽在设计器 `apply_design`；未实机验证 |
 | 导出 glb | ✅ | `services.glb_path`、`_export_glb` | 只有路径提示，没有“打开所在文件夹” |
-| 批量导出 | 🟡 | `starforge/export.py:export_zip` | 后端完整；Fleet“导出全部”仍 `setEnabled(False)` |
-| 种子→星系反查 | 🟡 | `services.locate`、`system.locate_seed` | 后端完整；ShipLab“更多”禁用，**无 UI 入口** |
-| 设计器/任意部件组合 | ⬜ | `nms_procgen.generator`、`model3d` 可用 | 无“设计器”页面；只能搜索，不能逐部件拼装并反求 seed |
-| 对比托盘/分享码导入结果 | 🟡 | 分享码导入有；对比无 | 无多选/对比视图 |
+| 批量导出 | ✅ | `starforge/export.py:export_zip`；Fleet `_export_all` | Fleet「批量导出」已启用 |
+| 种子→星系反查 | ✅ | `services.locate`、`system.locate_seed`、`LocateDialog` | ShipLab「查星系」+ Galaxy 地址工作台已接；候选需生成器证实 |
+| 设计器/任意部件组合 | ✅ | `app/pages/ship_designer.py`、`ShipViewer`、`fastsearch` | 逐部件拼装 + 3D + 反求 seed；保存/载入/写入已接；未实机验证 |
+| 对比托盘/分享码导入结果 | ✅ | `CompareDialog`、分享码导入 | ShipLab 支持 2–3 艘对比与分享码导入 |
 
 ### 2.2 3D
 
@@ -89,7 +90,7 @@
 | 服务端渲染兜底 | ✅ | `services.preview_png`、`ShipLabPage._show_fallback` | 3D 初始化失败 1.5 s 后才检测，略慢 |
 | glb 导出 | ✅ | `preview.glb_for` → `gltf.build_glb` | glb 无贴图/无 image，仅 PBR baseColor |
 | 部件级 3D | 🟡 | `preview.part_model`、`part_png` | 只用于 26/48 px 小图标；无大图/爆炸图 |
-| 多船对比 3D | ⬜ | — | Fleet“加入对比”禁用 |
+| 多船对比 3D | ⬜ | ShipLab `CompareDialog`（并排属性/卡片） | 对比已接，但仍是 2D；无多 3D 视口 |
 | Corvette 3D | ⬜ | Shipwright `model3d.corvette_model` 可用 | 无服务/页面 |
 | 生物 3D | 🔬 | `creature.capabilities` 已判定当前不可画 | 见 2.8 |
 | LOD/实例化/大模型内存 | ⬜ | `ShipViewer._upload` 用 `glDrawArrays` 展开索引 | 索引展开使顶点内存约 ×1，但丢失复用；无 LOD/分块 |
@@ -101,17 +102,17 @@
 | 扫描存档目录 | ✅ | `save/library.scan_dir`、`probe/classify` | 能区分 player/account/manifest；UI 未使用完整扫描 |
 | 读船列表/属性 | ✅ | `save/library.open_ships`、`nms_save.ships.list_ships/ship_stats` | 带缓存；固定模型有警告 |
 | 同型换种子写回 | ✅ | `save/writer.apply_seed` | 备份→原子写→读回→回滚；跨型拒绝 |
-| 船级/属性写回 | 🟡 | `save/writer.apply_class`、`services.apply_class` | **后端完整，无 UI**；Fleet/ShipLab 都没有入口 |
-| 备份列表/恢复 | ✅ | `save/writer.backups/restore`、`app/dialogs/backup.py` | 新增对话框已接；无保留策略/批量清理 |
+| 船级/属性写回 | ✅ | `save/writer.apply_class`、`ClassEditorDialog` | Fleet Inspector 已接；备份/确认/读回/回滚；未实机验证 |
+| 备份列表/恢复 | ✅ | `save/writer.backups/restore`、`BackupDialog` | 已接；`backup_keep` 在 writer 中清理旧备份 |
 | 默认存档选择 | 🟡 | `save/library.default_save_path` | 只优先 `save.hg/save2.hg`；UI 不能切换多个存档槽 |
-| 新建/删除/改名飞船 | ⬜ | Shipwright `ships.create_ship/remove_ship/set_ship_name` | 无服务封装/UI |
-| 涂装写回/清除 | ⬜ | Shipwright `ships.set_ship_paint/clear_ship_paint/set_texture_options` | 无 UI；`paint.look` 只读 |
-| 库存/物品编辑 | ⬜ | Shipwright `items.edit_inventory/list_inventories` | 未接 |
-| 解锁/词语/任务/奖励 | ⬜ | Shipwright `extras.learn_all/learn_words`、`quests.skip_quests`、`extras.rewards` | 未接 |
-| 多工具/货船/护卫舰/中队 | ⬜ | Shipwright `extras.multitools/edit_multitool`、`frigates/edit_frigate`、`ships.get_freighter/set_freighter` | 未接 |
+| 新建/删除/改名飞船 | 🟡 | `apply_design`、`ships.create_ship`、`SaveEditDialog` | 新建（设计器）与改名（存档编辑）已接；删除未接；未实机验证 |
+| 涂装写回/清除 | 🟡 | `nms_ships.set_ship_paint`；`DesignWriteDialog`/`SaveEditDialog` | 写入主/副色已接（槽位 0–11）；清除/纹理选项未接；未实机验证 |
+| 库存/物品编辑 | ✅ | `save/extras.py`、`SaveExtrasDialog` | 库存列表/格子/编辑已接；统一事务与读回；未实机验证 |
+| 解锁/词语/任务/奖励 | ✅ | `save/extras.py`、`SaveExtrasDialog` | 词语/知识/任务/奖励已接；未实机验证 |
+| 多工具/货船/护卫舰/中队 | 🟡 | `services.fleet_extras`、Fleet 标签页 | 多工具/货船/护卫舰**只读**已接；写回/中队未接 |
 | 同伴写回 | ⬜ | Shipwright `extras.edit_companion` | 未接；当前 `creature` 只读 |
-| JSON 导出/导入/原始编辑 | ⬜ | Shipwright `extras.browse/get_path/set_path` | 未接 |
-| 冷传送（改存档位置） | ⬜ | NMSCoordinates 路线；Shipwright 无 setter | 需逆向/验证玩家位置字段；有存档损坏风险 |
+| JSON 导出/导入/原始编辑 | ⬜ | Shipwright `extras.browse/get_path/set_path` | 未接；设计器 `.nmsdesign.json` 是独立设计文件，不是存档原始编辑 |
+| 冷传送（改存档位置） | ⬜ | NMSCoordinates 路线；Shipwright 无 setter | 仍需逆向/验证玩家位置字段；有存档损坏风险 |
 | Steam Cloud 覆盖检测 | ⬜ | — | 写后可能被云存档回滚；需检测/提示 |
 | 游戏运行中写入拦截 | ✅ | `save/writer.game_running` | Windows Toolhelp；Linux /proc 兜底 |
 
@@ -122,13 +123,13 @@
 | 自动找存档/读船 | ✅ | `FleetPage._auto/_load`、`services.default_save/ships` | 只能用一个默认存档 |
 | 卡片/列表切换 | ✅ | `FleetPage._apply_view_mode`、`ShipCardDelegate` | — |
 | 缩略图/3D/属性 | ✅ | `_next_thumb`、`_select` → `preview_mesh` | 串行缩略图；3D 同 2.2 |
-| 备份/恢复 | ✅ | `FleetPage._open_backups` → `BackupDialog` | 新增；无“保留 N 份”设置 |
-| 批量导出 | 🟡 | `export.export_zip` 后端 | 按钮禁用 |
-| 多船对比 | ⬜ | — | 对比按钮禁用 |
-| 船级/改名/涂装编辑 | ⬜ | `apply_class` 后端 | 无 UI |
-| 多选/排序/筛选 | ⬜ | — | 只能单选 |
-| 护卫舰/货船标签页 | ⬜ | Shipwright `extras.frigates`、`ships.get_freighter` | 无页面 |
-| 同伴标签页 | ⬜ | `services.creatures` 后端 | 无页面；见 2.8 |
+| 备份/恢复 | ✅ | `FleetPage._open_backups` → `BackupDialog` | 已接；设置页有 `backup_keep` |
+| 批量导出 | ✅ | `export.export_zip`；`FleetPage._export_all` | 按钮已启用 |
+| 多船对比 | 🟡 | ShipLab `CompareDialog` | ShipLab 支持 2–3 艘；Fleet 仍无对比入口 |
+| 船级/改名/涂装编辑 | ✅ | `ClassEditorDialog`、`SaveEditDialog`、`apply_class` | 已接；备份/确认/读回/回滚；未实机验证 |
+| 多选/排序/筛选 | 🟡 | `FleetPage.sort_mode` | 排序已接；多选/筛选未接 |
+| 护卫舰/货船标签页 | ✅ | `services.fleet_extras`、Fleet 标签页 | 护卫舰/多用途工具/货船只读已接 |
+| 同伴标签页 | ✅ | `services.creatures`、Fleet 标签页 | 只读已接；写回/3D 见 2.8 |
 | 中队/僚机 | ⬜ | NMSSaveEditor 路线 | 未做 |
 
 ### 2.5 星球
@@ -136,17 +137,17 @@
 | 功能 | 状态 | 现有实现（文件:函数） | 缺口/说明 |
 |---|---|---|---|
 | 当前星系/行星表 | ✅ | `GalaxyPage._load_current` → `services.system`（子进程） | 群系/哨兵/资源/dissonant 有；天气/动植物缺 |
-| 按条件扫描 | 🟡 | `GalaxyPage._scan` → `services.start_system_scan` → `system.scan` | 能出结果；**不落库**；radius 固定 0；无中心/半径选择 |
-| 扫描进度 | ⬜ | `GalaxyPage._poll_scan` 读 `job.progress` | `start_system_scan` 在子进程里没有 `job`，**进度直到结束才更新** |
-| 扫描取消 | ⬜ | `Job.cancel` 只设事件 | 子进程不读事件；UI 无取消按钮 |
-| 银河索引查询 | ✅ | `GalaxyPage._query_index` → `services.galaxy_query` → `GalaxyStore.query` | 新增；但索引通常为空，见下 |
-| 扫描入库 | ⬜ | `services.start_galaxy_scan` → `galaxy.scan` | **后端存在但 UI 未调用**；这是索引空白的根因 |
-| CSV 导出 | 🟡 | `services.galaxy_export_csv`、`GalaxyPage._export_*` | 导出的是 `galaxy.db`；扫描不入库时导出空 |
+| 按条件扫描 | ✅ | `GalaxyPage._scan` → `services.start_galaxy_scan` → `galaxy.scan` | 已落库；radius 仍固定 0/无中心选择 |
+| 扫描进度 | 🟡 | `GalaxyPage._poll_scan` 读 `job.progress` | 子进程未流式上报，进度可能到结束才更新 |
+| 扫描取消 | 🟡 | `GalaxyPage._cancel_scan`、`Job.cancel` | 有取消按钮；子进程未接收 job 事件，实际可能跑完本次扫描 |
+| 银河索引查询 | ✅ | `GalaxyPage._query_index` → `services.galaxy_query` → `GalaxyStore.query` | 已接；与扫描入库同源 |
+| 扫描入库 | ✅ | `services.start_galaxy_scan` → `galaxy.scan` | UI 已调用；索引随扫描增长 |
+| CSV 导出 | ✅ | `services.galaxy_export_csv`、`GalaxyPage._export_*` | 导出当前筛选的银河索引 |
 | 行星详情（天气/资源/动植物） | 🟡 | `system.PLANET_FIELDS` 明确 `need_game` | 离线拿不到；只能 agent `planet` 补 |
 | 行星 3D/地表/资源分布 | ⬜ | Shipwright `systemgen`/`model3d` 无行星地表 | 需新生成器/agent；不在当前范围 |
-| 种子→星系反查 | 🟡 | `system.locate_seed` | 无 UI 入口 |
-| 传送地址/航线提示 | 🟡 | `system.locate_seed` 返回 `portal_hint` | UI 未显示 |
-| 符文置顶浮窗 | 🟡 | `app/overlay.py`、CLI `glyph-overlay` | 页面无按钮；见 2.6 |
+| 种子→星系反查 | ✅ | `system.locate_seed`、`LocateDialog`、地址工作台 | ShipLab 与 Galaxy 均有入口 |
+| 传送地址/航线提示 | 🟡 | `system.locate_seed` 返回 `portal_hint`；地址工作台 | 符文/坐标已显示并可复制；航线提示仍有限 |
+| 符文置顶浮窗 | ✅ | `app/overlay.py`、`GalaxyPage._show_overlay` | 页面按钮已接；Windows 实机未回归 |
 | nmsce 社区坐标导入 | ⬜ | — | 网络/第三方；可选 P3 |
 | 星系图/银河地图 | ⬜ | — | 无可视化地图；仅表格 |
 
@@ -157,38 +158,38 @@
 | UA/地址→12 位符文 | ✅ | `glyphs.digits_for/glyphs_for_ua` | 按位段重排；有测试 |
 | 游戏原版图标（BC7） | ✅ | `glyphs.icon_rgb/_decode_dds` | 缺 `texture2ddecoder`/pak 时退回位图字体 |
 | 12 联符文图 | ✅ | `glyphs.panel_png/panel_payload` | 页面可显示/复制 |
-| 复制符文 | 🟡 | `GalaxyPage._copy_glyph` 从 badge 文本按 `·` 分割 | 脆弱；应保存 `glyphs` 字段而不是解析 UI 文本 |
-| 置顶浮窗（Qt） | ✅ | `app/overlay.py:GlyphOverlay`、`__main__.cmd_glyph_overlay` | 仅 CLI；点击穿透/透明度/缩放只有 CLI 参数 |
-| 页面内“置顶显示” | ⬜ | — | 无按钮；`services` 没有 overlay 方法 |
-| 跟随选中自动更新 | ⬜ | — | 浮窗是一次性快照 |
+| 复制符文 | ✅ | `GalaxyPage._copy_glyph` / 地址工作台 | 使用已保存的 `glyphs` 字段；不再解析 UI 文本 |
+| 置顶浮窗（Qt） | ✅ | `app/overlay.py:GlyphOverlay`、`__main__.cmd_glyph_overlay`、Galaxy 按钮 | CLI + 页面入口；点击穿透/透明度/缩放仍只有 CLI 参数 |
+| 页面内“置顶显示” | ✅ | `GalaxyPage._show_overlay` | 页面按钮已接（独立 Qt 窗口）；未实机回归 |
+| 跟随选中自动更新 | ⬜ | — | 浮窗仍是一次性快照 |
 | 多显示器/位置记忆 | ⬜ | `GlyphOverlay` 只用 `primaryScreen` 居中 | 无记忆/多屏选择 |
-| 透明度/大小设置 | 🟡 | CLI `--alpha/--scale` | 无设置页/持久化 |
+| 透明度/大小设置 | 🟡 | CLI `--alpha/--scale` | 页面未提供持久化设置 |
 
 ### 2.7 游戏内 agent
 
 | 功能 | 状态 | 现有实现（文件:函数） | 缺口/说明 |
 |---|---|---|---|
-| 运行时检测/安装 | 🟡 | `live/agent_install.runtime_python/bootstrap_runtime` | 正常包内置；损坏时联网下载；版本不一致（见 6） |
-| Mod 安装/注入/停止 | 🟡 | `install_mod/launch/stop` | `launch` 是 pymhf 子进程；`stop` 只杀 launcher，未必解注入 |
-| 连接状态/能力表 | 🟡 | `GameLinkPage.refresh`、`services.live_capabilities`、`agent.hello` | 能显示三步状态；能力表信任 agent 的 `true` |
+| 运行时检测/安装 | 🟡 | `live/agent_install.runtime_python/bootstrap_runtime`、`runtime_report` | 正常包内置；损坏时联网下载；已有 runtime manifest 对比；未实机验证 |
+| Mod 安装/注入/停止 | 🟡 | `install_mod/launch/stop` | `launch` 是 pymhf 子进程；`stop` 只杀 launcher，未必解注入；未实机验证 |
+| 连接状态/能力表 | ✅ | `GameLinkPage.refresh`、`services.live_capabilities`、`agent.hello` | 已合并 build/多人闸门，能力项带 `blocked_by`；显示层已接，未实机 |
 | 读玩家/星系/行星/船槽 | 🟡 | `agent.player/system/planet/ships`、`GameLinkPage._read` | 代码存在；**未实机验证** |
-| 传送/还原 | 🟡 | `agent.teleport/restore`、`GameLinkPage._teleport` | 代码存在；快照仅内存；无多人/ build 闸门；未实机验证 |
-| 扫描读取/即时扫描 | 🟡 | `agent.scan/scan_instant` | `scan.discover` 明确 `false`；未实机验证 |
+| 传送/还原 | 🟡 | `agent.teleport/restore`、`GameLinkPage._teleport` | 已有持久化快照/build+多人闸门/写后位置读回；**未实机验证** |
+| 扫描读取/即时扫描 | 🟡 | `agent.scan/scan_instant` | `scan.discover` 仍 `false`；未实机验证 |
 | 扫描发现写入 | ⬜ | `agent.scan` 只读 | 需发现管理器偏移 |
 | 位置传送（x,y,z/落点） | ⬜ | 协议有 `teleport.position` | agent 未实现 |
 | 任意建造/改色/解上限/HUD | ⬜ | `PLAN-V4` M7 | 未实现 |
-| 多人模式强制禁用 | ⬜ | `hello` 返回 `multiplayer` | 命令没有检查；文档说会禁用，代码未做 |
-| build 校验/未知 build 只读 | ⬜ | `live/build.py` 有 `write_allowed` | `agent_call`/UI 未使用；`185034.json` 仍 `unverified` |
-| 本机 HTTP 安全 | ⬜ | `AgentClient.DEFAULT_BASE` 固定 5000 | 无 token、无 Host/Origin 校验；同机任意进程可调用 |
-| agent 日志/健康 | 🟡 | `launcher.log` | UI 不展示；无 tail/copy |
+| 多人模式强制禁用 | ✅ | `services.live_capabilities`、`agent._multiplayer_block` | 高风险命令已拒绝；UI 显示 `blocked_by=multiplayer`；未实机 |
+| build 校验/未知 build 只读 | ✅ | `live/build.py`、`services.agent_call`、`live_capabilities` | 写命令已查 `write_allowed`；`185034.json` 仍 `unverified`；未实机 |
+| 本机 HTTP 安全 | 🟡 | `AgentClient` token、`agent_install` 端口检测 | 一次性 token（query）+ 5000 冲突检测；Host/Origin 与随机端口仍未做 |
+| agent 日志/健康 | ✅ | `launcher.log`、`services.agent_log_tail` | 设置页可复制最近日志/查看 launcher.log 摘要 |
 | 卸载/还原 | 🟡 | `uninstall_mod` 存在 | 无 UI；不涉及 winmm.dll（与部分文档描述不一致） |
 
 ### 2.8 生物/同伴
 
 | 功能 | 状态 | 现有实现（文件:函数） | 缺口/说明 |
 |---|---|---|---|
-| 读存档同伴 | ✅ | `creature.companions`、`services.creatures` | 后端完整；**无 UI 页面** |
-| 生物角色表/结构 | ✅ | `creature.role_names/role_table` | 后端可读 86 条；无 UI |
+| 读存档同伴 | ✅ | `creature.companions`、`services.creatures`、Fleet「同伴」标签 | 只读已接 |
+| 生物角色表/结构 | ✅ | `creature.role_names/role_table`、Fleet 同伴标签 | 后端可读；UI 只读 |
 | 能力边界诚实报告 | ✅ | `creature.capabilities` | 明确 `preview_possible=False` |
 | 同伴写回（名字/体型/种子/描述符） | ⬜ | Shipwright `extras.edit_companion` | 未接 |
 | 按外观搜同伴 | ⬜ | NMSCD Creature Builder 路线 | 需要描述符/生成器 |
@@ -200,13 +201,13 @@
 
 | 功能 | 状态 | 现有实现（文件:函数） | 缺口/说明 |
 |---|---|---|---|
-| 逐部件拼装飞船 | ⬜ | `parts.tree`、`model3d.ship_model` 可用 | 无设计器页面；ShipLab 只能勾条件搜索 |
-| 选型即时 3D | ⬜ | `ShipViewer.set_mesh` 可复用 | 无“未选 seed 的部件组合”预览 |
-| 由设计反求 seed | 🟡 | `fastsearch`/`generator` 可支持 | 无 UI/服务编排 |
-| 新建飞船到存档槽 | ⬜ | Shipwright `ships.create_ship` | 未接 |
-| 设计保存/载入 | ⬜ | Shipwright `designs`/webapp routes | 未接 |
+| 逐部件拼装飞船 | ✅ | `app/pages/ship_designer.py`、`parts.tree` | 每组单选；实时 3D |
+| 选型即时 3D | ✅ | `ShipDesignerPage._preview`、`ShipViewer` | 无 seed 的部件组合预览已接 |
+| 由设计反求 seed | ✅ | `ShipDesignerPage._start_search` → `fastsearch` | 搜索并选用种子；未实机验证 |
+| 新建飞船到存档槽 | ✅ | `services.apply_design` → `ships.create_ship` | 新槽/替换槽/涂装已接；未实机验证 |
+| 设计保存/载入 | ✅ | `.nmsdesign.json`、`design_payload/load_design_file` | 本地文件；不写存档 |
 | 设计分享码 | 🟡 | `favorites` 分享 seed/parts | 不是完整设计文件；无版本 |
-| 改色/涂装 | ⬜ | Shipwright `set_ship_paint` | 未接 |
+| 改色/涂装 | ✅ | `nms_ships.set_ship_paint`、`DesignWriteDialog` | 主/副色/调色板；槽位 0–11；未实机验证 |
 | Corvette 设计器 | ⬜ | `corvette_parts`、`corvette_model`、`nms_save.corvette` | 未接 |
 | 货船/护卫舰拼装 | ⬜ | Shipwright 提供部分数据 | 未接 |
 
@@ -218,8 +219,8 @@
 | 哨兵拦截机外观/种子 | ✅ | `ShipRef`/`model3d` | 已有 |
 | Corvette 读取 | ⬜ | `nms_save.corvette.layouts/modules` | 无 UI/服务 |
 | Corvette 建造/写回 | ⬜ | `nms_save.corvette.place/move/replace/write_both` | 无 UI |
-| Frigate 列表/属性/修复 | ⬜ | `nms_save.extras.frigates/edit_frigate` | 无 UI |
-| Freighter 读取/写入 | ⬜ | `nms_save.ships.get_freighter/set_freighter` | 无 UI |
+| Frigate 列表/属性/修复 | 🟡 | `nms_save.extras.frigates`、`services.fleet_extras` | 列表/属性只读已接；修复/写回未接 |
+| Freighter 读取/写入 | 🟡 | `fleet_extras`、`ships.get_freighter/set_freighter` | 读取只读已接；写入未接 |
 | 中队/僚机 | ⬜ | NMSSaveEditor 路线 | 无 |
 | 游戏内实机验证 | ⬜ | — | 全部未验证 |
 
@@ -230,14 +231,14 @@
 | 游戏/存档/数据路径 | ✅ | `SettingsPage._load/_save`、`settings.update` | 有原生目录选择 |
 | 自动检测 | ✅ | `settings.autodetect`、`locate_game` | 有 |
 | 写入开关 | ✅ | `settings.require_write` | 有 |
-| 二次确认配置 | 🟡 | `settings.confirm_writes` | 无 UI；写回对话框硬编码确认 |
-| 备份保留数 | 🟡 | `settings.backup_keep` | 无 UI；`writer` 也没实现清理 |
+| 二次确认配置 | ✅ | `settings.confirm_writes`、`SettingsPage` | 设置页已接；写入对话框仍各自确认 |
+| 备份保留数 | ✅ | `settings.backup_keep`、`writer._backup` | 设置页已接；writer 按保留数清理 |
 | 主题/外观 | ⬜ | `settings.theme` 字段 | 无主题切换；QSS 固定深色 |
 | 端口 | 🟡 | `settings.port` | Web 用；原生/agent 未用 |
-| 性能（workers/缓存） | ⬜ | — | 无 |
-| 实验性开关 | ⬜ | — | 传送/扫描/建造没有统一开关 |
+| 性能（workers/缓存） | ✅ | `settings.workers`、`SettingsPage` | 搜索线程数可设；缓存清理仍无 |
+| 实验性开关 | 🟡 | `settings.allow_unverified_agent` | 未验证 build 实验写开关已在 GameLink 暴露；建造/改色仍无 |
 | 缓存清理/重置 | ⬜ | — | 无 |
-| 更新检查 | ⬜ | README 提到“检查更新” | 未实现 |
+| 更新检查 | ⬜ | — | 未实现；README 已不再声明“检查更新” |
 | 语言 | ⬜ | `core/strings.py` 单点中文 | 仅中文；无切换 |
 | 关于/许可 | 🟡 | `SettingsPage` 有简短 About | 无第三方许可全文/版本列表 |
 
@@ -246,14 +247,14 @@
 | 功能 | 状态 | 现有实现（文件:函数） | 缺口/说明 |
 |---|---|---|---|
 | 环境体检 | ✅ | `Services.doctor`、`__main__.cmd_doctor` | 依赖/unicorn/systemgen/health |
-| 端到端自检 | 🟡 | `selfcheck.run`、`Services.diagnostics` | 后端完整；**Settings 未接 `diagnostics`** |
-| 路径检查 | 🟡 | `web/routes._path_checks` | 只在 Web API；原生设置没有逐项红/绿 |
-| 诊断导出 | 🟡 | `SettingsPage._export_diag` | 只导出 JSON（health/settings/doctor）；无日志/崩溃栈/build/agent 日志 |
+| 端到端自检 | 🟡 | `selfcheck.run`、`Services.diagnostics`、`export_diagnostics` | 诊断 ZIP 已包含 selfcheck；设置页没有独立“自检”按钮 |
+| 路径检查 | 🟡 | `web/routes._path_checks` | 原生设置仍无逐项红/绿 |
+| 诊断导出 | ✅ | `SettingsPage._export_diag`、`services.export_diagnostics` | ZIP：health/doctor/selfcheck/build/agent/脱敏设置/日志 |
 | 崩溃日志 | 🟡 | `app/main._enable_crash_log` | 写 `faulthandler.log`；UI 无入口查看 |
-| 日志查看/复制 | 🟡 | 打开日志目录 | 无内置 tail/搜索/复制诊断 |
+| 日志查看/复制 | ✅ | `recent_logs`、`agent_log_tail` | 复制最近日志、launcher.log 摘要、打开日志目录 |
 | webcheck/selfcheck UI | ⬜ | CLI 有 | 无按钮 |
-| build 指纹显示 | 🟡 | `live/build.py` | GameLink 状态里间接有，设置/诊断无明确展示 |
-| 一键诊断包（zip） | ⬜ | — | 无 |
+| build 指纹显示 | ✅ | `live/build.py`、`SettingsPage._format_build` | 设置页明确显示 build/验证状态 |
+| 一键诊断包（zip） | ✅ | `services.export_diagnostics` | 设置页「导出诊断包」已接 |
 
 ### 2.13 打包
 
@@ -261,7 +262,7 @@
 |---|---|---|---|
 | Windows onedir + zip | ✅ | `.github/workflows/release.yml` | PyInstaller onedir；Release zip |
 | 内置 Shipwright | ✅ | `packaging/vendor.py` | 只复制运行必需部分（~1.5 MB） |
-| 内置 agent runtime | 🟡 | `packaging/build_agent_runtime.py` | 构建 3.11.9；应用运行时期待 3.12.8（不一致） |
+| 内置 agent runtime | 🟡 | `packaging/build_agent_runtime.py`、`AGENT_RUNTIME_MANIFEST` | 构建与应用统一 3.11.9；实机未验证 |
 | 原生 Qt 依赖 | ✅ | release.yml 检查 `Qt6Core/Widgets/OpenGLWidgets` | — |
 | 安装包/签名 | ⬜ | — | 只有 zip；无 MSI/安装器/代码签名 |
 | 自动更新 | ⬜ | — | 无 |
@@ -277,7 +278,10 @@
 
 > 本节只列“需要动的缺口”。已完成项不重复。每个缺口都给出可执行的落点和验收口径；验收必须能在 CI 或 Windows 实机上复现。
 
-### G01 搜索涂装/多核/估算未接完
+### G01 搜索涂装/多核/估算
+
+> **当前状态（2026-11-19）**：已接。主/副色+容差、workers、估算、取消均进 UI；剩余是 4 核实测吞吐与估算误差回归。
+
 
 - **参考来源**：NMS-Shipwright `nms_procgen/textures.py:ship_look/look_mask`、`fastsearch.py` 多进程；Gagarin 的按颜色筛船；nmsce 按颜色/部件筛选。
 - **可行方案**：`ShipLabPage._start_search` 把 `self.secondary`、`self.look_on`、`tol`、`workers` 一起写入 payload；`Services._query` 默认 `workers=os.cpu_count()`（可设置覆盖）；启动前调 `services.search_estimate` 显示“1 in N / 预计秒数”；RGB 模式预算/候选数显示在状态栏。
@@ -285,7 +289,10 @@
 - **风险**：多核在小机器上可能拖慢 UI；RGB 后置过滤可能返回不足；需要明确“已扫候选/预算”。
 - **验收**：同一条件在 4 核机器上吞吐 ≥ 单核 1.5×；勾选副色后结果中每艘的 `look_match.secondary` 距离 ≤ tol；估算值与实测偏差 < 50%；UI 状态栏显示估算和 worker 数。
 
-### G02 任务取消/JobDock 不可操作
+### G02 任务取消/JobDock
+
+> **当前状态（2026-11-19）**：搜索取消已生效（`fast_search(should_stop)`）；JobDock 可取消任务。扫描取消按钮已接，但 `start_galaxy_scan` 的子进程尚未接收取消事件，仍可能跑完本次扫描。
+
 
 - **参考来源**：`jobs.Job.should_stop`；Shipwright webapp 的 job cancel API；UI-REDESIGN 的 JobDock。
 - **可行方案**：`JobDock` 增加“取消”按钮 → `services.cancel_job`；`Services._internal` 改为 `Popen` 并保存句柄，取消时 `terminate()`；`start_system_scan/start_galaxy_scan` 把 job 的取消映射到子进程；搜索任务保持协作式取消。
@@ -293,7 +300,10 @@
 - **风险**：强杀 Unicorn 子进程可能留下缓存半成品；需只清理临时文件。
 - **验收**：系统扫描中点取消 1 s 内 UI 显示“已取消”，子进程退出；搜索取消后 `job.status == "cancelled"`；再次扫描可正常开始。
 
-### G03 种子→星系反查没有 UI
+### G03 种子→星系反查
+
+> **当前状态（2026-11-19）**：已接。ShipLab「查星系」+ Galaxy 地址工作台；剩余是反查欠定时的文案与实机对照。
+
 
 - **参考来源**：Shipwright `nms_procgen/locate.locate` + `systemgen.confirm`；NMSCoordinates 的坐标反查/传送地址。
 - **可行方案**：ShipLab Inspector 的“更多”菜单加“查它在哪个星系”；调用 `services.locate`（子进程），结果表显示坐标/符文/where/what/visited；提供“复制符文”“置顶显示”。
@@ -302,6 +312,9 @@
 - **验收**：用存档中已知船的 seed 反查到自身星系（已有 `test_locate_real_save_ship_hits_own_system` 路线）；UI 区分“候选”和“已证实”；无结果时提示“反查欠定”而不是报错。
 
 ### G04 批量导出/对比
+
+> **当前状态（2026-11-19）**：已接。Fleet 批量导出已启用；ShipLab 支持 2–3 艘对比；Fleet 自身仍无对比入口。
+
 
 - **参考来源**：Shipwright webapp `designer`/`ships` 导出；NMS-Shipwright README 的“保存设计/分享”；NMSCoordinates 的 location JSON 分享。
 - **可行方案**：Fleet 多选 + “导出所选”调用 `export.export_zip`；对比托盘最多 3 艘，复用 `ShipViewer` 小视口 + 属性差异表；ShipLab 结果支持多选加入对比。
@@ -351,6 +364,9 @@
 
 ### G10 库存/解锁/任务/奖励
 
+> **当前状态（2026-11-19）**：已接。`SaveExtrasDialog` 覆盖库存/词语/知识/任务/奖励，统一备份/确认/读回/回滚；未实机验证。
+
+
 - **参考来源**：NMSSaveEditor；Shipwright `items.py`、`extras.py`、`quests.py`。
 - **可行方案**：分页面：库存网格（拖拽/堆叠/修复/充能）、解锁（技术/产品/词语/符文）、任务跳过、奖励（远征/Twitch/平台）。先只读渲染，再逐项开放写。
 - **依赖**：`items.inventory_caps/stat_ranges` 做区间校验；`quests.list_quests/skip_quests`。
@@ -359,6 +375,9 @@
 
 ### G11 多工具/货船/护卫舰/中队
 
+> **当前状态（2026-11-19）**：只读已接（Fleet 标签页）。写回/修复/中队仍未接，等稳定 API。
+
+
 - **参考来源**：NMSSaveEditor；Shipwright `extras.multitools/edit_multitool`、`frigates/edit_frigate`、`ships.get_freighter/set_freighter`。
 - **可行方案**：Fleet 增加“货船/护卫舰/多工具/中队”标签；先只读列表+属性，再开放改名/等级/属性/修复；货船种子/模型写回复用 `set_freighter`。
 - **依赖**：上游 API；存档字段版本。
@@ -366,6 +385,9 @@
 - **验收**：只读列表与游戏内一致；写回读回一致；失败回滚；至少一艘实机验证。
 
 ### G12 同伴写回/搜索/3D
+
+> **当前状态（2026-11-19）**：只读已接（Fleet「同伴」标签）。写回/搜索/3D 仍未做。
+
 
 - **参考来源**：NMSSaveEditor 同伴页；NMSCD Creature Builder 的部件兼容/JSON；`creature.role_table`；Shipwright `extras.edit_companion`。
 - **可行方案**：
@@ -377,6 +399,9 @@
 - **验收**：只读 29 只同伴与存档一致；改名/体型写回进游戏可见；3D 未实现时 UI 明确显示“需运行时生成器”，不画饼。
 
 ### G13 飞船设计器
+
+> **当前状态（2026-11-19）**：MVP 已接。逐部件拼装+3D、反求 seed、`.nmsdesign.json`、新槽/替换槽/涂装（备份/确认/读回/回滚）；未实机验证。
+
 
 - **参考来源**：Shipwright webapp `routes/designer.py`（design tree、model、designs、install）、`generator.py`、`fastsearch.py`；Gagarin 的 ship builder；nmsce 的按部件浏览。
 - **可行方案**：新增 `app/pages/designer.py`（或在 ShipLab 加“设计模式”）：左侧部件树（同 `parts.tree`），中间 `ShipViewer` 实时组装（需要“无 seed 的部件组合”几何：`model3d.ship_model(seed=?, parts=...)` 的 seed 取任意/0 可能不合法，需要上游支持按 parts 直接取网格；可先用 `_picked_meshes`），右侧“找这个设计”的 seed 搜索 + “写进存档”槽位选择；设计保存为 JSON（`type/parts/name`）。
@@ -434,6 +459,9 @@
 
 ### G20 agent build 闸门 / 安全 / 版本
 
+> **当前状态（2026-11-19）**：build 闸门、多人闸门、token（query）、端口冲突检测、runtime manifest 已接；随机端口/Host-Origin 校验和 Windows 实机仍未完成。
+
+
 - **参考来源**：NMS.py/NMSpy 的 build 绑定；Gagarin 的版本闸门（不支持版本不激活）；starforge `live/build.py`、`AGENT-PROTOCOL.md` 的 `E_SIGNATURE_MISSING/E_AMBIGUOUS`。
 - **可行方案**：
   - `Services.agent_call` 对写命令（`teleport/restore/scan.instant/scan.discover`）先查 `build.summary()["write_allowed"]`；未知/未验证 build 只允许只读。
@@ -445,6 +473,9 @@
 - **验收**：未验证 build 下传送按钮禁用且 API 返回明确错误；多人模式下高风险命令拒绝；无 token 的本地请求被拒；实机 build 指纹匹配后才可写。
 
 ### G21 agent 传送/扫描可靠性
+
+> **当前状态（2026-11-19）**：快照持久化、写后位置读回、失败恢复路径已接；R5/R6 Windows 实机仍未通过，所以传送/扫描保持 🟡。
+
 
 - **参考来源**：Gagarin 的传送/扫描；NMSCoordinates 的“改存档→重载”冷传送；AGENT-PROTOCOL 的 snapshot/restore。
 - **可行方案**：传送前记录 `player/system` 快照并持久化（不止内存）；写入后轮询 `player` 确认 UA/坐标变化；失败自动 `restore`；`restore` 后再读回；扫描 read 先做字段存在性探测；`scan.discover` 保持关闭直到发现管理器偏移验证。
@@ -462,6 +493,9 @@
 
 ### G23 设置项补齐
 
+> **当前状态（2026-11-19）**：`confirm_writes`/`backup_keep`/`workers`、build/agent 状态、日志入口已接；主题/缓存清理/语言/更新检查仍未做。
+
+
 - **参考来源**：UI-REDESIGN 的 Settings；NMSSaveEditor 的备份/恢复设置；Shipwright 的备份策略。
 - **可行方案**：`SettingsPage` 增加：`confirm_writes`、`backup_keep`、主题（至少深色/高对比）、worker 数、缓存目录/清理、实验性开关（agent 写/传送/扫描）、agent 运行时状态/卸载、更新检查（可选）、语言（暂不做）。
 - **依赖**：`core/settings.py` 字段；`writer` 清理备份；`services`。
@@ -469,6 +503,9 @@
 - **验收**：每项保存后立即生效/重启生效明确；`write_enabled` 默认 false；备份保留生效；缓存清理不影响存档。
 
 ### G24 诊断包/日志
+
+> **当前状态（2026-11-19）**：已接。设置页可运行体检、复制最近日志、查看 launcher.log 摘要、导出诊断 ZIP。
+
 
 - **参考来源**：Shipwright/社区工具的“导出诊断”；starforge `doctor`/`selfcheck`；`app/main._enable_crash_log`。
 - **可行方案**：设置页“导出诊断包”生成 zip：`health`、`settings`（脱敏路径）、`doctor`、`selfcheck`（可选）、`build.summary`、`agent_status`（不含 token）、最近 `starforge.log`/`faulthandler.log`/`launcher.log`、`pixmap` 截图（可选）；UI 显示 build/agent 状态；日志查看器支持 tail/copy。
@@ -490,6 +527,9 @@
 
 ### G27 空态/加载态/错误态/键盘/可访问性
 
+> **当前状态（2026-11-19）**：部分已接。`EmptyState/ErrorBanner/LoadingOverlay`、卡片 accessibleName、导航分组与分栏记忆已有；完整键盘闭环/高 DPI 截图/高对比主题仍缺。
+
+
 - **参考来源**：UI-REDESIGN 的 `EmptyState/Toast/ConfirmSheet`；NMSSaveEditor/NoMansConnect 的桌面交互；Qt 可访问性指南。
 - **可行方案**：新增 `app/widgets/states.py`（`EmptyState/ErrorState/LoadingOverlay`）与 `Toast`；所有异步调用统一 `run_worker` 的 `on_error` 映射为“原因+下一步+重试”；补 `Esc` 关闭 Inspector/Dock、结果网格方向键/Enter/W/E、`?` 快捷键帮助；给自定义 delegate/按钮加 `accessibleName/Description`；焦点顺序；高对比主题。
 - **依赖**：PySide6；现有 `worker.py`。
@@ -505,6 +545,9 @@
 - **验收**：主题切换不重启；对比度达标；不遮挡 3D/表格；可关闭。
 
 ### G29 文档漂移
+
+> **当前状态（2026-11-19）**：本批已同步 `FEATURE-MAP`/`GAP-ANALYSIS`/`CAPABILITIES`/`README`/`USAGE`；后续仍需随代码更新。
+
 
 - **参考来源**：当前 `README.md`、`FEATURE-MAP.md`、`CAPABILITIES.md`、`PLAN-V4.md`、`AGENT-PROTOCOL.md` 与代码。
 - **可行方案**：每次合并前更新 FEATURE-MAP 的“✅/🟡/⬜”与文件路径；明确“代码存在 ≠ 实机通过”；把 agent 能力表统一为 `live/build.py` 的 build 状态；删除“送进游戏已接”等未接描述；统一 Python runtime 版本。
@@ -532,14 +575,14 @@
 
 | 层 | 当前实现 | 与目标的差距 |
 |---|---|---|
-| Rail | `app/shell.py:_build_rail` 固定 `setFixedWidth(190)`，6 个 `QPushButton` | 比设计宽 118 px；占主视野；无图标/当前页琥珀竖线；无折叠 |
+| Rail | `app/shell.py:_build_rail` 固定 `setFixedWidth(190)`，7 个入口 + 「探索/资料/连接」分组 | 仍比设计宽；无图标/折叠；但分组与可访问名称已有 |
 | Command Bar | `_build_command_bar`：面包屑 + 命令按钮 + 4 个状态 chip + 任务标签/进度条 | 无通知中心/账号/日志入口；chip 只有 4 项；无“写入/agent”实时状态合并 |
-| Workspace | 每个页面自己 `QSplitter`：ShipLab `[300,700,420]`、Fleet `[300,720,420]`、Galaxy `[700,360]` | 没有统一 Inspector 组件；宽度写死；不记忆 splitter；不同页面选中对象不共享 |
+| Workspace | 每个页面自己 `PageSplitter`；宽度有默认值并写入 `native-window.ini` | 已记忆分栏；仍无统一 Inspector 组件/跨页选中共享 |
 | Inspector | ShipLab/Fleet/Galaxy 各自一个 `Card("Inspector")` | 无通用 `ShipInspector/PlanetInspector`；无折叠；无“主操作/属性/安全提示”分区 |
-| Dock | `app/widgets/job_dock.py:JobDock` 每秒轮询 `services.jobs()`，只读列表 | 无取消/重试；无日志/agent 输出；无自动弹出；折叠状态不持久 |
-| 页面 | Home/ShipLab/Fleet/Galaxy/GameLink/Settings 六页 | 缺 Designer、Companions、Fleet 子标签、收藏/最近活动 |
-| 收藏 | `services/favorites.py` + ShipLab 按钮 | 无收藏列表页；“收藏”后无处查看/管理 |
-| 最近活动 | Home 只有“第一次使用”静态提示 | 无最近搜索/写入/传送记录（`FEATURE-MAP` 已标预留） |
+| Dock | `app/widgets/job_dock.py:JobDock` 轮询 `services.jobs()` | 可取消进行中任务；仍无重试/agent 输出/自动弹出 |
+| 页面 | Home/ShipLab/Designer/Fleet/Galaxy/GameLink/Settings 七页；Fleet 含同伴/护卫舰/工具/货船标签 | 仍有 Inspector 统一化、行星详情等缺口 |
+| 收藏 | `services/favorites.py` + `FavoritesDialog` | 已可查看/载入；无批量导入导出 |
+| 最近活动 | `services/history` + Home 活动列表 | 已有搜索/写入/扫描/连接记录；可清空 |
 
 **建议**：
 
@@ -581,17 +624,18 @@
 **已有**：
 
 - `Ctrl+K` 命令面板（`shell.py`）。
-- `Ctrl+1..6` 切页（`shell.py`）。
+- `Ctrl+1..7` 切页（设计器排在 Ctrl+7，`shell.py`）。
 - `F5` 刷新健康。
 - `Ctrl+Enter` 开始搜索、`J/K` 上下选择（`ship_lab.py`）。
-- `Esc` 关闭命令面板/浮窗（`QDialog`/`GlyphOverlay`）。
+- `Esc` 关闭命令面板/浮窗，并在 ShipLab 清除结果选中。
+- `Ctrl+F` 聚焦当前页筛选；`Ctrl+Shift+T` 展开/收起 JobDock。
 
 **缺口**：
 
-- 无 `Esc` 关闭 Inspector/Dock/清除选中。
+- Inspector/Dock 仍无统一 Esc 语义（ShipLab 已可清除选中）。
 - 结果网格无方向键/Enter 打开 3D/W 写回/E 导出（UI-REDESIGN 明确要求）。
 - 无 `?` 快捷键帮助/快捷键列表。
-- 命令面板只有 10 个固定动作，不能搜部件/种子/页面内操作；无最近命令。
+- 命令面板仍是固定页面动作，不能搜部件/种子/页面内操作；无最近命令。
 - `QShortcut("J")` 绑定在 `self.results`，焦点在部件树/搜索框时无效；`K` 同。
 - 无 Tab 顺序管理；自定义 delegate 卡片无法用键盘高亮内部按钮。
 
@@ -601,7 +645,7 @@
 
 **现状**：
 
-- 自定义 `ShipCardDelegate.paint` 手绘文字，未设置 `Qt.AccessibleText`/`accessibleName`；屏幕阅读器只能读到 item 的 `DisplayRole`（seed），读不到类型/等级。
+- `set_card_accessibility` 已给结果卡片写 `AccessibleText/Description`（种子/类型/等级/对比状态）；其它自绘控件仍需补。
 - 状态 chip 只用颜色 + 文本；`theme.py` 的 `QLabel#chip[state]` 颜色对比度未验证；色盲用户难以区分。
 - 焦点样式只有 `QPushButton:focus` 等，`QListWidget` 自定义 delegate 选中边框不等于键盘焦点。
 - 字体 `Microsoft YaHei UI` 10pt；无缩放/高 DPI 截图测试；`app/main.py` 设置 `PassThrough` 高 DPI，但无 125%/150%/200% 验收。
@@ -609,7 +653,7 @@
 
 **建议**：
 
-- 给 `QListWidgetItem` 设置 `Qt.AccessibleTextRole`/`Qt.AccessibleDescriptionRole`；`ShipCardDelegate` 在 `paint` 外提供 `displayText`。
+- 继续为其它自绘控件设置 `Qt.AccessibleTextRole`/`AccessibleDescriptionRole`。
 - 所有图标按钮加 `setAccessibleName/Description` + tooltip。
 - 主题增加高对比模式；chip 加图标/文字状态（✓/✗/!）。
 - 增加 125%/150%/200% 截图验收；`QFont` 使用 `pointSizeF` 而非固定 px。
@@ -733,41 +777,42 @@ starforge/app/pages/game_link.py
 ```
 
 - 传输是 **pymhf HTTP API**，不是 `docs/AGENT-PROTOCOL.md` 里的命名管道 C++ DLL；协议文档已注明，但两套说法容易让测试者误解。
-- agent 能力表由 `hello` 返回，`GameLinkPage` 用 `reachable and in_game` 启用按钮；**没有使用 `live/build.py` 的 `write_allowed`**。
-- `live/builds/185034.json` 的 `status` 是 `unverified`，`signatures/offsets` 为空，`capabilities` 全部 `pending`；这意味着“代码存在”但“版本未校准”。
+- agent 能力表由 `hello` 返回，`Services.live_capabilities` 再合并 `live/build.summary().write_allowed` 与多人状态；`GameLinkPage` 显示 `blocked_by` 并置灰高风险按钮。
+- `live/builds/185034.json` 的 `status` 仍是 `unverified`，`signatures/offsets` 为空，`capabilities` 全部 `pending`；因此 agent 写能力仍是“代码存在、未实机校准”。
+- 新增：一次性 token（query）、5000 端口冲突检测、`~/.starforge/agent/snapshots.json` 持久化快照、写后位置读回、runtime manifest 对比。
 
 ### 6.2 稳定性/适配问题清单
 
 | # | 问题 | 证据（文件:函数/行） | 严重度 | 建议 |
 |---|---|---|---|---|
-| A1 | **build 闸门未生效**：未知/未验证 build 仍可调用传送/扫描 | `services.agent_call` 只做命令白名单；`live_capabilities` 用 `hello` 的 `true`；`live/build.summary` 的 `write_allowed` 未被使用；`builds/185034.json:status=unverified` | P0 | `agent_call` 对写命令先查 build；`hello` 返回 build；UI 显示“未验证”；未验证只读 |
-| A2 | **NMSpy/Python 版本不一致** | `requirements.txt: NMSpy==185034.0`；`packaging/build_agent_runtime.py:VERSION="3.11.9"`；`live/agent_install.py:RUNTIME_PY_VERSION="3.12.8"`；`pymhf>=0.2.5` 未锁 | P0 | 统一一个版本矩阵；锁 `pymhf`/`fastapi`/`uvicorn`/`pydantic`；构建与应用都读同一 manifest |
-| A3 | **`install_deps` 早退，游戏更新后不会更新 NMSpy** | `agent_install.install_deps`: `if rt and _has_agent_packages(rt): return {"ok": True, "note": "运行时已内置，无需安装/更新"}` | P0 | 比较 `NMSpy` 已装版本 vs `expected_nmspy_version()`；不匹配时允许 `--force`/联网更新；内置 runtime 也要可升级 |
+| A1 | **build 闸门**：已接，`185034` 仍 `unverified` | `services.agent_call` 写命令查 `build.summary()["write_allowed"]`；`live_capabilities` 合并 build/多人；实机指纹仍未验证 | 已缓解 | 保持未验证只读；实机通过后标 `verified` |
+| A2 | **NMSpy/Python 版本矩阵** | 已统一到 `AGENT_RUNTIME_MANIFEST`（Python 3.11.9 / pymhf 0.2.5 / NMSpy 185034.0）；`requirements` 的 pymhf 仍为 `>=0.2.5` | 已缓解 | requirements 与 manifest 同源锁定；实机确认 |
+| A3 | **`install_deps` 更新策略** | `runtime_report` 已比较 Python/pymhf 与 manifest，`install_deps(force=True)` 可更新；NMSpy 版本不匹配时仍可能早退 | P1 | 用 `expected_nmspy_version()` 做强制不一致判断 |
 | A4 | **每次 status 可能重复哈希 90 MB NMS.exe** | `build.fingerprint` 无缓存；`agent_install.status` 调 `fingerprint` + `summary`；`expected_nmspy_version` 再调 | P1 | `lru_cache` 按 `(path, mtime_ns, size)`；缓存到 `~/.starforge/builds/last.json` |
 | A5 | **NMSpy 私有 API 脆弱** | agent 使用 `gameData`、`basic.cTkFixedString[0x10]("APPLOCALLOAD")`、`nms.cGcBinoculars.UpdateScanBarProgress.before`、`GetNodeAbsoluteTransMatrix(gameData.player.mRootNode)`、`ps.mShipResources`、`mbMultiplayerActive` | P0 | 每个端点独立 try/except 并返回 `capability=false`；hello 做探测；锁定 NMSpy 版本；不要用未验证的私有构造 |
-| A6 | **传送/还原没有可靠确认** | `agent.teleport` 写 `GalacticAddress` 后调 `_trigger_load()` 即返回；`restore` 只用内存 `_snapshot`；无写后 `player` 读回；无多人检查 | P0 | 传送后轮询 `player` 2–5 s 确认；快照持久化到 `~/.starforge/agent/snapshots`；多人拒绝；失败自动 restore；`scan.discover` 保持关闭 |
-| A7 | **HTTP 无认证/固定端口** | `AgentClient.DEFAULT_BASE = http://127.0.0.1:5000/StarforgeAgent`；agent endpoint 无 token；pymhf 绑定地址需核实 | P0 | 启动时生成一次性 token；`AgentClient` 带 header/query；agent 校验；端口随机/可配置；确认只绑 127.0.0.1 |
-| A8 | **多人模式只报告不拦截** | `agent.hello` 返回 `multiplayer`；`teleport/scan/scan_instant` 没有检查；文档说会禁用 | P0 | 所有 high risk 命令入口检查 `multiplayer`；UI 置灰；返回 `E_MULTIPLAYER` |
+| A6 | **传送/还原确认**：已接，待实机 | `_persist_snapshot` 先落盘再传送；`services._confirm_teleport_location` 轮询 `/player`；多人/build 已拦截 | 待实机 | R5 实机通过后才算完成 |
+| A7 | **HTTP 认证/固定端口** | 已加一次性 token（query）与 5000 冲突检测；pymhf 仍固定端口；Host/Origin 未校验 | P1 | 随机端口需 pymhf 支持；补 Host/Origin 或说明 loopback 限制 |
+| A8 | **多人模式拦截** | `services.agent_call` 对 high risk 先查 `hello.multiplayer`；agent `_multiplayer_block` 再兜底；UI 显示 `blocked_by=multiplayer` | 已缓解 | 实机确认多人检测可靠性 |
 | A9 | **进程生命周期不清** | `agent_install.launch` `Popen` + `DETACHED_PROCESS`；`stop` 只 `terminate()` launcher；无 agent 进程/注入状态；`_LAUNCH` 全局非线程安全 | P1 | 记录 launcher PID + agent 连接状态；停止时先请求 `/shutdown`（若支持）再杀；UI 显示“注入器/agent”分离状态 |
 | A10 | **pymhf questionary hack** | `env["PYTEST_VERSION"]="1"` 绕过 import 期提示；`build_agent_runtime.py` 同样 | P1 | 用 pymhf 官方非交互配置/CLI 参数；若必须 hack，加注释与版本测试 |
 | A11 | **Unicorn VEH/faulthandler 冲突** | `services._internal` 子进程 + `PYTHONFAULTHANDLER=0`；`cmd_internal` 再 `faulthandler.disable()`；changelog 提到 `0xC0000409` | P0 | `unicorn` pin 到实测版本（如 `2.0.1.post1` 或当前验证版）；子进程隔离保留；加崩溃回归；不要在主进程跑 `systemgen` |
 | A12 | **systemgen 没有 build 闸门** | `systemgen.py` 注释 “offsets are load-bearing”；`system.available()` 只查 `NMS.exe`；`exeaddr.py` 按 build 找地址但无失败即只读 | P0 | 用 `build.fingerprint` 标记 `systemgen` 支持矩阵；未知 build 只读/禁用扇扫；输出 `build_id`；实机对表 |
-| A13 | **agent 日志不可见** | `launch` 写 `~/.starforge/agent/launcher.log`；GameLink 只显示 HTTP JSON | P1 | GameLink 增加日志 tail/打开/复制；诊断包包含 launcher.log |
+| A13 | **agent 日志不可见** | 设置页已可复制最近日志/查看 launcher.log 摘要；诊断 ZIP 含日志；GameLink 页仍有自己的 JSON 日志 | 已缓解 | GameLink 可复用设置页日志入口 |
 | A14 | **卸载/还原不完整** | `uninstall_mod` 只删 `starforge_agent.py`；不涉及 pymhf 注入/运行时；文档提“还原 winmm.dll”与实际不符 | P1 | UI 提供“停止/卸载/删除运行时”；明确 pymhf 注入不会改 winmm.dll；清理 `~/.starforge/agent` |
 | A15 | **agent 正常运行依赖“已进存档”** | `GameLinkPage` 用 `hello.in_game` 启用；`_location` 在 `player_state is None` 时失败 | P1 | UI 明确“载入存档后”；轮询 hello；不要显示“已连接”就以为可读 |
-| A16 | **端口 5000 冲突** | 固定 5000；常见开发端口 | P1 | 随机端口 + 写入状态文件；`AgentClient` 读取 |
+| A16 | **端口 5000 冲突** | `port_available/requested_port` 启动前检测；若已有 starforge agent 可复用；pymhf 仍固定 5000 | 部分缓解 | 随机端口需 runtime 支持 |
 | A17 | **agent 代码与文档能力表不一致** | `__main__.cmd_agent` 打印 13 项全部 `available=False`（旧 DLL 路线）；实际 pymhf agent `hello` 返回 `teleport/scan=true` | P1 | CLI `agent hello` 改为读真实 HTTP（若已连接）或明确“未连接”；统一能力表 |
-| A18 | **NMSpy 版本号可能不是游戏 build** | `expected_nmspy_version` 用地址书 `build` 或 PE version；185034.json 的 `build` 是 185034；PyPI NMSpy 版本号体系可能不同 | P0 | 用 `importlib.metadata.version("NMSpy")` 与 `nmspy.__version__` 双校验；建立 build→NMSpy 映射表；不要用 PE FileVersion 猜 |
+| A18 | **NMSpy 版本号映射** | `AGENT_RUNTIME_MANIFEST["nmspy_by_build"]` 已集中映射；`runtime_report` 双读 dist-info/模块版本；仍需实机确认 | 部分缓解 | 实机对照已装版本与游戏 build |
 
 ### 6.3 版本矩阵建议
 
 | 组件 | 当前 | 建议 |
 |---|---|---|
-| Python（主程序） | 3.11/3.12/3.13 开发机混用 | 构建固定 3.11.x 或 3.12.x；CI 与 runtime 一致 |
-| agent runtime | 构建 3.11.9；应用下载 3.12.8 | 统一为同一个 `3.11.x`（NMSpy/pymhf 验证过的版本） |
-| NMSpy | `185034.0`（requirements） | 与游戏 build 一一映射；`185034` 通过实机后标 `verified`；未知 build 只读 |
-| pymhf | `>=0.2.5` | 锁到实测版本（如 `0.2.x` 具体 patch）；记录 `http_api` 兼容 |
-| unicorn | `>=2.0` | 锁到实测版本；Windows 优先 `2.0.1.post1` 或已验证 2.1.x；CI 真建 `Uc` |
+| Python（主程序） | 3.11/3.12/3.13 开发机混用 | 构建固定一个版本；CI 与 runtime 对齐 |
+| agent runtime | 构建与应用统一为 `AGENT_RUNTIME_MANIFEST` 的 3.11.9 | 保持 manifest 单点来源；实机确认 |
+| NMSpy | `185034.0`；`nmspy_by_build` 映射 | 与游戏 build 一一映射；`185034` 通过实机后标 `verified`；未知 build 只读 |
+| pymhf | manifest `0.2.5`；requirements `>=0.2.5` | 锁到实测版本；记录 `http_api` 兼容 |
+| unicorn | requirements 已 pin `2.0.1.post1` | 保持 pin；CI 真建 `Uc` |
 | PySide6 | `>=6.7` | 锁到 6.8/6.9 LTS 之一；记录 Qt6Core/Gui/Widgets/OpenGL 版本 |
 | numpy | `2.2.6` | 保持；验证 Windows DLL/杀软；不要随意升级 |
 | Flask/web | `>=3.0` | 如果不默认打包，锁到 3.x 用于 `serve` |
@@ -798,27 +843,28 @@ starforge/app/pages/game_link.py
 
 ## 7. 文档/声明与实现漂移
 
-| 文档 | 声明 | 实际 | 建议 |
+| 文档 | 声明 | 实际（2026-11-19 复核） | 建议 |
 |---|---|---|---|
-| `README.md` | “传送门符文独立置顶窗口 🚧” | CLI 有，UI 无入口 | 标明“仅 CLI”；P1 接 UI |
-| `README.md` | “游戏内实时通道…模板 Mod 一键生成” | `services.live_template_mod` 有，UI 无按钮 | 接 UI 或改文案 |
-| `README.md` | “五页：搜索/我的船/星球/设置 + 浮窗” | 六页：Home/ShipLab/Fleet/Galaxy/GameLink/Settings | 更新 |
-| `FEATURE-MAP.md` | 收藏/写回/备份“占位” | 工作区已实现收藏/写回/备份 | 更新状态 |
-| `FEATURE-MAP.md` | Galaxy“银河索引查询 🟡” | 工作区已接查询，但扫描不入库 | 改为“查询 ✅ / 入库 ⬜” |
-| `FEATURE-MAP.md` | GameLink“传送/扫描 🔴 需实机” | 代码有，build 未验证 | 改为“🟡 代码存在，待实机” |
-| `CAPABILITIES.md` | “传送 🟡/🔴” | agent 代码有 `teleport` | 明确“未实机” |
-| `PLAN-V4.md` | “应用内游戏控制台 ✅ … 传送/扫描读取” | 注入/按钮有，实机未验证 | 加“代码完成/实机未完成”两列 |
+| `README.md` | “传送门符文独立置顶窗口” | CLI + Galaxy 页面按钮均有 | 已同步；保留“Windows 实机未回归”说明 |
+| `README.md` | “游戏内实时通道…模板 Mod 一键生成” | `live_template_mod/live_push` 仅在 Web API；原生无入口 | 已改为 🟡 并注明“原生页面未接” |
+| `README.md` | 页面数/CLI 子命令 | 七页（含设计器）；CLI 还有 `app/saves/catalog/settings/doctor/agent/selftest` | 已补全 |
+| `FEATURE-MAP.md` | 收藏/写回/备份“占位” | 均已接 | 已更新为 ✅ |
+| `FEATURE-MAP.md` | Galaxy“银河索引 🟡 / 扫描不入库” | `start_galaxy_scan` 已入库，索引查询/CSV 同源 | 已改为 ✅ |
+| `FEATURE-MAP.md` | GameLink“传送/扫描 🔴 需实机” | 代码有闸门/快照/读回，build 未验证 | 已改为 🟡 |
+| `CAPABILITIES.md` | “传送 🟡/🔴” | agent 代码有 `teleport`，未实机 | 已明确“未实机” |
+| `PLAN-V4.md` | “应用内游戏控制台 ✅ … 传送/扫描读取” | 注入/按钮有，实机未验证 | 建议加“代码完成/实机未完成”两列 |
 | `AGENT.md` | “可卸载：完整还原 winmm.dll” | pymhf 注入不装 winmm.dll；`uninstall_mod` 只删 .py | 修正描述 |
 | `AGENT-PROTOCOL.md` | 命名管道 + C++ DLL | 实际 pymhf HTTP | 保留为未来协议，但开头醒目说明 |
-| `ARCHITECTURE.md` | services 565 行 / live.py 393 行 | 当前 services 628 行 / game_link 314 行 | 更新体量 |
-| `PLAN-V4.md` | “P0 已完成” | P0 基础壳完成；功能闭环仍有缺口 | 区分“架构 P0”与“功能 P0” |
-| `README.md` | “不修改玩家资产” | 存档写回/未来编辑器会改 | 明确“不修改游戏 pak/在线资产；只改本地存档” |
+| `ARCHITECTURE.md` | services 565 行 / live.py 393 行 | 当前 services 1300+ 行 / game_link 1000+ 行 | 更新体量 |
+| `PLAN-V4.md` | “P0 已完成” | 离线 P0/P1 多数落地；实机 P3 仍未 | 区分“代码完成/实机完成” |
+| `README.md` | “不修改玩家资产” | 存档写回/编辑器会改本地存档 | 已注写入流程；仍应强调“不改游戏 pak/在线资产” |
 
 ---
 
 ## 8. 分阶段路线图（P0 / P1 / P2 / P3）
 
-> 估算前提：1 人全职；Windows 实机可随时测试；每阶段结束打一个可回退的 beta 包。  
+> **2026-11-19 复核**：以下保留为分析时路线图/验收口径，不再代表当前全部待办。P0 的扫描入库、搜索补全、build/多人/token、设置与诊断，P1 的收藏/分享/对比、设计器 MVP、批量导出、反查、可访问性已有代码；仍待 Windows 实机的是 agent 传送/扫描，仍缺后端的是货船/护卫舰/中队写回、同伴写回/3D、行星字段/3D、银河地图。
+> 估算前提：1 人全职；Windows 实机可随时测试；每阶段结束打一个可回退的 beta 包。
 > **纪律**：P0/P1 不依赖 agent 实机；P2 才开始实机写操作；未通过验收不得把功能标 ✅。
 
 ### P0 · 正确性与安全（约 1–2 周）
@@ -923,11 +969,13 @@ starforge/app/pages/game_link.py
 
 ## 10. 验收清单（Definition of Done）
 
+> 以下是验收口径，**不表示已通过**。2026-11-19 只确认了代码入口与离线测试路径；Windows 实机项仍需签字。
+
 ### 10.1 P0 验收
 
 - [ ] `pytest -q` 全绿（含新增 galaxy 入库、job cancel、agent build gate 测试）。
 - [ ] `python -m starforge selfcheck` 关键步骤通过；`doctor` 全绿。
-- [ ] 原生六页可切换；ShipLab 搜索→3D→写回；Fleet 读档→备份/恢复。
+- [ ] 原生七页可切换；ShipLab 搜索→3D→写回；Fleet 读档→备份/恢复。
 - [ ] Galaxy 扫描后 `galaxy_stats` 增长，索引查询能查到；取消可用。
 - [ ] 未验证 build 下传送/扫描按钮禁用；多人模式拒绝。
 - [ ] 无未处理 `0xC0000409`/traceback；崩溃日志可导出。

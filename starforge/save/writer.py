@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import struct
 import time
+from pathlib import Path
 
 from ..core import log, paths, settings
 from ..core.errors import BadRequest, WriteRefused
@@ -99,6 +99,16 @@ def _backup(path: str) -> str:
     stamp = time.strftime("%Y%m%d-%H%M%S") + "-%06d" % (int(time.time() * 1e6) % 1_000_000)
     dst = f"{path}.{stamp}.bak"
     shutil.copy2(path, dst)
+    keep = int(getattr(settings.current(), "backup_keep", 0) or 0)
+    if keep > 0:
+        try:
+            backups = sorted(Path(path).parent.glob(Path(path).name + ".*.bak"),
+                             key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in backups[keep:]:
+                old.unlink(missing_ok=True)
+                log.info("按 backup_keep=%s 清理旧备份：%s", keep, old.name)
+        except OSError as e:                                # noqa: BLE001
+            log.warning("清理旧备份失败（不影响本次写入）：%s", e)
     return dst
 
 

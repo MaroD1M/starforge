@@ -48,6 +48,11 @@ SHORTCUT_KEYS = [key for key, _label in NAV if key != "designer"] + ["designer"]
 SHORTCUT_INDEX = {key: index for index, key in enumerate(SHORTCUT_KEYS, 1)}
 
 CHIP_LABELS = {"data": "数据层", "saves": "存档", "game": "游戏", "write": "写入"}
+NAV_GROUPS = [
+    ("探索", ("home", "search", "designer")),
+    ("资料", ("mine", "systems")),
+    ("连接", ("live", "settings")),
+]
 
 
 class MainWindow(QMainWindow):
@@ -171,7 +176,16 @@ class MainWindow(QMainWindow):
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         self._buttons: dict[str, QPushButton] = {}
+        group_of = {key: name for name, keys in NAV_GROUPS for key in keys}
+        last_group = None
         for key, label in NAV:
+            group = group_of.get(key)
+            if group and group != last_group:
+                section = QLabel(group)
+                section.setObjectName("navSection")
+                section.setAccessibleName(f"导航分组：{group}")
+                rv.addWidget(section)
+                last_group = group
             btn = QPushButton(label)
             btn.setObjectName("navButton")
             btn.setCheckable(True)
@@ -297,6 +311,9 @@ class MainWindow(QMainWindow):
             ("页面", "星图 / 星系与行星", lambda: self.goto("systems")),
             ("页面", "游戏内代理 / 连接游戏", lambda: self.goto("live")),
             ("页面", "设置", lambda: self.goto("settings")),
+            ("操作", "收藏夹", self._open_favorites),
+            ("操作", "备份 / 恢复", self._open_backups),
+            ("操作", "地址工作台", self._open_address_workbench),
             ("操作", "刷新状态", self.refresh_with_toast),
             ("操作", "聚焦当前页过滤框", self.focus_current_filter),
             ("操作", "展开/收起任务栏", self._toggle_dock),
@@ -341,7 +358,25 @@ class MainWindow(QMainWindow):
                         break
             self.toast("已打开地址工作台", "info")
         elif target == "favorites":
-            self.toast("收藏夹在飞船实验室右侧；选中飞船后可收藏或管理收藏夹", "info")
+            self._open_favorites()
+
+    def _open_favorites(self) -> None:
+        self.goto("search")
+        page = self.pages.get("search")
+        opener = getattr(page, "open_favorites", None)
+        if callable(opener):
+            opener()
+
+    def _open_backups(self) -> None:
+        self.goto("mine")
+        page = self.pages.get("mine")
+        opener = getattr(page, "open_backups", None)
+        if callable(opener):
+            opener()
+
+    def _open_address_workbench(self) -> None:
+        self.goto("systems")
+        self._open_home_target("address")
 
     def _open_logs(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.app_home() / "logs")))

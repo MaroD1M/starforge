@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 from . import paths
@@ -21,6 +21,7 @@ DEFAULTS = {
     "gamedata_dir": "",              # 空 = 自动发现（Gagarin 的 GAMEDATA）
     "game_dir": "",                  # 空 = 没有游戏（3D 走 L0 降级）
     "backup_keep": 0,                # 0 = 永不删备份（与 Shipwright 一致）
+    "workers": 0,                    # 0 = 自动；搜索/扫描可用的工作线程数
     "port": 0,                       # 0 = 随机空闲端口
     "theme": "dark",
     "allow_unverified_agent": False, # 显式允许未验证 build 的实验性 agent 写命令
@@ -54,6 +55,7 @@ class Settings:
     gamedata_dir: str = ""
     game_dir: str = ""
     backup_keep: int = 0
+    workers: int = 0
     port: int = 0
     theme: str = "dark"
     allow_unverified_agent: bool = False

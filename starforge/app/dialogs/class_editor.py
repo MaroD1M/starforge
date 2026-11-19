@@ -76,6 +76,8 @@ def stat_summary(values: dict | None) -> str:
     return " · ".join(bits) or "无"
 
 
+from ..dialogs.confirm import ask_write
+
 class ClassEditorDialog(QDialog):
     """读取当前船的等级/属性，允许修改后安全写回。"""
 
@@ -219,10 +221,8 @@ class ClassEditorDialog(QDialog):
         if not ship_class and not values and not best:
             QMessageBox.information(self, "没有改动", "等级、属性和 best 都没有改动。")
             return
-        if QMessageBox.warning(
-                self, "确认写入",
-                self._confirmation(ship_class, values, best),
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if not ask_write(self, "确认写入",
+                self._confirmation(ship_class, values, best),):
             return
 
         self.ok.setEnabled(False)

@@ -311,6 +311,8 @@ def _write_changes(path: str, changes: dict, copy: bool) -> dict:
 # ---------------------------------------------------------------- 对话框
 
 
+from ..dialogs.confirm import ask_write
+
 class SaveEditDialog(QDialog):
     """货币与飞船名称/涂装编辑；写入前二次确认，成功后可让 Fleet 刷新。"""
 
@@ -716,9 +718,7 @@ class SaveEditDialog(QDialog):
                 or changes.get("paint")):
             QMessageBox.information(self, "没有改动", "货币、名称和涂装都没有改动。")
             return
-        if QMessageBox.warning(
-                self, "确认写入", self._confirmation(changes),
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if not ask_write(self, "确认写入", self._confirmation(changes)):
             return
 
         self._busy = True

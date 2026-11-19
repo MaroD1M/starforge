@@ -105,8 +105,11 @@ def test_webcheck_command_passes(monkeypatch, tmp_path):
     assert "接口自检通过" in out
 
 
-def test_single_exe_build():
+def test_gui_launcher_hides_console():
     from pathlib import Path
     wf = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text("utf-8")
-    assert "starforge-cli" not in wf
-    assert wf.count("pyinstaller --noconfirm") == 1
+    assert "--name starforge-cli" in wf
+    assert "packaging/launcher.py" in wf
+    assert wf.count("pyinstaller --noconfirm") == 2
+    assert "--windowed" in wf
+    assert 'Copy-Item "dist/launcher/starforge.exe"' in wf

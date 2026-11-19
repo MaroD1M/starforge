@@ -144,7 +144,8 @@ def test_agent_mod_guards_all_high_risk_endpoints():
     src = Path(__file__).resolve().parents[1] / "starforge" / "agent" / "starforge_agent.py"
     text = src.read_text("utf-8")
     assert "_multiplayer_block()" in text
-    for marker in ('def teleport', 'def restore', 'def scan_instant', 'def scan('):
+    for marker in ('def teleport(', 'def teleport_portal', 'def restore',
+                   'def scan_instant', 'def scan('):
         start = text.index(marker)
         end = text.find("    @endpoint", start + 1)
         chunk = text[start:end if end != -1 else len(text)]

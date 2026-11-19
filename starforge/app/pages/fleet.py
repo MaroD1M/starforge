@@ -6,10 +6,25 @@ from pathlib import Path
 
 from PySide6.QtCore import QFileSystemWatcher, QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel,
-                               QLineEdit, QListWidget, QListWidgetItem, QPushButton,
-                               QSplitter, QStyledItemDelegate, QTabWidget, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QStyledItemDelegate,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...export import export_zip
 from ...services import get_services
@@ -17,7 +32,9 @@ from .. import notify
 from ..dialogs.backup import BackupDialog
 from ..dialogs.class_editor import ClassEditorDialog
 from ..dialogs.save_edit import SaveEditDialog
+from ..dialogs.save_extras import SaveExtrasDialog
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.page import PageSplitter, page_layout
 from ..widgets.page_header import PageHeader
 from ..widgets.pets_view import PetsView
 from ..widgets.ship_card import install_card_delegate
@@ -25,9 +42,69 @@ from ..widgets.ship_viewer import ShipViewer
 from ..widgets.ui import Card, icon_from_png, muted
 from ..widgets.worker import run as run_worker
 
-
 STAT_LABELS = {"damage": "伤害", "shield": "护盾", "hyperdrive": "超空间驱动",
                "agility": "机动性"}
+FRIGATE_HEADERS = ("名称", "类型", "等级", "伤害", "探索", "采矿", "外交",
+                   "燃料消耗", "速度", "远征次数", "状态", "种子")
+MULTITOOL_HEADERS = ("名称", "等级", "型号", "槽位", "种子", "当前使用")
+FREIGHTER_HEADERS = ("字段", "值")
+
+
+def _text(value, fallback: str = "—") -> str:
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    return text or fallback
+
+
+def frigate_rows(items: list[dict] | None) -> list[list[str]]:
+    rows = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        stats = item.get("stats") or {}
+        rows.append([
+            _text(item.get("name"), "(未命名)"),
+            _text(item.get("type")),
+            _text(item.get("class")),
+            _text(stats.get("Combat"), "0"),
+            _text(stats.get("Exploration"), "0"),
+            _text(stats.get("Mining"), "0"),
+            _text(stats.get("Diplomacy"), "0"),
+            _text(stats.get("Fuel burn rate"), "0"),
+            _text(stats.get("Speed"), "0"),
+            _text(item.get("expeditions"), "0"),
+            "受损" if item.get("damaged") else "正常",
+            _text(item.get("seed")),
+        ])
+    return rows
+
+
+def multitool_rows(items: list[dict] | None) -> list[list[str]]:
+    rows = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append([
+            _text(item.get("name"), "(未命名)"),
+            _text(item.get("class")),
+            _text(item.get("model")),
+            _text(item.get("slots"), "0"),
+            _text(item.get("seed")),
+            "是" if item.get("active") else "",
+        ])
+    return rows
+
+
+def freighter_rows(freighter: dict | None) -> list[list[str]]:
+    data = freighter or {}
+    filename = _text(data.get("filename"), "")
+    return [
+        ["型号", filename.rsplit("/", 1)[-1] if filename else "—"],
+        ["完整路径", filename or "—"],
+        ["种子", _text(data.get("seed"))],
+        ["母星系种子", _text(data.get("home"))],
+    ]
 
 
 def _write_export(path: str, items: list[dict]) -> dict:
@@ -50,6 +127,9 @@ class FleetPage(QWidget):
         self._watched_path = ""
         self._watch_ignore_until = 0.0
         self._ships: list[dict] = []
+        self._extras: dict = {}
+        self._extras_loaded = False
+        self._extras_loading = False
         self._sort_key = "type"
         self._sort_desc = False
         self._thumb_queue: list[QListWidgetItem] = []
@@ -70,16 +150,14 @@ class FleetPage(QWidget):
         self._update_ship_empty()
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 8)
-        root.setSpacing(8)
+        root = page_layout(self)
 
         self.header = PageHeader(
             "我的船队",
             "监视存档变化，随时备份恢复或批量导出，并查看飞船属性与 3D 模型。")
         root.addWidget(self.header)
 
-        split = QSplitter(Qt.Horizontal)
+        split = PageSplitter("fleet")
         root.addWidget(split, 1)
 
         left = Card("存档", "自动发现或手动选择")
@@ -114,6 +192,12 @@ class FleetPage(QWidget):
         self.save_edit_btn.setToolTip("修改存档中的货币与飞船名称/涂装；先备份，可写入副本")
         self.save_edit_btn.clicked.connect(self._open_save_edit)
         self.header.add_action(self.save_edit_btn)
+
+        self.extras_btn = QPushButton("扩展编辑…")
+        self.extras_btn.setEnabled(False)
+        self.extras_btn.setToolTip("编辑库存、词语/知识、任务与奖励；先备份，可写入副本")
+        self.extras_btn.clicked.connect(self._open_save_extras)
+        self.header.add_action(self.extras_btn)
 
         self.export_btn = QPushButton("批量导出")
         self.export_btn.setEnabled(False)
@@ -179,6 +263,20 @@ class FleetPage(QWidget):
 
         self.pets = PetsView(self.svc)
         self.tabs.addTab(self.pets, "同伴")
+
+        self.frigates_table = self._extra_table(FRIGATE_HEADERS)
+        self.frigates_page = self._extra_page(
+            self.frigates_table, "护卫舰只读：名称、类型、等级、属性与种子。")
+        self.tabs.addTab(self.frigates_page, "护卫舰")
+        self.multitools_table = self._extra_table(MULTITOOL_HEADERS)
+        self.multitools_page = self._extra_page(
+            self.multitools_table, "多用途工具只读：名称、等级、型号、槽位与种子。")
+        self.tabs.addTab(self.multitools_page, "工具")
+        self.tabs.setTabToolTip(self.tabs.count() - 1, "多用途工具")
+        self.freighter_table = self._extra_table(FREIGHTER_HEADERS)
+        self.freighter_page = self._extra_page(
+            self.freighter_table, "货船只读：当前货船型号、种子与母星系种子。")
+        self.tabs.addTab(self.freighter_page, "货船")
         self.tabs.currentChanged.connect(self._tab_changed)
         split.addWidget(mid)
 
@@ -207,12 +305,11 @@ class FleetPage(QWidget):
         self.edit_btn.setToolTip("修改选中飞船的等级与属性；先备份，可写入副本")
         self.edit_btn.clicked.connect(self._open_class_editor)
         row2.addWidget(self.edit_btn)
-        compare = QPushButton("加入对比")
-        compare.setEnabled(False)
-        row2.addWidget(compare)
         rv.addLayout(row2)
         split.addWidget(right)
-        split.setSizes([300, 720, 420])
+        split.setStretchFactor(1, 1)
+        split.set_default_sizes([240, 700, 340])
+        split.restore()
 
     # ---------------------------------------------------------------- 数据
 
@@ -237,8 +334,9 @@ class FleetPage(QWidget):
                 self._show_ship_empty("没有存档", "没有自动找到存档；请点「浏览…」选择 save.hg。")
 
         def fail(msg: str) -> None:
-            text = f"没有自动找到存档：{msg}"
+            text = "未自动找到存档；请点「浏览…」选择 save.hg。"
             self.info.setText(text)
+            self.info.setToolTip(msg)
             self._show_ship_empty("没有存档", text)
 
         run_worker(self.svc.default_save, done, fail)
@@ -251,6 +349,9 @@ class FleetPage(QWidget):
         if p:
             self.path.setText(p)
             self._load()
+
+    def open_backups(self) -> None:
+        self._open_backups()
 
     def _open_backups(self) -> None:
         path = self.path.text().strip()
@@ -303,21 +404,57 @@ class FleetPage(QWidget):
     def _is_busy(self) -> bool:
         return self._exporting or self._editing or self._restoring or self._loading
 
+    def _extra_table(self, headers: tuple[str, ...]) -> QTableWidget:
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(list(headers))
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        table.horizontalHeader().setStretchLastSection(True)
+        return table
+
+    @staticmethod
+    def _extra_page(table: QTableWidget, note: str) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(muted(note))
+        v.addWidget(table, 1)
+        return page
+
+    def _is_extras_tab(self, index: int) -> bool:
+        return self.tabs.widget(index) in {
+            self.frigates_page, self.multitools_page, self.freighter_page}
+
     def _tab_changed(self, index: int) -> None:
-        is_pets = self.tabs.widget(index) is self.pets
-        if is_pets:
+        widget = self.tabs.widget(index)
+        if widget is self.pets:
             self.title.setText("同伴")
+            self.pets_note.setText("同伴 3D 预览需要生物生成器；当前只展示描述符与种子。")
             self.viewer.hide()
             self.pets_note.show()
             self.detail.setText("同伴目前只读：描述符、种子、群系；3D 需要生物生成器。")
             if self._loaded_path:
                 self.pets.set_save_path(self._loaded_path)
                 self.pets.ensure_loaded()
-        else:
-            self.title.setText("飞船详情" if hasattr(self, "title") else "飞船详情")
-            self.pets_note.hide()
-            self.viewer.show()
-            self.detail.setText("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
+            return
+        if self._is_extras_tab(index):
+            self.title.setText(self.tabs.tabText(index))
+            self.pets_note.setText("这里只读展示存档中的船队扩展数据；没有 API 的写回不会伪造。")
+            self.pets_note.show()
+            self.viewer.hide()
+            if self._loaded_path:
+                self.detail.setText("正在读取船队扩展…")
+                self._load_extras()
+            else:
+                self.detail.setText("先读取存档，再查看货船/护卫舰/多用途工具。")
+            return
+        self.title.setText("飞船详情" if hasattr(self, "title") else "飞船详情")
+        self.pets_note.hide()
+        self.viewer.show()
+        self.detail.setText("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
 
     def _status(self, text: str) -> None:
         window = self.window()
@@ -342,6 +479,7 @@ class FleetPage(QWidget):
         self.list.hide()
         self.empty_state.hide()
         self.pets.clear()
+        self._clear_extras()
         self._ships = []
         self._loaded_path = ""
         self._update_actions()
@@ -360,6 +498,9 @@ class FleetPage(QWidget):
             self.load_btn.setEnabled(True)
             self._watch_save(self._loaded_path)
             self.pets.set_save_path(self._loaded_path, invalidate=True)
+            self._clear_extras()
+            if self._is_extras_tab(self.tabs.currentIndex()):
+                self._load_extras()
             self._update_actions()
             self._update_ship_empty()
             if notice:
@@ -375,6 +516,7 @@ class FleetPage(QWidget):
             self._loaded_path = ""
             self.list.clear()
             self.pets.clear()
+            self._clear_extras()
             self.load_btn.setEnabled(True)
             self.error_banner.show_error(text)
             self._show_ship_empty("读取失败", "请检查存档路径后重试。")
@@ -515,6 +657,7 @@ class FleetPage(QWidget):
         items = self.list.selectedItems()
         ship = items[0].data(Qt.UserRole) if items else None
         self.save_edit_btn.setEnabled(bool(self._loaded_path) and not self._is_busy())
+        self.extras_btn.setEnabled(bool(self._loaded_path) and not self._is_busy())
         self.export_btn.setEnabled(bool(self._ships) and not self._exporting)
         self.edit_btn.setEnabled(bool(ship) and ship.get("slot") is not None
                                  and bool(self._loaded_path))
@@ -593,6 +736,87 @@ class FleetPage(QWidget):
         summary = f"船级/属性写入成功 · 槽位 {res.get('slot', ship.get('slot'))}"
         self.info.setText(summary)
         notify.success(summary)
+        self._load()
+
+    def _clear_extras(self) -> None:
+        self._extras = {}
+        self._extras_loaded = False
+        self._extras_loading = False
+        for table in (self.frigates_table, self.multitools_table, self.freighter_table):
+            table.setRowCount(0)
+
+    @staticmethod
+    def _fill_extra_table(table: QTableWidget, rows: list[list[str]]) -> None:
+        table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            for j, value in enumerate(row):
+                table.setItem(i, j, QTableWidgetItem(str(value)))
+        table.resizeColumnsToContents()
+
+    def _load_extras(self, force: bool = False) -> None:
+        path = self._loaded_path or self.path.text().strip()
+        if not path:
+            return
+        if self._extras_loaded and not force:
+            self._render_extras(self._extras)
+            return
+        if self._extras_loading:
+            return
+        self._extras_loading = True
+        self.detail.setText("正在读取货船/护卫舰/多用途工具…")
+
+        def done(payload: dict) -> None:
+            self._extras_loading = False
+            self._extras_loaded = True
+            self._extras = payload or {}
+            self._render_extras(self._extras)
+
+        def fail(msg: str) -> None:
+            self._extras_loading = False
+            self._extras_loaded = False
+            self._clear_extras()
+            self.detail.setText(f"读取船队扩展失败：{msg}")
+
+        run_worker(self.svc.fleet_extras, done, fail, path)
+
+    def _render_extras(self, payload: dict) -> None:
+        payload = payload or {}
+        self._fill_extra_table(self.frigates_table,
+                               frigate_rows(payload.get("frigates") or []))
+        self._fill_extra_table(self.multitools_table,
+                               multitool_rows(payload.get("multitools") or []))
+        self._fill_extra_table(self.freighter_table,
+                               freighter_rows(payload.get("freighter")))
+        errors = payload.get("errors") or {}
+        bits = [f"{len(payload.get('frigates') or [])} 艘护卫舰",
+                f"{len(payload.get('multitools') or [])} 把多用途工具"]
+        if payload.get("freighter"):
+            bits.append("货船已读取")
+        if errors:
+            bits.append("不可用：" + "、".join(sorted(errors)))
+        self.detail.setText(" · ".join(bits))
+
+    def _open_save_extras(self) -> None:
+        if not self._loaded_path:
+            self.info.setText("请先读取存档，再编辑库存/知识/任务/奖励")
+            notify.warn("请先读取存档")
+            return
+        dlg = SaveExtrasDialog(self._loaded_path, self)
+        self._editing = True
+        try:
+            accepted = dlg.exec() == QDialog.Accepted
+        finally:
+            self._editing = False
+        self._update_actions()
+        if not accepted:
+            return
+        res = dlg.result or {}
+        target = str(res.get("path") or "")
+        if res.get("copy") and target:
+            self.path.setText(target)
+        self.info.setText("存档扩展编辑写入成功")
+        notify.success("存档扩展编辑写入成功，已通过读回校验")
+        self._watch_ignore_until = time.monotonic() + 2.0
         self._load()
 
     def _open_save_edit(self) -> None:

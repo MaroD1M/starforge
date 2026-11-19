@@ -107,6 +107,44 @@ def test_focus_first_input_skips_disabled(qapp):
         host.close()
 
 
+def test_all_pages_share_header_pattern(qapp):
+    from starforge.app.shell import NAV, MainWindow
+    from starforge.app.widgets.page_header import PageHeader
+
+    win = MainWindow()
+    try:
+        for key, _label in NAV:
+            page = win.pages[key]
+            headers = page.findChildren(PageHeader)
+            assert len(headers) == 1, f"{key} 应只有一个统一页面标题"
+            assert headers[0].title.text().strip()
+    finally:
+        win.close()
+
+
+def test_ship_card_item_exposes_accessible_text(qapp):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QListWidget, QListWidgetItem
+
+    from starforge.app.widgets.ship_card import install_card_delegate, set_card_accessibility
+
+    view = QListWidget()
+    view.setAccessibleName("搜索结果")
+    try:
+        install_card_delegate(view, 110)
+        item = QListWidgetItem("0xABC")
+        set_card_accessibility(item, {"type_label": "战斗机", "ship_class": "S",
+                                      "seed": "0xABC"})
+        view.addItem(item)
+        index = view.model().index(0, 0)
+        assert "战斗机" in index.data(Qt.AccessibleTextRole)
+        assert "S 级" in index.data(Qt.AccessibleTextRole)
+        assert "种子：0xABC" in index.data(Qt.AccessibleDescriptionRole)
+        assert view.accessibleName() == "搜索结果"
+    finally:
+        view.close()
+
+
 def test_navigation_and_page_header_accessibility(qapp):
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QFrame

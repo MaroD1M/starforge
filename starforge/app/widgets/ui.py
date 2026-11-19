@@ -23,15 +23,16 @@ class Card(QFrame):
         self.v.setContentsMargins(16, 14, 16, 14)
         self.v.setSpacing(8)
         if title:
-            head = QHBoxLayout()
+            head = QVBoxLayout()
+            head.setSpacing(2)
             t = QLabel(title)
             t.setStyleSheet("font-size:14px;font-weight:700;")
             head.addWidget(t)
             if subtitle:
                 s = QLabel(subtitle)
                 s.setObjectName("muted")
+                s.setWordWrap(True)
                 head.addWidget(s)
-            head.addStretch(1)
             self.v.addLayout(head)
 
     def add(self, widget: QWidget) -> QWidget:

@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import os
-import struct
 
 # 8 种可换外观的程序化船型 → (游戏内模型, 展示名, ShipClass)
 TEMPLATES = [

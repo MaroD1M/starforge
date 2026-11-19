@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QPushBu
 
 from ...services import get_services, history
 from ..notify import toast as notify_toast
+from ..widgets.page import PAGE_MARGINS
 from ..widgets.page_header import PageHeader
 from ..widgets.worker import run as run_worker
 
@@ -129,12 +130,20 @@ class _StatusCard(QFrame):
         title_label.setObjectName("muted")
         v.addWidget(title_label)
         self.value = QLabel("—")
-        self.value.setStyleSheet("font-size:18px;font-weight:600;")
+        self.value.setStyleSheet("font-size:18px;font-weight:600;color:#e6ecf5;")
         v.addWidget(self.value)
         hint_label = QLabel(hint)
         hint_label.setObjectName("muted")
         hint_label.setWordWrap(True)
         v.addWidget(hint_label)
+
+    def set_value(self, text: str, state: str = "neutral") -> None:
+        colors = {"ok": "#a8e8c9", "warn": "#f0cd9a",
+                  "bad": "#f3b6a7", "neutral": "#e6ecf5"}
+        self.value.setText(text)
+        self.value.setStyleSheet(
+            "font-size:18px;font-weight:600;color:%s;" %
+            colors.get(state, colors["neutral"]))
 
     def mouseReleaseEvent(self, event) -> None:       # noqa: N802 - Qt 回调
         if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
@@ -164,19 +173,21 @@ class HomePage(QWidget):
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget()
         root = QVBoxLayout(body)
-        root.setContentsMargins(24, 20, 24, 24)
-        root.setSpacing(16)
+        root.setContentsMargins(*PAGE_MARGINS)
+        root.setSpacing(12)
 
         header = PageHeader(
             "今日战报",
             "搜飞船、看飞船、找星系与行星、连接游戏——所有操作都在这个窗口里完成。",
         )
         refresh = QPushButton("刷新状态")
-        refresh.setObjectName("ghostButton")
         refresh.setToolTip("重新检查数据层、存档、游戏与游戏内代理（F5）")
         refresh.clicked.connect(lambda: self.refresh(notify=True))
         header.add_action(refresh)
@@ -353,12 +364,15 @@ class HomePage(QWidget):
         self._update_recent()
 
     def _apply_health(self, h: dict) -> None:
-        data = "就绪" if h.get("data_ready") else "缺失"
-        saves = "已发现" if h.get("saves_ready") else "未发现"
-        game = "已设置" if h.get("game_dir") else "未设置"
-        self.cards["data"].setText(data)
-        self.cards["saves"].setText(saves)
-        self.cards["game"].setText(game)
+        data_ok = bool(h.get("data_ready"))
+        saves_ok = bool(h.get("saves_ready"))
+        game_ok = bool(h.get("game_dir"))
+        data = "就绪" if data_ok else "缺失"
+        saves = "已发现" if saves_ok else "未发现"
+        game = "已设置" if game_ok else "未设置"
+        self.card_boxes["data"].set_value(data, "ok" if data_ok else "bad")
+        self.card_boxes["saves"].set_value(saves, "ok" if saves_ok else "warn")
+        self.card_boxes["game"].set_value(game, "ok" if game_ok else "warn")
         self._health_text = f"数据层{data} · 存档{saves} · 游戏{game}"
         self._update_recent()
         if self._notify_refresh:
@@ -367,12 +381,15 @@ class HomePage(QWidget):
 
     def _apply_agent(self, st: dict) -> None:
         if st.get("reachable"):
-            text = "游戏内代理已连接"
+            text, state = "游戏内代理已连接", "ok"
+        elif (st.get("runtime_ready") and st.get("pymhf_http_api")
+              and st.get("nmspy_version") and st.get("pymhf_version")):
+            text, state = "运行时就绪", "warn"
         elif st.get("runtime_ready"):
-            text = "运行时就绪"
+            text, state = "组件异常", "bad"
         else:
-            text = "组件缺失"
-        self.cards["live"].setText(text)
+            text, state = "组件缺失", "bad"
+        self.card_boxes["live"].set_value(text, state)
         self._agent_text = f"游戏内代理：{text}"
         self._update_recent()
 

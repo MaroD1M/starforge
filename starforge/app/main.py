@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QIcon, QSurfaceFormat
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from ..core import log, paths
+from ..core import lock, log, paths
 from .shell import MainWindow
 from .theme import apply as apply_theme
 
@@ -56,8 +56,33 @@ def _excepthook(exc_type, exc, tb) -> None:
         pass
 
 
+def _activate_existing_window() -> None:
+    """第二次双击时把已有窗口拉到前台，而不是再开一个主窗口。"""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+
+        from ..core import strings
+
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, strings.APP_TITLE)
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)                      # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+        else:
+            user32.MessageBoxW(None, "Starforge 已在运行。", "Starforge", 0x40)
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
 def run(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()                         # PyInstaller + 进程池必需
+    try:
+        _instance = lock.InstanceLock().acquire()
+    except lock.AlreadyRunning:
+        _activate_existing_window()
+        return 0
     _enable_crash_log()
     if os.environ.get("STARFORGE_SAFE") == "1":
         # 安全模式：软件 OpenGL，绕过部分显卡/远程桌面驱动崩溃
@@ -93,9 +118,12 @@ def run(argv: list[str] | None = None) -> int:
             f"{type(e).__name__}: {e}\n\n"
             "请重新解压完整安装包（不要覆盖旧目录），并把安装目录加入杀毒软件排除项。\n"
             "应用会继续启动，但相关功能会报错；诊断信息已写入 ~/.starforge/logs/。")
-    win = MainWindow()
-    win.show()
-    return app.exec()
+    try:
+        win = MainWindow()
+        win.show()
+        return app.exec()
+    finally:
+        _instance.release()
 
 
 if __name__ == "__main__":

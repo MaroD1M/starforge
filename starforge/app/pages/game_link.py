@@ -6,13 +6,14 @@ import re
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QMessageBox, QPushButton, QSpinBox, QTextEdit,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QPushButton,
+                               QScrollArea, QSpinBox, QTextEdit, QVBoxLayout, QWidget)
 
 from ...services import get_services
 from .. import notify
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.page import PAGE_SPACING, SCROLL_MARGINS
 from ..widgets.page_header import PageHeader
 from ..widgets.planet_dossier import (MISSING, PlanetDossier, PoiDossier,
                                        format_planet_text)
@@ -29,12 +30,16 @@ _GATING_ALIASES = ("allow_unverified_agent", "allow_unverified_writes",
                    "allow_unverified_build", "experimental_writes")
 
 
+from ..dialogs.confirm import ask_write
+
 class GameLinkPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.svc = get_services()
         self._loaded = False
+        self._runtime_files = False
         self._runtime_ready = False
+        self._runtime_error = ""
         self._reachable = False
         self._in_game = False
         self._build_verified = False
@@ -55,19 +60,35 @@ class GameLinkPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 8)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(*SCROLL_MARGINS)
+        outer.setSpacing(PAGE_SPACING)
+        scroll.setWidget(content)
+        root.addWidget(scroll)
 
         self.header = PageHeader(
             "游戏内代理",
             "连接游戏、读取实时遥测、行星档案与兴趣点；高风险操作请先备份存档。")
-        root.addWidget(self.header)
+        outer.addWidget(self.header)
         self.error_banner = ErrorBanner("")
         self.error_banner.set_retry_callback(self.refresh)
-        root.addWidget(self.error_banner)
+        outer.addWidget(self.error_banner)
+
+        top = QGridLayout()
+        top.setHorizontalSpacing(PAGE_SPACING)
+        top.setVerticalSpacing(PAGE_SPACING)
 
         status = Card("连接状态", "正常包内置运行时，不需要联网")
         sv = status.v
         steps = QHBoxLayout()
+        steps.setSpacing(6)
         self.step_runtime = QLabel("1  运行时")
         self.step_mod = QLabel("2  游戏内组件")
         self.step_mod.setToolTip("游戏内组件（NMSpy/pymhf）")
@@ -78,7 +99,9 @@ class GameLinkPage(QWidget):
             steps.addWidget(lab)
         steps.addStretch(1)
         sv.addLayout(steps)
+
         meta = QHBoxLayout()
+        meta.setSpacing(6)
         self.build_status = QLabel("游戏版本 —")
         self.build_status.setObjectName("chip")
         self.mp_status = QLabel("多人：—")
@@ -87,57 +110,74 @@ class GameLinkPage(QWidget):
         meta.addWidget(self.mp_status)
         meta.addStretch(1)
         sv.addLayout(meta)
+
         self.status = muted("检查中…")
         sv.addWidget(self.status)
         self.connection_empty = EmptyState(
             "正在检查游戏内代理",
             "先确认运行时与游戏内组件，再进入游戏并载入存档。",
-            icon="◇",
-            button_text="连接游戏")
+            icon="◇")
+        self.connection_empty.setMaximumHeight(176)
         self.connection_empty.actionTriggered.connect(self._connect)
         self.empty_state = self.connection_empty
         sv.addWidget(self.connection_empty)
-        row = QHBoxLayout()
-        self.connect_btn = QPushButton("连接游戏（自动安装游戏内组件）")
+
+        self.connect_btn = QPushButton("连接游戏")
         self.connect_btn.setObjectName("primary")
+        self.connect_btn.setToolTip("连接已运行的游戏并注入；缺少组件时会提示修复")
         self.connect_btn.clicked.connect(self._connect)
-        row.addWidget(self.connect_btn)
+        sv.addWidget(self.connect_btn)
+
+        actions = QGridLayout()
+        actions.setHorizontalSpacing(6)
+        actions.setVerticalSpacing(6)
         self.start_btn = QPushButton("启动游戏并注入")
         self.start_btn.clicked.connect(lambda: self._connect(start_game=True))
-        row.addWidget(self.start_btn)
+        actions.addWidget(self.start_btn, 0, 0)
         self.stop_btn = QPushButton("停止注入器")
         self.stop_btn.clicked.connect(self._stop)
-        row.addWidget(self.stop_btn)
+        actions.addWidget(self.stop_btn, 0, 1)
         self.refresh_btn = QPushButton("刷新状态")
         self.refresh_btn.clicked.connect(self.refresh)
-        row.addWidget(self.refresh_btn)
+        actions.addWidget(self.refresh_btn, 1, 0)
         self.repair_btn = QPushButton("修复运行时/游戏内组件")
         self.repair_btn.clicked.connect(self._repair)
-        row.addWidget(self.repair_btn)
+        actions.addWidget(self.repair_btn, 1, 1)
         self.probe_btn = QPushButton("外部内存只读探测")
         self.probe_btn.clicked.connect(self._external_probe)
-        row.addWidget(self.probe_btn)
-        sv.addLayout(row)
-        root.addWidget(status)
+        actions.addWidget(self.probe_btn, 2, 0, 1, 2)
+        actions.setColumnStretch(0, 1)
+        actions.setColumnStretch(1, 1)
+        sv.addLayout(actions)
+        top.addWidget(status, 0, 0)
 
-        tele = Card("实时遥测")
+        tele = Card("实时遥测", "连接并载入存档后可读取")
         tv = tele.v
-        row2 = QHBoxLayout()
-        for text, cmd in (("玩家位置", "player"), ("当前星系", "system"),
-                          ("当前行星", "planet"), ("游戏内船槽", "ships")):
+        tele_grid = QGridLayout()
+        tele_grid.setHorizontalSpacing(6)
+        tele_grid.setVerticalSpacing(6)
+        for i, (text, cmd) in enumerate((("玩家位置", "player"), ("当前星系", "system"),
+                                         ("当前行星", "planet"), ("游戏内船槽", "ships"))):
             btn = QPushButton(text)
             btn.clicked.connect(lambda _=False, c=cmd: self._read(c))
-            row2.addWidget(btn)
+            tele_grid.addWidget(btn, i // 2, i % 2)
             self._read_btns.append(btn)
             self._cap_buttons.append((btn, cmd))
-        tv.addLayout(row2)
+        tele_grid.setColumnStretch(0, 1)
+        tele_grid.setColumnStretch(1, 1)
+        tv.addLayout(tele_grid)
         self.telemetry = muted("连接后点上面的按钮读取游戏内状态。")
         tv.addWidget(self.telemetry)
-        root.addWidget(tele)
+        tv.addStretch(1)
+        top.addWidget(tele, 0, 1)
+        top.setColumnStretch(0, 3)
+        top.setColumnStretch(1, 2)
+        outer.addLayout(top)
 
         planet = Card("行星档案", "读取当前行星档案；需要先进入存档")
         pv = planet.v
         prow = QHBoxLayout()
+        prow.setSpacing(6)
         self.planet_scan_btn = QPushButton("读取行星档案")
         self.planet_scan_btn.setToolTip("读取当前行星的天气、哨兵、资源、动植物与生物标识（ID）")
         self.planet_scan_btn.clicked.connect(self._planet_scan)
@@ -158,11 +198,13 @@ class GameLinkPage(QWidget):
         pv.addWidget(self.planet_result)
         self._cap_buttons.extend([(self.planet_scan_btn, "planet.scan"),
                                   (self.planet_refresh_btn, "planet.scan")])
-        root.addWidget(planet)
+        outer.addWidget(planet)
 
         safety = Card("安全区", "高风险操作；先备份存档")
         fv = safety.v
         form = QFormLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
         self.glyphs = QLineEdit()
         self.glyphs.setPlaceholderText("12 位传送门地址，例如 1043FEE69929")
         form.addRow("符文地址", self.glyphs)
@@ -170,41 +212,49 @@ class GameLinkPage(QWidget):
         self.teleport_mode.addItem("普通写位置", "teleport")
         self.teleport_mode.addItem("传送门效果", "teleport.portal")
         form.addRow("传送方式", self.teleport_mode)
-        row3 = QHBoxLayout()
+        galaxy_row = QHBoxLayout()
+        galaxy_row.setSpacing(6)
         self.galaxy_mode = QComboBox()
         self.galaxy_mode.addItem("保持当前星系", None)
         self.galaxy_mode.addItem("指定星系编号", "custom")
-        row3.addWidget(self.galaxy_mode)
+        galaxy_row.addWidget(self.galaxy_mode, 1)
         self.galaxy = QSpinBox()
         self.galaxy.setRange(0, 254)
         self.galaxy.setEnabled(False)
         self.galaxy_mode.currentIndexChanged.connect(
             lambda: self.galaxy.setEnabled(self.galaxy_mode.currentData() == "custom"))
-        row3.addWidget(self.galaxy)
+        galaxy_row.addWidget(self.galaxy)
+        form.addRow("目标星系", galaxy_row)
+        transfer_row = QHBoxLayout()
+        transfer_row.setSpacing(6)
         tp = QPushButton("传送到此地址")
         tp.clicked.connect(self._teleport)
-        row3.addWidget(tp)
+        transfer_row.addWidget(tp)
         restore = QPushButton("还原上一次传送")
         restore.clicked.connect(lambda: self._call("restore"))
-        row3.addWidget(restore)
+        transfer_row.addWidget(restore)
+        transfer_row.addStretch(1)
         self._safety_btns.extend([tp, restore])
         self._cap_buttons.extend([(tp, "teleport"), (restore, "restore")])
-        form.addRow("", row3)
+        form.addRow("", transfer_row)
         fv.addLayout(form)
+
         self.portal_note = muted("")
         fv.addWidget(self.portal_note)
-        row4 = QHBoxLayout()
+
+        scan_row = QHBoxLayout()
+        scan_row.setSpacing(6)
         scan = QPushButton("读取当前行星扫描")
         scan.clicked.connect(lambda: self._call("scan", mode="read"))
-        row4.addWidget(scan)
+        scan_row.addWidget(scan)
         self._safety_btns.append(scan)
         self._cap_buttons.append((scan, "scan"))
         self.instant = QCheckBox("游戏内扫描即时完成")
         self.instant.toggled.connect(lambda on: self._call("scan.instant", on=on))
-        row4.addWidget(self.instant)
+        scan_row.addWidget(self.instant)
         self._cap_buttons.append((self.instant, "scan.instant"))
-        row4.addStretch(1)
-        fv.addLayout(row4)
+        scan_row.addStretch(1)
+        fv.addLayout(scan_row)
         self.allow_unverified = QCheckBox("允许未验证游戏版本实验写操作")
         self.allow_unverified.setAccessibleName("允许未验证游戏版本实验写操作")
         self.allow_unverified.setEnabled(False)
@@ -213,28 +263,31 @@ class GameLinkPage(QWidget):
         fv.addWidget(self.allow_unverified)
         self.gating_note = muted("读取安全设置中…")
         fv.addWidget(self.gating_note)
-        root.addWidget(safety)
+        outer.addWidget(safety)
 
         poi = Card("附近兴趣点", "传送门 / 古遗迹 / 货船 / 飞船；需要游戏内代理实机校准")
         ov = poi.v
-        orow = QHBoxLayout()
+        poi_grid = QGridLayout()
+        poi_grid.setHorizontalSpacing(6)
+        poi_grid.setVerticalSpacing(6)
         self.poi_buttons: dict[str, QPushButton] = {}
-        for text, kind in (("传送门", "portal"), ("古遗迹", "ruins"),
-                           ("货船", "freighter"), ("飞船", "ship")):
+        for i, (text, kind) in enumerate((("传送门", "portal"), ("古遗迹", "ruins"),
+                                          ("货船", "freighter"), ("飞船", "ship"))):
             btn = QPushButton(text)
             btn.setToolTip(f"扫描附近的{text}；未校准前不显示结果，也不伪造坐标")
             btn.clicked.connect(lambda _=False, k=kind, t=text: self._scan_poi(k, t))
-            orow.addWidget(btn)
+            poi_grid.addWidget(btn, i // 2, i % 2)
             self.poi_buttons[kind] = btn
             self._cap_buttons.append((btn, "scan.poi"))
-        orow.addStretch(1)
-        ov.addLayout(orow)
+        poi_grid.setColumnStretch(0, 1)
+        poi_grid.setColumnStretch(1, 1)
+        ov.addLayout(poi_grid)
         self.poi_result = PoiDossier()
         self.poi_result.setMinimumHeight(130)
         self.poi_result.set_message(
             "附近兴趣点：需要游戏内代理实机校准；未校准前不会显示任何结果，也不会伪造坐标。")
         ov.addWidget(self.poi_result)
-        root.addWidget(poi)
+        outer.addWidget(poi)
 
         logcard = Card("日志", "诊断数据按 JSON 格式原样记录，便于回报问题")
         logbar = QHBoxLayout()
@@ -248,10 +301,12 @@ class GameLinkPage(QWidget):
         logcard.add_layout(logbar)
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMinimumHeight(160)
+        self.log.setMinimumHeight(150)
+        self.log.setMaximumHeight(220)
         self.log.setStyleSheet("font-family:Consolas,monospace;font-size:11.5px;")
         logcard.add(self.log)
-        root.addWidget(logcard, 1)
+        outer.addWidget(logcard)
+        outer.addStretch(1)
 
         self.portal_mode = self.teleport_mode
         self.portal_combo = self.teleport_mode
@@ -319,8 +374,12 @@ class GameLinkPage(QWidget):
     def _apply_state(self, cap: dict) -> None:
         """按 build/多人/hello 三方结果更新界面与按钮（可单独测试）。"""
         st = cap.get("status") or {}
-        runtime = bool(st.get("runtime_ready"))
+        runtime_files = bool(st.get("runtime_ready"))
+        runtime = (runtime_files and bool(st.get("pymhf_http_api"))
+                   and bool(st.get("nmspy_version")) and bool(st.get("pymhf_version")))
+        self._runtime_files = runtime_files
         self._runtime_ready = runtime
+        self._runtime_error = str(st.get("runtime_error") or "")
         reachable = bool(st.get("reachable"))
         self._reachable = reachable
         hello = st.get("hello") or {}
@@ -335,14 +394,22 @@ class GameLinkPage(QWidget):
         status_zh = {"verified": "已验证", "unverified": "未验证",
                      "unknown": "未知"}.get(status_text.lower(), self._cn(status_text))
         build_id = str(build_info.get("build_id") or known.get("build") or "—")
-        self._chip(self.step_runtime, "1  运行时 ✓" if runtime else "1  运行时 ✗", runtime)
-        self._chip(self.step_mod, "2  游戏内组件 ✓" if st.get("mod_installed") else "2  游戏内组件 ✗",
-                   bool(st.get("mod_installed")))
+        self._chip(self.step_runtime, "1  运行时 ✓" if runtime_files else "1  运行时 ✗",
+                   runtime_files)
+        self._chip(self.step_mod, "2  游戏内组件 ✓" if runtime else "2  游戏内组件 ✗", runtime)
+        if not runtime and st.get("mod_installed"):
+            self.step_mod.setToolTip("游戏内组件文件已安装，但 NMSpy/pymhf 未就绪；请点修复")
+        else:
+            self.step_mod.setToolTip("游戏内组件（NMSpy/pymhf）")
         self._chip(self.step_agent, "3  游戏内代理 ✓" if reachable else "3  游戏内代理 ✗", reachable)
         self._chip(self.build_status, f"游戏版本 {build_id} · {status_zh}", verified)
-        self._chip(self.mp_status,
-                   "多人：高风险写已禁用" if self._multiplayer else "单人：可写",
-                   not self._multiplayer)
+        if self._multiplayer:
+            mp_text, mp_ok = "多人：写已禁用", False
+        elif not verified:
+            mp_text, mp_ok = "单人：未验证只读", True
+        else:
+            mp_text, mp_ok = "单人：可写", True
+        self._chip(self.mp_status, mp_text, mp_ok)
         self.build_status.setToolTip(self._cn(str(build_info.get("reason") or status_zh)))
         if reachable and not self._in_game:
             text = "已注入，但游戏还没进入存档。请载入存档后再读取/传送。"
@@ -354,10 +421,13 @@ class GameLinkPage(QWidget):
                 extra.append("多人模式：传送/还原/扫描写已禁用")
             note = self._cn(str(st.get("note") or ""))
             text = "；".join([x for x in [note, *extra] if x])
+        if not runtime and runtime_files and self._runtime_error:
+            text = f"{text}；组件读取错误：{self._runtime_error}" if text else \
+                f"组件读取错误：{self._runtime_error}"
         self.status.setText(text)
         self.repair_btn.setEnabled(bool(st.get("supported")) and not runtime)
-        self.connect_btn.setEnabled(bool(st.get("supported")))
-        self.start_btn.setEnabled(bool(st.get("supported")))
+        self.connect_btn.setEnabled(bool(st.get("supported")) and runtime)
+        self.start_btn.setEnabled(bool(st.get("supported")) and runtime)
         self.stop_btn.setEnabled(bool(st.get("supported")))
         caps = cap.get("capabilities") or {}
         self._caps = caps
@@ -397,15 +467,16 @@ class GameLinkPage(QWidget):
     def _update_connection_empty(self) -> None:
         state = self.connection_empty
         if not self._runtime_ready:
-            state.title_label.setText("内置运行时未就绪")
+            state.title_label.setText("游戏内组件未就绪")
+            detail = f"（{self._runtime_error}）" if self._runtime_error else ""
             state.description_label.setText(
-                "请先点「修复运行时/游戏内组件」；完成后重新连接游戏。")
+                f"运行时文件或 NMSpy/pymhf 未完整加载{detail}；请点「修复运行时/游戏内组件」。")
             state.description_label.setVisible(True)
             state.show()
         elif not self._reachable:
             state.title_label.setText("尚未连接游戏内代理")
             state.description_label.setText(
-                "进入游戏并载入存档后，点「连接游戏（自动安装游戏内组件）」。")
+                "进入游戏并载入存档后，点「连接游戏」。")
             state.description_label.setVisible(True)
             state.show()
         elif not self._in_game:
@@ -550,7 +621,9 @@ class GameLinkPage(QWidget):
 
     def _connect(self, start_game: bool = False) -> None:
         if not self._runtime_ready:
-            text = "内置运行时未就绪；请先点「修复运行时/游戏内组件」，或重新解压完整包。"
+            detail = f"：{self._runtime_error}" if self._runtime_error else ""
+            text = (f"游戏内组件未就绪{detail}；请先点「修复运行时/游戏内组件」，"
+                    "或重新解压完整包。")
             notify.warn(text)
             self.error_banner.show_error(text)
             return
@@ -631,6 +704,13 @@ class GameLinkPage(QWidget):
         def done(res: dict) -> None:
             self._log(json.dumps(res, ensure_ascii=False, indent=1))
             self.loading_overlay.stop()
+            if res.get("ok") is False:
+                detail = self._cn(str(res.get("runtime_error") or res.get("error") or ""))
+                text = f"修复未完成：{detail or '运行时组件不完整，请重新解压完整安装包'}"
+                self.error_banner.show_error(text)
+                notify.error(text)
+                self.refresh()
+                return
             notify.success("运行时/游戏内组件修复完成。")
             self.refresh()
 
@@ -904,12 +984,10 @@ class GameLinkPage(QWidget):
             return
         galaxy = int(self.galaxy.value()) if self.galaxy_mode.currentData() == "custom" else None
         way = "传送门效果" if portal else "普通写位置"
-        if QMessageBox.warning(
-                self, "确认传送",
+        if not ask_write(self, "确认传送",
                 f"将尝试以{way}把玩家位置写成 {glyphs}"
                 f"（星系：{galaxy if galaxy is not None else '当前'}）。\n"
-                "只支持单人模式。请确认已备份存档。继续？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                "只支持单人模式。请确认已备份存档。继续？",):
             notify.toast("已取消传送。")
             return
         notify.toast(f"正在以{way}传送…")

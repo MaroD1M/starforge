@@ -4,21 +4,24 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QBrush, QColor, QGuiApplication, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox,
-                               QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog,
-                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
-                               QSplitter, QStackedWidget, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+                               QDialog, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
+                               QInputDialog, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem, QPushButton, QSpinBox, QStackedWidget,
+                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
+from ...core import settings as settings_core
 from ...services import favorites, get_services
 from .. import notify
 from ..dialogs.compare import MAX_COMPARE, CompareDialog, merge_compare, ship_key
 from ..dialogs.favorites import FavoritesDialog
+from ..dialogs.locate import LocateDialog
 from ..dialogs.write_back import WriteBackDialog
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.page import PageSplitter, page_layout, scroll_panel
 from ..widgets.page_header import PageHeader
-from ..widgets.ship_card import install_card_delegate
+from ..widgets.ship_card import install_card_delegate, set_card_accessibility
 from ..widgets.ship_viewer import ShipViewer
 from ..widgets.ui import Card, icon_from_png, muted, placeholder_icon
 from ..widgets.worker import run as run_worker
@@ -27,6 +30,45 @@ SHIPS = [("sentinel", "拦截机"), ("fighter", "战斗机"), ("hauler", "运输
          ("explorer", "探索舰"), ("shuttle", "穿梭机"), ("exotic", "异星"),
          ("living", "生物舰"), ("solar", "太阳帆")]
 
+MAX_DEFAULT_WORKERS = 4
+
+
+def default_workers(cpu_count: int | None = None) -> int:
+    """搜索线程数：至少 1，默认不超过 min(4, CPU)。"""
+    try:
+        total = int(cpu_count) if cpu_count is not None else int(os.cpu_count() or 1)
+    except (TypeError, ValueError):
+        total = 1
+    return max(1, min(MAX_DEFAULT_WORKERS, total))
+
+
+def format_estimate(estimate: dict | None, workers: int = 1) -> str:
+    """把 ``search_estimate`` 的结果变成状态栏文案；无数据时返回空串。"""
+    if not isinstance(estimate, dict) or estimate.get("ok") is False:
+        return ""
+    bits = []
+    one_in = estimate.get("one_in")
+    try:
+        odds = int(round(float(one_in))) if one_in else 0
+    except (TypeError, ValueError):
+        odds = 0
+    if odds > 0:
+        bits.append(f"约 1 in {odds:,} 个种子命中")
+    seconds = estimate.get("estimate_seconds")
+    try:
+        secs = float(seconds) if seconds is not None else None
+    except (TypeError, ValueError):
+        secs = None
+    if secs is not None:
+        bits.append(f"预计 {secs:g} 秒（单核）")
+    if not bits:
+        return ""
+    text = "估算：" + "，".join(bits)
+    workers = max(1, int(workers or 1))
+    if workers > 1:
+        text += f" · {workers} 线程"
+    return text
+
 
 class ShipLabPage(QWidget):
     def __init__(self, parent=None):
@@ -34,6 +76,9 @@ class ShipLabPage(QWidget):
         self.svc = get_services()
         self._job = None
         self._loaded = False
+        self._want: set[str] = set()
+        self._avoid: set[str] = set()
+        self._updating_checks = False
         self._results: list[dict] = []
         self._compare_rows: list[dict] = []
         self._thumb_queue: list[QListWidgetItem] = []
@@ -69,8 +114,7 @@ class ShipLabPage(QWidget):
     # ---------------------------------------------------------------- UI
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 8)
+        root = page_layout(self)
         self.header = PageHeader(
             "飞船实验室",
             "条件 → 结果 → 3D：在左侧勾选部件，搜索并挑选飞船，再在右侧查看模型与操作。")
@@ -84,13 +128,15 @@ class ShipLabPage(QWidget):
         self.header.add_action(favorites_btn)
         root.addWidget(self.header)
 
-        split = QSplitter(Qt.Horizontal)
+        split = PageSplitter("ship_lab")
         root.addWidget(split, 1)
 
-        split.addWidget(self._build_filters())
+        split.addWidget(scroll_panel(self._build_filters()))
         split.addWidget(self._build_results())
-        split.addWidget(self._build_inspector())
-        split.setSizes([300, 700, 420])
+        split.addWidget(scroll_panel(self._build_inspector()))
+        split.setStretchFactor(1, 1)
+        split.set_default_sizes([333, 520, 400])
+        split.restore()
 
     def _build_filters(self) -> QWidget:
         wrap = Card("条件", "点部件 = 加入当前模式")
@@ -121,11 +167,12 @@ class ShipLabPage(QWidget):
         v.addWidget(self.filter)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["部件", "组"])
-        self.tree.setColumnWidth(0, 200)
+        self.tree.setHeaderLabels(["部件"])
+        self.tree.setColumnCount(1)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.setIconSize(QSize(40, 40))
         self.tree.setStyleSheet("QTreeWidget::item { height: 38px; }")
-        self.tree.itemChanged.connect(self._update_chips)
+        self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.itemClicked.connect(self._lazy_part_icon)
         v.addWidget(self.tree, 1)
 
@@ -155,6 +202,7 @@ class ShipLabPage(QWidget):
         v.addWidget(self.chips)
 
         paint = QHBoxLayout()
+        paint.setSpacing(6)
         self.look_on = QCheckBox("按涂装筛")
         paint.addWidget(self.look_on)
         self.primary = QPushButton("主色")
@@ -164,17 +212,47 @@ class ShipLabPage(QWidget):
         self.secondary = QPushButton("副色")
         self.secondary.clicked.connect(lambda: self._pick_color("secondary"))
         paint.addWidget(self.secondary)
+        paint.addStretch(1)
         v.addLayout(paint)
+        paint2 = QHBoxLayout()
+        paint2.setSpacing(6)
+        self.secondary_on = QCheckBox("副色也接近")
+        paint2.addWidget(self.secondary_on)
+        paint2.addWidget(QLabel("容差"))
+        self.tol = QComboBox()
+        for text, value in (("很接近 0.10", 0.10), ("接近 0.18", 0.18),
+                            ("宽松 0.28", 0.28), ("很宽松 0.40", 0.40)):
+            self.tol.addItem(text, value)
+        self.tol.setCurrentIndex(1)
+        paint2.addWidget(self.tol, 1)
+        v.addLayout(paint2)
         self._colors = {"primary": QColor("#f2c744"), "secondary": QColor("#1c1c22")}
         self._paint_buttons()
 
-        v.addWidget(QLabel("搜索预算"))
-        self.budget = QComboBox()
-        self.budget.addItem("2000 万（约 1–2 秒）", 20_000_000)
-        self.budget.addItem("2 亿（约 10–15 秒）", 200_000_000)
-        self.budget.setCurrentIndex(1)
-        self.budget.addItem("20 亿（约 2–3 分钟）", 2_000_000_000)
+        budget_label = QLabel("搜索预算")
+        budget_label.setToolTip("按百万种子计；越大越慢，但更容易命中稀有组合")
+        v.addWidget(budget_label)
+        self.budget = QSpinBox()
+        self.budget.setRange(1, 2000)
+        self.budget.setValue(200)
+        self.budget.setSingleStep(10)
+        self.budget.setSuffix(" 百万")
         v.addWidget(self.budget)
+
+        workers_row = QHBoxLayout()
+        workers_row.addWidget(QLabel("并行线程"))
+        self.workers = QSpinBox()
+        cpu_total = max(1, int(os.cpu_count() or 1))
+        max_workers = max(1, min(8, cpu_total))
+        self.workers.setRange(1, max_workers)
+        preferred = int(getattr(settings_core.current(), "workers", 0) or 0)
+        self.workers.setValue(
+            preferred if 1 <= preferred <= max_workers else default_workers(cpu_total))
+        self.workers.setToolTip(
+            f"默认 {default_workers(cpu_total)}（不超过 min(4, CPU)）；"
+            "机器较慢或界面卡顿时可调回 1")
+        workers_row.addWidget(self.workers, 1)
+        v.addLayout(workers_row)
 
         row2 = QHBoxLayout()
         self.search_btn = QPushButton("开始搜索")
@@ -189,6 +267,10 @@ class ShipLabPage(QWidget):
         demo.clicked.connect(self._demo)
         row2.addWidget(demo)
         v.addLayout(row2)
+        self.estimate = muted("")
+        self.estimate.setWordWrap(True)
+        self.estimate.setAccessibleName("搜索估算")
+        v.addWidget(self.estimate)
         self.status = muted("选几个部件，点开始搜索")
         v.addWidget(self.status)
         return wrap
@@ -202,33 +284,43 @@ class ShipLabPage(QWidget):
         self.result_info.setObjectName("muted")
         bar.addWidget(self.result_info)
         bar.addStretch(1)
-        self.add_compare_btn = QPushButton("加入对比")
-        self.add_compare_btn.setToolTip("把选中的 1–3 艘飞船加入对比（Ctrl / Shift 可多选）")
-        self.add_compare_btn.clicked.connect(self._add_selected_to_compare)
-        bar.addWidget(self.add_compare_btn)
-        self.compare_btn = QPushButton("对比 (0)")
-        self.compare_btn.setToolTip("并排对比 2–3 艘飞船")
-        self.compare_btn.setEnabled(False)
-        self.compare_btn.clicked.connect(self._open_compare)
-        bar.addWidget(self.compare_btn)
-        self.clear_compare_btn = QPushButton("清空对比")
-        self.clear_compare_btn.setEnabled(False)
-        self.clear_compare_btn.clicked.connect(self._clear_compare)
-        bar.addWidget(self.clear_compare_btn)
-        self.clear_results_btn = QPushButton("清空结果")
-        self.clear_results_btn.setToolTip("清空当前结果列表（不影响对比）")
-        self.clear_results_btn.clicked.connect(self._clear_results)
-        bar.addWidget(self.clear_results_btn)
-        self.reset_conditions_btn = QPushButton("重置条件")
-        self.reset_conditions_btn.setToolTip("清除部件选择、涂装筛选与搜索预算")
-        self.reset_conditions_btn.clicked.connect(self._reset_conditions)
-        bar.addWidget(self.reset_conditions_btn)
         self.view_mode = QComboBox()
         self.view_mode.addItem("网格", "grid")
         self.view_mode.addItem("列表", "list")
         self.view_mode.currentIndexChanged.connect(self._apply_view_mode)
         bar.addWidget(self.view_mode)
         v.addLayout(bar)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(6)
+        self.add_compare_btn = QPushButton("加入对比")
+        self.add_compare_btn.setToolTip("把选中的 1–3 艘飞船加入对比（Ctrl / Shift 可多选）")
+        self.add_compare_btn.clicked.connect(self._add_selected_to_compare)
+        actions.addWidget(self.add_compare_btn)
+        self.compare_btn = QPushButton("对比 (0)")
+        self.compare_btn.setToolTip("并排对比 2–3 艘飞船")
+        self.compare_btn.setEnabled(False)
+        self.compare_btn.clicked.connect(self._open_compare)
+        actions.addWidget(self.compare_btn)
+        self.clear_compare_btn = QPushButton("清空对比")
+        self.clear_compare_btn.setEnabled(False)
+        self.clear_compare_btn.clicked.connect(self._clear_compare)
+        actions.addWidget(self.clear_compare_btn)
+        actions.addStretch(1)
+        v.addLayout(actions)
+
+        actions2 = QHBoxLayout()
+        actions2.setSpacing(6)
+        self.clear_results_btn = QPushButton("清空结果")
+        self.clear_results_btn.setToolTip("清空当前结果列表（不影响对比）")
+        self.clear_results_btn.clicked.connect(self._clear_results)
+        actions2.addWidget(self.clear_results_btn)
+        self.reset_conditions_btn = QPushButton("重置条件")
+        self.reset_conditions_btn.setToolTip("清除部件选择、涂装筛选与搜索预算")
+        self.reset_conditions_btn.clicked.connect(self._reset_conditions)
+        actions2.addWidget(self.reset_conditions_btn)
+        actions2.addStretch(1)
+        v.addLayout(actions2)
         self.error_banner = ErrorBanner("", box)
         self.error_banner.set_retry_callback(self._start_search)
         v.addWidget(self.error_banner)
@@ -239,13 +331,14 @@ class ShipLabPage(QWidget):
         self.results.setWordWrap(False)
         self.results.setFocusPolicy(Qt.StrongFocus)
         self.results.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.results.setAccessibleName("搜索结果")
+        self.results.setAccessibleDescription("飞船卡片列表；Ctrl 或 Shift 可多选")
         self._card_delegate = install_card_delegate(self.results, 110)
         self.results.itemSelectionChanged.connect(self._select_result)
         self.results.itemDoubleClicked.connect(lambda _i: self._copy_seed())
         self.empty = EmptyState(
             "还没有搜索结果",
-            "在左侧勾选部件条件，然后点「开始搜索」；结果会显示在这里，"
-            "右侧可查看 3D 模型与操作。",
+            "选好部件后点「开始搜索」；结果会显示在这里。",
             icon="◇", button_text="试试示例", parent=box)
         self._empty_action = "demo"
         self.empty.actionTriggered.connect(self._on_empty_action)
@@ -287,40 +380,41 @@ class ShipLabPage(QWidget):
         self.detail = muted("选中结果后在这里查看 3D 模型与操作。")
         v.addWidget(self.detail)
         row = QHBoxLayout()
+        row.setSpacing(6)
         self.copy_btn = QPushButton("复制种子")
         self.copy_btn.clicked.connect(self._copy_seed)
         row.addWidget(self.copy_btn)
         self.fav_btn = QPushButton("收藏")
         self.fav_btn.clicked.connect(self._toggle_fav)
         row.addWidget(self.fav_btn)
-        self.favs_btn = QPushButton("收藏夹")
-        self.favs_btn.setToolTip("管理已收藏飞船，可载入到实验室")
-        self.favs_btn.clicked.connect(self._open_favorites)
-        row.addWidget(self.favs_btn)
         self.share_btn = QPushButton("分享码")
         self.share_btn.setToolTip("复制当前飞船的 nsh1: 分享码")
         self.share_btn.clicked.connect(self._copy_share)
         row.addWidget(self.share_btn)
-        self.glb_btn = QPushButton("导出模型（glb）")
-        self.glb_btn.clicked.connect(self._export_glb)
-        row.addWidget(self.glb_btn)
         self.raster_btn = QPushButton("渲染图")
         self.raster_btn.clicked.connect(self._show_current_raster)
         row.addWidget(self.raster_btn)
+        row.addStretch(1)
         v.addLayout(row)
         row2 = QHBoxLayout()
-        self.write_btn = QPushButton("写入存档…")
+        row2.setSpacing(6)
+        self.locate_btn = QPushButton("查星系")
+        self.locate_btn.setToolTip("反查该种子可能来自的星系；候选需生成器证实，可能欠定")
+        self.locate_btn.clicked.connect(self._locate_seed)
+        row2.addWidget(self.locate_btn)
+        self.glb_btn = QPushButton("导出 glb")
+        self.glb_btn.clicked.connect(self._export_glb)
+        row2.addWidget(self.glb_btn)
+        self.write_btn = QPushButton("写入存档")
         self.write_btn.setEnabled(False)
         self.write_btn.setToolTip("写入同型号槽位；先备份，写入后读回校验")
         self.write_btn.clicked.connect(self._open_write)
         row2.addWidget(self.write_btn)
-        self.import_btn = QPushButton("导入分享码…")
+        self.import_btn = QPushButton("导入分享")
         self.import_btn.setToolTip("粘贴他人分享的 nsh1: 分享码")
         self.import_btn.clicked.connect(self._import_share)
         row2.addWidget(self.import_btn)
-        self.more_btn = QPushButton("更多")
-        self.more_btn.setEnabled(False)
-        row2.addWidget(self.more_btn)
+        row2.addStretch(1)
         v.addLayout(row2)
         return wrap
 
@@ -343,6 +437,9 @@ class ShipLabPage(QWidget):
 
         def done(res: dict) -> None:
             self._part_icon_queue.clear()
+            self._want.clear()
+            self._avoid.clear()
+            self._updating_checks = True
             total = 0
             for g in res.get("groups") or []:
                 top = QTreeWidgetItem([g.get("label") or g.get("group"), ""])
@@ -361,6 +458,8 @@ class ShipLabPage(QWidget):
                     total += 1
                 self.tree.addTopLevelItem(top)
                 top.setExpanded(True)
+            self._updating_checks = False
+            self._update_chips()
             self.status.setText(f"部件表已加载（{self._source_label(res.get('source'))}）")
             if announce:
                 notify.success(f"部件表已刷新（{self._source_label(res.get('source'))}）")
@@ -443,15 +542,30 @@ class ShipLabPage(QWidget):
             top.setHidden(not visible)
 
     def _checked(self) -> tuple[list[str], list[str]]:
-        want, avoid = [], []
-        avoid_mode = self.mode.currentData() == "avoid"
-        for i in range(self.tree.topLevelItemCount()):
-            top = self.tree.topLevelItem(i)
-            for j in range(top.childCount()):
-                child = top.child(j)
-                if child.checkState(0) == Qt.Checked:
-                    (avoid if avoid_mode else want).append(child.data(0, Qt.UserRole))
-        return want, avoid
+        # 条件独立于当前模式：切换“想要/不要”不会改写已选条件。
+        return sorted(self._want), sorted(self._avoid)
+
+    def _on_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        if self._updating_checks or column != 0:
+            return
+        part = item.data(0, Qt.UserRole)
+        if not part:
+            return
+        checked = item.checkState(0) == Qt.Checked
+        if checked:
+            if self.mode.currentData() == "avoid":
+                self._avoid.add(part)
+                self._want.discard(part)
+                item.setForeground(0, QBrush(QColor("#f2765c")))
+            else:
+                self._want.add(part)
+                self._avoid.discard(part)
+                item.setForeground(0, QBrush(QColor("#49d19a")))
+        else:
+            self._want.discard(part)
+            self._avoid.discard(part)
+            item.setForeground(0, QBrush(QColor("#e2e7f0")))
+        self._update_chips()
 
     def _update_chips(self, *_args) -> None:
         want, avoid = self._checked()
@@ -466,10 +580,16 @@ class ShipLabPage(QWidget):
 
     def _clear_checks(self, announce: bool = False) -> None:
         want, avoid = self._checked()
-        for i in range(self.tree.topLevelItemCount()):
-            top = self.tree.topLevelItem(i)
-            for j in range(top.childCount()):
-                top.child(j).setCheckState(0, Qt.Unchecked)
+        self._updating_checks = True
+        try:
+            for i in range(self.tree.topLevelItemCount()):
+                top = self.tree.topLevelItem(i)
+                for j in range(top.childCount()):
+                    top.child(j).setCheckState(0, Qt.Unchecked)
+        finally:
+            self._updating_checks = False
+        self._want.clear()
+        self._avoid.clear()
         self._update_chips()
         if announce:
             if want or avoid:
@@ -483,9 +603,12 @@ class ShipLabPage(QWidget):
         self.mode.setCurrentIndex(0)
         self.filter.clear()
         self.look_on.setChecked(False)
+        self.secondary_on.setChecked(False)
+        self.tol.setCurrentIndex(1)
         self._colors = {"primary": QColor("#f2c744"), "secondary": QColor("#1c1c22")}
         self._paint_buttons()
-        self.budget.setCurrentIndex(1)
+        self.budget.setValue(200)
+        self.workers.setValue(default_workers())
         if self.ship.currentIndex() != 0:
             self.ship.setCurrentIndex(0)
         self._update_chips()
@@ -548,8 +671,7 @@ class ShipLabPage(QWidget):
         self._reset_inspector()
         self._show_empty(
             "还没有搜索结果",
-            "在左侧勾选部件条件，然后点「开始搜索」；结果会显示在这里，"
-            "右侧可查看 3D 模型与操作。",
+            "选好部件后点「开始搜索」；结果会显示在这里。",
             "试试示例", "demo")
         self.status.setText("结果已清空")
         notify.success("结果已清空")
@@ -564,8 +686,11 @@ class ShipLabPage(QWidget):
         labels = {"primary": "主色", "secondary": "副色"}
         for role, btn in (("primary", self.primary), ("secondary", self.secondary)):
             c = self._colors[role]
+            text = "#0a0c11" if c.lightness() > 145 else "#e2e7f0"
             btn.setText(f"{labels[role]} {c.name()}")
-            btn.setStyleSheet(f"border:1px solid {c.name()}; color:{c.name()};")
+            btn.setStyleSheet(
+                f"border:1px solid {c.name()}; border-radius:6px;"
+                f" background:{c.name()}; color:{text}; padding:5px 8px;")
 
     def _demo(self) -> None:
         if not self.tree.topLevelItemCount():
@@ -574,12 +699,25 @@ class ShipLabPage(QWidget):
         # 选第一组第一个部件作为示例
         top = self.tree.topLevelItem(0)
         if top and top.childCount():
+            self.mode.setCurrentIndex(0)
             top.child(0).setCheckState(0, Qt.Checked)
         self._update_chips()
         self.status.setText("已填入示例条件")
         notify.success("已填入示例条件")
 
     # ---------------------------------------------------------------- 搜索
+
+    def _show_estimate(self, payload: dict, workers: int) -> None:
+        """搜索前显示 1 in N / 预计秒数；服务不可用或失败时静默降级。"""
+        fn = getattr(self.svc, "search_estimate", None)
+        if not callable(fn):
+            self.estimate.setText("")
+            return
+        try:
+            text = format_estimate(fn(dict(payload)), workers)
+        except Exception:                                  # noqa: BLE001
+            text = ""
+        self.estimate.setText(text)
 
     def _start_search(self) -> None:
         want, avoid = self._checked()
@@ -590,10 +728,17 @@ class ShipLabPage(QWidget):
         look = None
         if self.look_on.isChecked():
             c = self._colors["primary"]
-            look = {"primary": [c.redF(), c.greenF(), c.blueF()], "tol": 0.18}
+            look = {"primary": [c.redF(), c.greenF(), c.blueF()],
+                    "tol": float(self.tol.currentData() or 0.18)}
+            if self.secondary_on.isChecked():
+                c2 = self._colors["secondary"]
+                look["secondary"] = [c2.redF(), c2.greenF(), c2.blueF()]
+        workers = max(1, int(self.workers.value() or 1))
         payload = {"ship": self.ship.currentData(), "want": want, "avoid": avoid,
-                   "look": look, "limit": 24, "max_seeds": int(self.budget.currentData()),
-                   "time_limit": 180.0, "workers": 1}
+                   "look": look, "limit": 24,
+                   "max_seeds": int(self.budget.value()) * 1_000_000,
+                   "time_limit": 180.0, "workers": workers}
+        self._show_estimate(payload, workers)
         self.search_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self._thumb_timer.stop()
@@ -669,6 +814,7 @@ class ShipLabPage(QWidget):
                 item = QListWidgetItem(row.get("seed") or "")
                 item.setData(Qt.UserRole, row)
                 item.setToolTip(f"{row.get('type_label') or row.get('type')}  {row.get('seed')}")
+                set_card_accessibility(item, row)
                 self.results.addItem(item)
                 self._thumb_queue.append(item)
             self._mark_compare_items()
@@ -778,8 +924,10 @@ class ShipLabPage(QWidget):
             row = item.data(Qt.UserRole) or {}
             key = ship_key(row)
             base = f"{row.get('type_label') or row.get('type')}  {row.get('seed')}"
-            item.setData(Qt.UserRole + 1, key in keys)
-            item.setToolTip(base + ("\n已加入对比" if key in keys else ""))
+            in_compare = key in keys
+            item.setData(Qt.UserRole + 1, in_compare)
+            item.setToolTip(base + ("\n已加入对比" if in_compare else ""))
+            set_card_accessibility(item, row, in_compare=in_compare)
 
     def _open_compare(self) -> None:
         if len(self._compare_rows) < 2:
@@ -872,6 +1020,17 @@ class ShipLabPage(QWidget):
             QGuiApplication.clipboard().setText(row.get("seed") or "")
             self.status.setText("种子已复制")
 
+    def _locate_seed(self) -> None:
+        row = self._current_row()
+        seed = str((row or {}).get("seed") or "").strip()
+        if not seed:
+            self.status.setText("先选中一艘飞船再反查星系")
+            notify.warn("先选中一艘飞船再反查星系")
+            return
+        self.status.setText(f"正在反查 {seed} 所在星系…")
+        dialog = LocateDialog(seed, self)
+        dialog.exec()
+
     def _open_write(self) -> None:
         row = self._current_row()
         if not row:
@@ -912,6 +1071,9 @@ class ShipLabPage(QWidget):
         else:
             self.status.setText("已取消收藏")
             notify.warn("已取消收藏")
+
+    def open_favorites(self) -> None:
+        self._open_favorites()
 
     def _open_favorites(self) -> None:
         dialog = FavoritesDialog(self)
@@ -978,6 +1140,7 @@ class ShipLabPage(QWidget):
         item = QListWidgetItem(row.get("seed") or "")
         item.setData(Qt.UserRole, row)
         item.setToolTip(f"{row.get('type_label') or row.get('type')}  {row.get('seed')}")
+        set_card_accessibility(item, row)
         self.results.addItem(item)
         self.results.clearSelection()
         self.results.setCurrentItem(item)

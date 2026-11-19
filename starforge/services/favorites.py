@@ -518,5 +518,5 @@ __all__ = [
     "toggle_favorite", "is_favorite", "export_favorites", "import_favorites",
     "import_data", "import_items", "load", "all_favorites",
     "encode_share", "decode_share", "share_code", "make_share_code",
-    "parse_share_code", "decode_share_code", "encode", "decode", "import",
+    "parse_share_code", "decode_share_code", "encode", "decode",
 ]

@@ -21,7 +21,9 @@ from typing import Any
 
 
 # 这些能力会改写游戏状态（位置/发现列表/扫描进度），必须只在已验证 build 上开放。
-HIGH_RISK_CAPABILITIES = frozenset({"teleport", "restore", "scan.discover", "scan.instant"})
+HIGH_RISK_CAPABILITIES = frozenset({
+    "teleport", "teleport.portal", "restore", "scan.discover", "scan.instant",
+})
 
 
 def _shipped_dir() -> Path:

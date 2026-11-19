@@ -27,6 +27,8 @@ _EXPERIMENTAL_WRITE_CAPABILITIES = frozenset({
     "teleport", "restore", "scan.instant", "teleport.portal",
 })
 _MULTIPLAYER_REASON = "多人模式已启用：高风险写操作被禁用"
+_AGENT_CONFIRM_TIMEOUT = 3.0
+_AGENT_CONFIRM_INTERVAL = 0.25
 
 
 def _ok(**kw: Any) -> dict:
@@ -36,6 +38,46 @@ def _ok(**kw: Any) -> dict:
 def _brief(value: Any, limit: int = 240) -> str:
     text = str(value or "").replace("\n", " ").strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+_REDACT_KEY_HINTS = ("token", "secret", "password", "passwd", "api_key", "apikey",
+                     "authorization", "cookie", "session")
+_REDACT_TEXT_PATTERNS = (
+    __import__("re").compile(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=-]+)"),
+    __import__("re").compile(r"(?i)(authorization\s*[:=]\s*)([^\r\n]+)"),
+    __import__("re").compile(
+        r"(?i)((?:access_|refresh_|api_)?token|secret|password|passwd|api[_-]?key)"
+        r"(\s*[:=]\s*)([^\s,;]+)"),
+)
+
+
+def _redact_text(text: Any) -> str:
+    """日志/诊断文本中常见的凭据值一律替换为 ***，避免诊断包泄密。"""
+    out = str(text or "")
+    for pat in _REDACT_TEXT_PATTERNS:
+        if pat.groups == 2:
+            out = pat.sub(lambda m: m.group(1) + "***", out)
+        else:
+            out = pat.sub(lambda m: m.group(1) + m.group(2) + "***", out)
+    return out
+
+
+def _redact(value: Any) -> Any:
+    """递归脱敏：token/secret/password 等键值以及字符串里的凭据片段。"""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(hint in lowered for hint in _REDACT_KEY_HINTS):
+                out[key] = "***"
+            else:
+                out[key] = _redact(item)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return _redact_text(value)
+    return value
 
 
 def _record(kind: str, title: str, detail: Any = "", ref: str | None = None,
@@ -162,6 +204,7 @@ class Services:
             "gamedata_dir": s.gamedata_dir,
             "game_dir": s.game_dir,
             "backup_keep": s.backup_keep,
+            "workers": s.workers,
             "port": s.port,
             "theme": s.theme,
             "allow_unverified_agent": s.allow_unverified_agent,
@@ -352,6 +395,175 @@ class Services:
         after = (res.get("after") or {}).get("class") or "?"
         _record("write", "修改船级成功",
                 f"槽位 {res.get('slot', slot)} · {before} → {after} · "
+                f"备份 {res.get('backup') or '无'}", "mine")
+        return _ok(**res)
+
+    # ------------------------------------------------------------ 船队 / 设计器扩展
+
+    def fleet_extras(self, path: str | None = None) -> dict:
+        """只读读取货船、护卫舰与多用途工具；每项独立报告不可用原因。"""
+        from ..core.errors import SaveFormatError
+        from ..save import library
+
+        p = library.resolve(path)
+        kind = library.classify(p)
+        if kind != "player":
+            reason = {
+                "account": "这是账号数据，不是玩家存档（没有船队字段）",
+                "manifest": "这是游戏的清单文件（mf_ 前缀），不含船队数据",
+            }.get(kind, "无法识别的文件类型，请选择 save.hg 或 save2.hg")
+            raise SaveFormatError(reason)
+
+        paths.ensure_shipwright_importable()
+        from nms_save import extras as nms_extras
+        from nms_save import save as nms_save
+        from nms_save import ships as nms_ships
+
+        opened = nms_save.open_save(str(p))
+        readable = opened.readable
+        out: dict[str, Any] = {"path": str(p), "freighter": None,
+                               "frigates": [], "multitools": [], "errors": {}}
+        for key, fn in (("freighter", nms_ships.get_freighter),
+                        ("frigates", nms_extras.frigates),
+                        ("multitools", nms_extras.multitools)):
+            try:
+                out[key] = fn(readable)
+            except Exception as e:                          # noqa: BLE001
+                out["errors"][key] = f"{type(e).__name__}: {e}"
+        out["available"] = {key: key not in out["errors"]
+                            for key in ("freighter", "frigates", "multitools")}
+        return _ok(**out)
+
+    def apply_design(self, path: str, ship: str, seed: str, slot: Any = "new",
+                     name: str = "", parts: list[str] | None = None,
+                     paint: dict | None = None, confirm: bool = False,
+                     copy: bool = False) -> dict:
+        """把设计器的一套种子写入新船槽或替换现有槽；可选涂装。
+
+        新建飞船使用 Shipwright 已验证的 ``ships.create_ship``（复制主船后换模型/种子），
+        改色使用 ``ships.set_ship_paint``；两者都只通过 ``transact_save`` 写入。
+        """
+        from ..core.errors import BadRequest, WriteRefused
+        from ..data.shipref import ShipRef, type_from_model
+        from ..save import library, transaction
+
+        if not confirm:
+            raise BadRequest("缺少 confirm=true（写操作必须二次确认）")
+        ref = ShipRef(type=str(ship or ""), seed=str(seed or ""), parts=parts,
+                      name=str(name or ""), source="design").normalized()
+        paths.ensure_shipwright_importable()
+        from nms_procgen import ROOTS
+        from nms_save import player as nms_player
+        from nms_save import ships as nms_ships
+
+        rel = ROOTS.get(ref.type)
+        if not rel or not rel.lower().endswith(".descriptor.mbin"):
+            raise BadRequest(f"设计器暂不支持写入这个船型：{ref.type}")
+        filename = "MODELS/" + rel[len("models/"):].upper().replace(
+            ".DESCRIPTOR.MBIN", ".SCENE.MBIN")
+
+        paint = dict(paint or {})
+        if paint:
+            paint.setdefault("palette", "FREIGHTER")
+            primary = paint.get("primary") or (0.0, 0.0, 0.0)
+            accent = paint.get("accent")
+        else:
+            primary = accent = None
+
+        p = str(library.resolve(path))
+        snapshot: dict[str, Any] = {}
+
+        def mutate(readable: dict):
+            owned = readable.get("BaseContext", {}).get("PlayerStateData", {}).get(
+                "ShipOwnership", [])
+            before = {s.index: (s.name or "", s.filename, s.seed)
+                      for s in nms_ships.list_ships(readable)}
+            snapshot["before"] = before
+            snapshot["before_paint"] = {}
+            if str(slot).strip().lower() == "new":
+                empty = [i for i, entry in enumerate(owned)
+                         if not entry.get("Resource", {}).get("Filename")]
+                if not empty:
+                    raise BadRequest("存档里没有空船槽；请先腾出一个槽位或选择替换现有飞船")
+                target = empty[0]
+                clone_from = nms_player.primary_ship(readable)
+                try:
+                    nms_ships.create_ship(readable, target, filename, ref.seed,
+                                          str(name or ref.type_label)[:64], clone_from)
+                except Exception as e:                      # noqa: BLE001
+                    raise BadRequest(f"新建飞船失败：{type(e).__name__}: {e}") from e
+                what = f"新建飞船（槽位 {target}）"
+            else:
+                try:
+                    target = int(slot)
+                except (TypeError, ValueError) as e:
+                    raise BadRequest(f"槽位必须是整数或 new，收到 {slot!r}") from e
+                if not (0 <= target < len(owned)):
+                    raise BadRequest(f"存档里没有槽位 {target}")
+                if not owned[target].get("Resource", {}).get("Filename"):
+                    raise BadRequest(f"槽位 {target} 是空的；请选择新建飞船")
+                ships = nms_ships.list_ships(readable)
+                current = next((s for s in ships if s.index == target), None)
+                if current is None:
+                    raise BadRequest(f"槽位 {target} 没有可读取的飞船")
+                cur_type = type_from_model(current.filename)
+                try:
+                    if cur_type == ref.type:
+                        nms_ships.set_ship_seed(readable, target, ref.seed)
+                    else:
+                        nms_ships.set_ship_model(readable, target, filename, ref.seed)
+                    if name:
+                        nms_ships.set_ship_name(readable, target, str(name)[:64])
+                except Exception as e:                      # noqa: BLE001
+                    raise BadRequest(f"写入飞船失败：{type(e).__name__}: {e}") from e
+                what = f"替换槽位 {target}"
+            snapshot["target"] = target
+            snapshot["what"] = what
+            if paint:
+                try:
+                    snapshot["before_paint"] = nms_ships.get_ship_paint(readable, target)
+                    snapshot["paint"] = nms_ships.set_ship_paint(
+                        readable, target, primary=primary, accent=accent,
+                        palette_id=str(paint.get("palette") or "FREIGHTER"))
+                except Exception as e:                      # noqa: BLE001
+                    raise BadRequest(f"涂装写入失败：{type(e).__name__}: {e}") from e
+            return {"slot": target, "what": what, "seed": ref.seed}
+
+        def verify(readable: dict):
+            target = snapshot["target"]
+            ship_now = next((s for s in nms_ships.list_ships(readable)
+                             if s.index == target), None)
+            if ship_now is None:
+                raise WriteRefused(f"写后校验失败：槽位 {target} 没有飞船")
+            after_ref = ShipRef.from_save_ship(ship_now).normalized()
+            if after_ref.type != ref.type:
+                raise WriteRefused(
+                    f"写后校验失败：船型读到 {after_ref.type}，预期 {ref.type}")
+            if int(after_ref.seed, 16) != int(ref.seed, 16):
+                raise WriteRefused(
+                    f"写后校验失败：种子读到 {after_ref.seed}，预期 {ref.seed}")
+            if name and (ship_now.name or "") != str(name)[:64]:
+                raise WriteRefused("写后校验失败：飞船名称与预期不符")
+            got_paint = None
+            if paint:
+                got_paint = nms_ships.get_ship_paint(readable, target)
+                want = snapshot.get("paint") or {}
+                if not got_paint or got_paint.get("palette") != want.get("palette"):
+                    raise WriteRefused("写后校验失败：涂装调色板与预期不符")
+                if got_paint.get("primary_index") != want.get("primary_index"):
+                    raise WriteRefused("写后校验失败：涂装主色索引与预期不符")
+            return {"slot": target, "type": after_ref.type, "seed": after_ref.seed,
+                    "name": ship_now.name or "", "paint": got_paint,
+                    "what": snapshot.get("what", "")}
+
+        try:
+            res = transaction.transact_save(p, mutate, verify, copy=copy)
+        except Exception as e:                              # noqa: BLE001
+            _record("write", "写入设计失败",
+                    f"{ref.type} {ref.seed} · {type(e).__name__}: {e}", "mine", False)
+            raise
+        _record("write", "写入设计成功",
+                f"{res.get('after', {}).get('what', '')} · {ref.type} {ref.seed} · "
                 f"备份 {res.get('backup') or '无'}", "mine")
         return _ok(**res)
 
@@ -604,6 +816,30 @@ class Services:
 
         return agent_install.status()
 
+    def agent_log_tail(self, lines: int = 200) -> dict:
+        """只读 launcher.log 末尾；UI 可自行决定是否展示，不在这里改界面。"""
+        from ..live import agent_install
+
+        return agent_install.tail_launcher_log(lines=lines)
+
+    def agent_snapshots(self, limit: int = 20) -> dict:
+        """只读传送快照文件（由游戏内 agent 在传送前写入）。"""
+        from ..live import agent_install
+
+        path = agent_install.snapshots_path()
+        try:
+            import json
+
+            data = json.loads(path.read_text("utf-8"))
+            rows = data.get("snapshots") if isinstance(data, dict) else None
+            return {"ok": True, "path": str(path), "exists": True,
+                    "snapshots": list(rows or [])[-max(1, int(limit)):]}
+        except FileNotFoundError:
+            return {"ok": True, "path": str(path), "exists": False, "snapshots": []}
+        except (OSError, ValueError, TypeError) as e:
+            return {"ok": False, "path": str(path), "exists": path.exists(),
+                    "snapshots": [], "error": f"{type(e).__name__}: {e}"}
+
     def agent_install_mod(self) -> dict:
         from ..live import agent_install
 
@@ -800,9 +1036,58 @@ class Services:
                 return {"ok": False, "code": "E_MULTIPLAYER", "error": _MULTIPLAYER_REASON,
                         "multiplayer": True}
         try:
-            return {"ok": True, **client.call(cmd, **params)}
+            res = {"ok": True, **client.call(cmd, **params)}
         except Exception as e:                              # noqa: BLE001
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        if cmd in ("teleport", "teleport.portal") and res.get("ok") and not res.get("confirmed"):
+            res = self._confirm_teleport_location(client, res)
+        return res
+
+    @staticmethod
+    def _location_key(loc: dict | None) -> tuple[int, ...] | None:
+        loc = loc or {}
+        keys = ("planet", "system", "voxel_x", "voxel_y", "voxel_z", "reality")
+        if not all(k in loc for k in keys):
+            return None
+        try:
+            return tuple(int(loc[k]) for k in keys)
+        except (TypeError, ValueError):
+            return None
+
+    def _confirm_teleport_location(self, client, res: dict,
+                                   timeout: float | None = None,
+                                   interval: float | None = None) -> dict:
+        """传送后轮询 /player 对比目标位置；只做读回，不伪造成功也不自动改写存档。"""
+        import time
+
+        dest = res.get("after") if isinstance(res.get("after"), dict) else None
+        want = self._location_key(dest)
+        if want is None:
+            res["confirmed"] = False
+            res["confirmation"] = "unconfirmed"
+            res["confirm_error"] = "agent 未返回可对比的目标位置"
+            return res
+        timeout = _AGENT_CONFIRM_TIMEOUT if timeout is None else max(0.0, float(timeout))
+        interval = _AGENT_CONFIRM_INTERVAL if interval is None else max(0.0, float(interval))
+        deadline = time.monotonic() + timeout
+        last_error = ""
+        while True:
+            try:
+                got = self._location_key((client.call("player") or {}).get("location"))
+                if got == want:
+                    res["confirmed"] = True
+                    res["confirmation"] = "confirmed"
+                    res["confirmed_location"] = dest
+                    return res
+            except Exception as e:                          # noqa: BLE001
+                last_error = f"{type(e).__name__}: {e}"
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(interval)
+        res["confirmed"] = False
+        res["confirmation"] = "unconfirmed"
+        res["confirm_error"] = last_error or f"{timeout:.1f}s 内位置未读回确认"
+        return res
 
     def live_probe(self) -> dict:
         from ..live import mem, writer
@@ -859,6 +1144,156 @@ class Services:
             deps["PySide6"] = f"{type(e).__name__}: {e}"
         return _ok(python=sys.version.split()[0], platform=platform.platform(),
                    deps=deps, health=self.health())
+
+    def build_status(self) -> dict:
+        """当前 NMS.exe 的 build 指纹与写闸门；未知/未验证明确返回只读。"""
+        from ..live import build
+
+        try:
+            return _ok(**build.summary())
+        except Exception as e:                              # noqa: BLE001
+            msg = f"{type(e).__name__}: {e}"
+            return {"ok": False, "error": msg, "build_id": "unknown",
+                    "status": "unknown", "verified": False, "write_allowed": False,
+                    "reason": f"无法确认游戏 build：{msg}；只允许只读能力"}
+
+    def diagnostics_overview(self) -> dict:
+        try:
+            agent = self.agent_status()
+            agent = _ok(**agent) if isinstance(agent, dict) else {"ok": True, "status": agent}
+        except Exception as e:                              # noqa: BLE001
+            msg = f"{type(e).__name__}: {e}"
+            agent = {"ok": False, "error": msg, "supported": False,
+                     "reachable": False, "game_running": False,
+                     "note": f"游戏内代理状态不可用：{msg}"}
+        return _ok(build=self.build_status(), agent=agent)
+
+    @staticmethod
+    def _recent_log_paths(limit: int = 5) -> list:
+        log_dir = paths.app_home() / "logs"
+        candidates = []
+        try:
+            candidates.extend(p for p in log_dir.glob("*.log*") if p.is_file())
+        except OSError:
+            pass
+        launcher = paths.app_home() / "agent" / "launcher.log"
+        if launcher.is_file():
+            candidates.append(launcher)
+        seen = set()
+        unique = []
+        for p in candidates:
+            try:
+                key = str(p.resolve()).lower()
+            except OSError:
+                key = str(p).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(p)
+
+        def _mtime(p) -> float:
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        unique.sort(key=_mtime, reverse=True)
+        return unique[:max(1, int(limit or 1))]
+
+    def recent_logs(self, limit: int = 5, max_bytes: int = 256 * 1024) -> dict:
+        """最近的 starforge/launcher 日志；只读尾部，限制文件数与单文件大小。"""
+        files = []
+        max_bytes = max(1, int(max_bytes or 1))
+        for p in self._recent_log_paths(limit):
+            try:
+                size = p.stat().st_size
+                with open(p, "rb") as fh:
+                    if size > max_bytes:
+                        fh.seek(size - max_bytes)
+                    text = fh.read(max_bytes).decode("utf-8", "replace")
+                files.append({"name": p.name, "path": str(p), "size": int(size),
+                              "truncated": bool(size > max_bytes),
+                              "text": _redact_text(text)})
+            except OSError as e:
+                files.append({"name": p.name, "path": str(p), "size": 0,
+                              "truncated": False,
+                              "text": f"[读取失败] {type(e).__name__}: {e}"})
+        return _ok(files=files, limit=max(1, int(limit or 1)), max_bytes=max_bytes)
+
+    def export_diagnostics(self, dest: str, include_selfcheck: bool = True) -> dict:
+        """把 health/doctor/selfcheck/build/agent/脱敏设置/日志导出为 ZIP。
+
+        单个组件失败不会让整个导出失败：manifest 的 ``errors`` 会记录原因；
+        真正的写文件失败会抛 ``RuntimeError``，界面显示可读错误。
+        """
+        import json
+        import zipfile
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        target = Path(dest).expanduser()
+        errors: dict[str, str] = {}
+        entries: dict[str, bytes] = {}
+
+        def add_json(name: str, fn) -> None:
+            try:
+                value = fn()
+            except Exception as e:                          # noqa: BLE001
+                msg = f"{type(e).__name__}: {e}"
+                errors[name] = msg
+                value = {"ok": False, "error": msg}
+            entries[name] = json.dumps(_redact(value), ensure_ascii=False,
+                                       indent=2).encode("utf-8")
+
+        add_json("health.json", self.health)
+        add_json("doctor.json", self.doctor)
+        add_json("build.json", self.build_status)
+        add_json("agent.json", self.agent_status)
+        add_json("settings.json", self.settings_snapshot)
+        if include_selfcheck:
+            add_json("selfcheck.json", self.diagnostics)
+        else:
+            entries["selfcheck.json"] = json.dumps(
+                {"ok": None, "skipped": True, "reason": "导出时未运行自检"},
+                ensure_ascii=False, indent=2).encode("utf-8")
+
+        logs_meta = []
+        try:
+            log_files = self.recent_logs(limit=5, max_bytes=256 * 1024).get("files") or []
+        except Exception as e:                              # noqa: BLE001
+            log_files = []
+            errors["logs"] = f"{type(e).__name__}: {e}"
+        for index, item in enumerate(log_files):
+            base = Path(str(item.get("name") or "log.txt")).name or "log.txt"
+            arc = f"logs/{base}"
+            if arc in entries:
+                arc = f"logs/{index}-{base}"
+            entries[arc] = _redact_text(item.get("text") or "").encode("utf-8", "replace")
+            logs_meta.append({"archive": arc, "path": item.get("path") or "",
+                              "size": item.get("size") or 0,
+                              "truncated": bool(item.get("truncated"))})
+
+        manifest = {
+            "app": "starforge",
+            "version": __import__("starforge").__version__,
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "files": sorted(entries) + ["manifest.json"],
+            "logs": logs_meta,
+            "errors": errors,
+            "note": "设置与日志已脱敏；不包含 token/密码。",
+        }
+        entries["manifest.json"] = json.dumps(manifest, ensure_ascii=False,
+                                              indent=2).encode("utf-8")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name in sorted(entries):
+                    zf.writestr(name, entries[name])
+        except OSError as e:
+            raise RuntimeError(f"无法写入诊断包 {target}：{e}") from e
+        return _ok(path=str(target), entries=sorted(entries),
+                   bytes=target.stat().st_size, errors=errors,
+                   logs=logs_meta, manifest=manifest)
 
 
 SERVICES = Services()

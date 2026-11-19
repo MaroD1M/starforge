@@ -7,13 +7,13 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
-                               QTabWidget, QVBoxLayout, QWidget, QSplitter)
+                               QTabWidget, QVBoxLayout, QWidget)
 
 from ...services import get_services
 from .. import notify
-from ..dialogs.address import (COORD_UNSUPPORTED, classify_address_input, normalize_glyphs,
-                               parse_seed)
+from ..dialogs.address import (classify_address_input, normalize_glyphs, parse_seed)
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.page import PageSplitter, page_layout
 from ..widgets.page_header import PageHeader
 from ..widgets.ui import Card, muted
 from ..widgets.worker import run as run_worker
@@ -57,10 +57,11 @@ class GalaxyPage(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 8)
+        root = page_layout(self)
 
-        self.header = PageHeader("星图", "")
+        self.header = PageHeader(
+            "星图",
+            "查看当前星系、行星与船池，扫描附近星系并写入银河索引。")
         root.addWidget(self.header)
         self.refresh_btn = QPushButton("刷新")
         self.refresh_btn.setToolTip("重新读取当前星系、行星与船池")
@@ -73,7 +74,7 @@ class GalaxyPage(QWidget):
         self.scan_cancel_btn.setToolTip("请求取消正在进行的扫描；当前系统完成后停止")
         self.scan_cancel_btn.clicked.connect(self._cancel_scan)
         self.scan_cancel_btn.setVisible(False)
-        self.export_btn = QPushButton("导出 CSV（表格文件）")
+        self.export_btn = QPushButton("导出 CSV")
         self.export_btn.setToolTip("按当前筛选条件导出银河索引表格文件")
         self.export_btn.clicked.connect(self._export_csv)
         for button in (self.refresh_btn, self.scan_btn, self.scan_cancel_btn, self.export_btn):
@@ -107,7 +108,7 @@ class GalaxyPage(QWidget):
         hv.addWidget(self.current_empty)
         root.addWidget(hero)
 
-        split = QSplitter(Qt.Horizontal)
+        split = PageSplitter("galaxy")
         root.addWidget(split, 1)
 
         mid = Card("行星与船池")
@@ -135,12 +136,6 @@ class GalaxyPage(QWidget):
         self.interceptor.addItem("不限", None)
         self.interceptor.addItem("有", True)
         filter_row1.addWidget(self.interceptor)
-        filter_row1.addWidget(QLabel("恒星类型"))
-        self.star_type = QComboBox()
-        self.star_type.addItem("后端暂不提供", "")
-        self.star_type.setEnabled(False)
-        self.star_type.setToolTip("当前后端未返回恒星类型字段；有数据后会启用此筛选。")
-        filter_row1.addWidget(self.star_type)
         mv.addLayout(filter_row1)
 
         filter_row2 = QHBoxLayout()
@@ -151,10 +146,10 @@ class GalaxyPage(QWidget):
         self.min_planets.setValue(0)
         self.min_planets.setSpecialValueText("不限")
         filter_row2.addWidget(self.min_planets)
-        filter_row2.addWidget(QLabel("异常状态（dissonant）"))
+        filter_row2.addWidget(QLabel("异常状态"))
         self.diss = QComboBox()
         self.diss.addItem("不限", None)
-        self.diss.addItem("仅异常（dissonant）", True)
+        self.diss.addItem("仅异常", True)
         filter_row2.addWidget(self.diss)
         filter_row2.addWidget(QLabel("扫描系统数"))
         self.count = QSpinBox()
@@ -177,7 +172,7 @@ class GalaxyPage(QWidget):
         self.tabs = QTabWidget()
         self.planets = QTableWidget(0, 5)
         self.planets.setHorizontalHeaderLabels(
-            ["#", "生物群系", "哨兵", "资源", "异常（dissonant）"])
+            ["#", "生物群系", "哨兵", "资源", "异常"])
         self.planets.horizontalHeader().setStretchLastSection(True)
         self.planets.setSelectionBehavior(QTableWidget.SelectRows)
         self.planets.setSortingEnabled(True)
@@ -199,7 +194,7 @@ class GalaxyPage(QWidget):
         self.tabs.addTab(self.ships_page, "本星系船池")
         self.scan_table = QTableWidget(0, 6)
         self.scan_table.setHorizontalHeaderLabels(
-            ["行星", "群系", "哨兵", "坐标", "符文串（glyphs）", "星系"])
+            ["行星", "群系", "哨兵", "坐标", "符文串", "星系"])
         self.scan_table.horizontalHeader().setStretchLastSection(True)
         self.scan_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.scan_table.setSortingEnabled(True)
@@ -234,7 +229,8 @@ class GalaxyPage(QWidget):
         iv.addLayout(index_row1)
 
         index_row2 = QHBoxLayout()
-        index_row2.addWidget(QLabel("异常状态（dissonant）"))
+        index_row2.setSpacing(6)
+        index_row2.addWidget(QLabel("异常状态"))
         self.idx_diss = QComboBox()
         self.idx_diss.addItem("不限", None)
         self.idx_diss.addItem("是", True)
@@ -251,26 +247,32 @@ class GalaxyPage(QWidget):
         self.idx_interceptor.addItem("不限", None)
         self.idx_interceptor.addItem("有", True)
         index_row2.addWidget(self.idx_interceptor)
+        index_row2.addStretch(1)
+        iv.addLayout(index_row2)
+
+        index_actions = QHBoxLayout()
+        index_actions.setSpacing(6)
         self.idx_query = QPushButton("查询")
         self.idx_query.setObjectName("primary")
         self.idx_query.clicked.connect(self._query_index)
-        index_row2.addWidget(self.idx_query)
+        index_actions.addWidget(self.idx_query)
         self.idx_export = QPushButton("导出结果")
         self.idx_export.clicked.connect(self._export_index_csv)
-        index_row2.addWidget(self.idx_export)
-        self.idx_copy = QPushButton("复制 glyphs（符文串）")
+        index_actions.addWidget(self.idx_export)
+        self.idx_copy = QPushButton("复制符文")
         self.idx_copy.clicked.connect(self._copy_index_glyph)
-        index_row2.addWidget(self.idx_copy)
+        index_actions.addWidget(self.idx_copy)
         self.idx_stats_btn = QPushButton("刷新统计")
         self.idx_stats_btn.clicked.connect(self._refresh_index_stats)
-        index_row2.addWidget(self.idx_stats_btn)
-        iv.addLayout(index_row2)
+        index_actions.addWidget(self.idx_stats_btn)
+        index_actions.addStretch(1)
+        iv.addLayout(index_actions)
 
         self.index_stats = muted("索引统计：读取中…")
         iv.addWidget(self.index_stats)
         self.index_table = QTableWidget(0, 7)
         self.index_table.setHorizontalHeaderLabels(
-            ["坐标", "符文串（glyphs）", "行星数", "种族", "异常（dissonant）",
+            ["坐标", "符文串", "行星数", "种族", "异常",
              "拦截机种子", "命中行星"])
         self.index_table.horizontalHeader().setStretchLastSection(True)
         self.index_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -305,7 +307,7 @@ class GalaxyPage(QWidget):
         self.selection_hint = muted("未选择：选中一行后可复制地址、显示浮窗或填入传送。")
         rv.addWidget(self.selection_hint)
         row = QHBoxLayout()
-        self.copy_selected_glyph_btn = QPushButton("复制 glyphs（符文串）")
+        self.copy_selected_glyph_btn = QPushButton("复制 符文串")
         self.copy_selected_glyph_btn.clicked.connect(self._copy_selected_glyph)
         row.addWidget(self.copy_selected_glyph_btn)
         self.copy_selected_coords_btn = QPushButton("复制坐标")
@@ -316,13 +318,15 @@ class GalaxyPage(QWidget):
         self.overlay_btn = QPushButton("浮窗显示符文")
         self.overlay_btn.clicked.connect(self._show_overlay)
         row2.addWidget(self.overlay_btn)
-        self.travel_btn = QPushButton("定位/前往（填入传送）")
+        self.travel_btn = QPushButton("定位并填入传送")
         self.travel_btn.clicked.connect(self._prepare_travel)
         row2.addWidget(self.travel_btn)
         rv.addLayout(row2)
         rv.addStretch(1)
         split.addWidget(right)
-        split.setSizes([700, 360])
+        split.setStretchFactor(0, 1)
+        split.set_default_sizes([700, 360])
+        split.restore()
 
         self.loading = LoadingOverlay(self, "正在读取当前星系…")
         self._set_empty_state(self.planets, self.planets_empty, False)
@@ -379,8 +383,6 @@ class GalaxyPage(QWidget):
             filters["min_planets"] = int(self.min_planets.value())
         if self.interceptor.currentData():
             filters["has_interceptor"] = True
-        if self.star_type.isEnabled() and self.star_type.currentData():
-            filters["star_type"] = self.star_type.currentData()
         return filters
 
     def _update_filter_summary(self) -> None:
@@ -392,7 +394,7 @@ class GalaxyPage(QWidget):
         if self.race.currentData():
             parts.append(f"种族 {self.race.currentText()}")
         if self.diss.currentData() is not None:
-            parts.append("仅异常（dissonant）")
+            parts.append("仅异常")
         if self.min_planets.value() > 0:
             parts.append(f"行星不少于 {self.min_planets.value()} 颗")
         if self.interceptor.currentData():
@@ -434,7 +436,7 @@ class GalaxyPage(QWidget):
             self.hero_info.setText(
                 f"种族：{res.get('race_zh') or res.get('race') or '—'}  ·  "
                 f"行星：{res.get('planets', 0)}  ·  "
-                f"异常（dissonant）：{'是' if res.get('dissonant') else '否'}")
+                f"异常：{'是' if res.get('dissonant') else '否'}")
             self._sub_current = f"{name} · {res.get('glyphs') or '—'}"
             self._set_glyph(self.glyph, res.get("glyphs"))
             pls = res.get("planet_list") or []
@@ -530,7 +532,7 @@ class GalaxyPage(QWidget):
         return True
 
     def _copy_glyph(self) -> None:
-        self._copy_text(self._current_info.get("glyphs"), "符文串（glyphs）")
+        self._copy_text(self._current_info.get("glyphs"), "符文串")
 
     # ---------------------------------------------------------------- 地址工作台
 
@@ -544,10 +546,10 @@ class GalaxyPage(QWidget):
         row.addWidget(QLabel("地址/种子"))
         self.addr_input = QLineEdit()
         self.addr_input.setPlaceholderText(
-            "12 位符文串（glyphs），例如 1043FEE69929；或种子 0x0123456789ABCDEF")
+            "12 位符文串，例如 1043FEE69929；或种子 0x0123456789ABCDEF")
         self.addr_input.returnPressed.connect(self._address_submit)
         row.addWidget(self.addr_input, 1)
-        self.addr_lookup = QPushButton("解析 glyphs（符文串）")
+        self.addr_lookup = QPushButton("解析 符文串")
         self.addr_lookup.setObjectName("primary")
         self.addr_lookup.clicked.connect(self._address_glyphs)
         row.addWidget(self.addr_lookup)
@@ -557,7 +559,7 @@ class GalaxyPage(QWidget):
         v.addLayout(row)
 
         self.addr_status = muted(
-            "空态：输入 12 位符文串（glyphs）或 0x… 种子；坐标文本暂不支持直接解析。")
+            "空态：输入 12 位符文串或 0x… 种子；坐标文本暂不支持直接解析。")
         v.addWidget(self.addr_status)
 
         self.addr_summary = QLabel("尚未查询。")
@@ -570,11 +572,11 @@ class GalaxyPage(QWidget):
         v.addWidget(self.addr_glyph)
 
         actions = QHBoxLayout()
-        self.addr_copy = QPushButton("复制 glyphs（符文串）")
+        self.addr_copy = QPushButton("复制 符文串")
         self.addr_copy.setEnabled(False)
         self.addr_copy.clicked.connect(self._copy_addr_glyph)
         actions.addWidget(self.addr_copy)
-        self.addr_fill = QPushButton("定位/前往（填入传送）")
+        self.addr_fill = QPushButton("定位并填入传送")
         self.addr_fill.setEnabled(False)
         self.addr_fill.clicked.connect(self._fill_addr_teleport)
         actions.addWidget(self.addr_fill)
@@ -583,7 +585,7 @@ class GalaxyPage(QWidget):
 
         self.addr_seed_table = QTableWidget(0, 5)
         self.addr_seed_table.setHorizontalHeaderLabels(
-            ["匹配", "坐标", "符文串（glyphs）", "星系", "位置/船"])
+            ["匹配", "坐标", "符文串", "星系", "位置/船"])
         self.addr_seed_table.horizontalHeader().setStretchLastSection(True)
         self.addr_seed_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.addr_seed_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -626,16 +628,16 @@ class GalaxyPage(QWidget):
             self._lookup_seed(result["value"])
         elif kind == "coords":
             self.addr_status.setText(result["message"])
-            self.addr_summary.setText("坐标文本暂不支持直接解析；请使用符文串（glyphs）或种子。")
+            self.addr_summary.setText("坐标文本暂不支持直接解析；请使用符文串或种子。")
             self._sub_address = "坐标文本暂不支持"
             self._update_subtitle()
-            notify.warn("坐标文本暂不支持直接解析；请使用符文串（glyphs）或种子")
+            notify.warn("坐标文本暂不支持直接解析；请使用符文串或种子")
         elif kind == "empty":
             self.addr_status.setText(result["message"])
             self.addr_summary.setText("空态：等待输入地址或种子。")
             self._sub_address = "等待输入"
             self._update_subtitle()
-            notify.toast("请输入符文串（glyphs）或种子")
+            notify.toast("请输入符文串或种子")
         else:
             self.addr_status.setText(result.get("message") or "输入不合法。")
             self.addr_summary.setText("无法识别输入；请检查格式。")
@@ -648,10 +650,10 @@ class GalaxyPage(QWidget):
             glyphs = normalize_glyphs(self.addr_input.text())
         except ValueError as e:
             self.addr_status.setText(str(e))
-            self.addr_summary.setText("符文串（glyphs）校验失败；请输入 12 位十六进制。")
+            self.addr_summary.setText("符文串校验失败；请输入 12 位十六进制。")
             self._sub_address = "符文串校验失败"
             self._update_subtitle()
-            notify.error(f"符文串（glyphs）校验失败：{e}")
+            notify.error(f"符文串校验失败：{e}")
             return
         self.addr_input.setText(glyphs)
         self._lookup_glyphs(glyphs)
@@ -672,7 +674,7 @@ class GalaxyPage(QWidget):
         if self._addr_busy:
             return
         self._addr_clear_glyph()
-        self._addr_set_busy(True, f"正在解析符文串（glyphs）{glyphs}…")
+        self._addr_set_busy(True, f"正在解析符文串{glyphs}…")
         self.addr_summary.setText("加载中：正在生成星系信息…")
         self.addr_seed_table.setRowCount(0)
         self._set_empty_state(self.addr_seed_table, self.addr_seed_empty, False,
@@ -680,7 +682,7 @@ class GalaxyPage(QWidget):
                               "输入 0x… 十六进制种子并点「种子反查」；候选越多越慢。")
         self._sub_address = f"解析中 {glyphs}"
         self._update_subtitle()
-        notify.toast(f"正在解析符文串（glyphs）{glyphs}…")
+        notify.toast(f"正在解析符文串{glyphs}…")
 
         def done(res: dict) -> None:
             self._addr_set_busy(False)
@@ -695,8 +697,8 @@ class GalaxyPage(QWidget):
                 f"银河：{galaxy if galaxy is not None else '—'}  ·  行星：{res.get('planets', 0)}"
                 f"  ·  卫星：{res.get('moons', 0)}",
                 f"种族：{res.get('race_zh') or res.get('race') or '—'}  ·  "
-                f"异常（dissonant）：{dissonant}",
-                f"符文串（glyphs）：{got}",
+                f"异常：{dissonant}",
+                f"符文串：{got}",
             ]
             self.addr_summary.setText("\n".join(lines))
             self._set_glyph(self.addr_glyph, got)
@@ -705,12 +707,12 @@ class GalaxyPage(QWidget):
             self.addr_status.setText(f"解析完成：{res.get('name') or got} · 可复制或填入传送输入。")
             self._sub_address = f"{got} 已解析"
             self._update_subtitle()
-            notify.success(f"符文串（glyphs）解析完成：{res.get('name') or got}")
+            notify.success(f"符文串解析完成：{res.get('name') or got}")
 
         def fail(msg: str) -> None:
             self._addr_set_busy(False, f"解析失败：{msg}")
             self.addr_summary.setText(
-                "解析失败：没有生成星系信息；请检查符文串（glyphs）或游戏目录。")
+                "解析失败：没有生成星系信息；请检查符文串或游戏目录。")
             self._addr_clear_glyph()
             self._sub_address = "解析失败"
             self._update_subtitle()
@@ -810,21 +812,21 @@ class GalaxyPage(QWidget):
         self.addr_summary.setText(
             f"候选星系：{hit.get('ua') or '—'}\n"
             f"坐标：{hit.get('coords') or '—'}  ·  银河：{hit.get('galaxy', '—')}\n"
-            f"符文串（glyphs）：{glyphs or '—'}  ·  位置/船：{where}\n"
+            f"符文串：{glyphs or '—'}  ·  位置/船：{where}\n"
             f"匹配：{'已确认（已知星系）' if hit.get('visited') else '已确认'}")
         self.addr_status.setText(f"已选择 {hit.get('coords') or glyphs or '候选星系'}。")
         self._sub_address = f"已选择 {glyphs or hit.get('coords') or '候选星系'}"
         self._update_subtitle()
 
     def _copy_addr_glyph(self) -> None:
-        self._copy_text(self._addr_glyphs, "符文串（glyphs）", self.addr_status)
+        self._copy_text(self._addr_glyphs, "符文串", self.addr_status)
 
     def _fill_teleport_input(self, glyphs: str | None, coords: str | None = None,
                              status_label=None) -> None:
         target_label = status_label or self.status
         if not glyphs:
-            target_label.setText("定位/前往失败：当前没有可填入传送输入的符文串（glyphs）。")
-            notify.warn("定位/前往失败：当前没有可填入传送的符文串（glyphs）")
+            target_label.setText("定位/前往失败：当前没有可填入传送输入的符文串。")
+            notify.warn("定位/前往失败：当前没有可填入传送的符文串")
             return
         self._teleport_glyphs = glyphs
         target = None
@@ -963,7 +965,7 @@ class GalaxyPage(QWidget):
         lines = [
             f"种族：{RACE_LABELS.get(race, race or '—')}",
             f"行星：{r.get('planets', len(matched))}  ·  卫星：{r.get('moons', 0)}",
-            f"异常（dissonant）：{'是' if r.get('dissonant') else '否'}",
+            f"异常：{'是' if r.get('dissonant') else '否'}",
             f"拦截机种子：{r.get('interceptor') or '—'}",
         ]
         if matched:
@@ -978,7 +980,7 @@ class GalaxyPage(QWidget):
         self.selection_hint.setText(
             f"已选择星系 {r.get('coords') or r.get('ua') or '—'}；可复制地址、显示浮窗或填入传送。")
         self.index_status.setText(
-            f"已选择 {r.get('coords') or r.get('ua') or '星系'} · 可复制符文串（glyphs）。")
+            f"已选择 {r.get('coords') or r.get('ua') or '星系'} · 可复制符文串。")
         self._sub_index = f"已选择 {r.get('coords') or r.get('ua') or '星系'}"
         self._update_subtitle()
 
@@ -992,12 +994,12 @@ class GalaxyPage(QWidget):
         r = item.data(Qt.UserRole) if item else None
         text = (r or {}).get("glyphs")
         if not text:
-            self.index_status.setText("该星系没有可复制的符文串（glyphs）。")
-            notify.warn("该星系没有可复制的符文串（glyphs）")
+            self.index_status.setText("该星系没有可复制的符文串。")
+            notify.warn("该星系没有可复制的符文串")
             return
         QGuiApplication.clipboard().setText(text)
-        self.index_status.setText("符文串（glyphs）已复制到剪贴板。")
-        notify.success(f"符文串（glyphs）已复制：{text}")
+        self.index_status.setText("符文串已复制到剪贴板。")
+        notify.success(f"符文串已复制：{text}")
 
     def _export_index_csv(self) -> None:
         try:
@@ -1206,7 +1208,7 @@ class GalaxyPage(QWidget):
             f"哨兵：{p.get('sentinels_zh') or p.get('sentinels') or '—'}\n"
             f"资源：{p.get('resources') or '—'}\n"
             f"坐标：{selected.get('coords') or '—'}\n"
-            f"符文串（glyphs）：{selected.get('glyphs') or '—'}")
+            f"符文串：{selected.get('glyphs') or '—'}")
         self.selection_hint.setText(
             f"已选择行星 #{p.get('index', '?')}；可复制地址、显示浮窗或填入传送。")
         self._set_glyph(self.detail_glyph, selected.get("glyphs"))
@@ -1226,7 +1228,7 @@ class GalaxyPage(QWidget):
             f"群系：{r.get('biome_zh') or r.get('biome_name') or r.get('biome') or '—'}\n"
             f"哨兵：{r.get('sentinels_zh') or r.get('sentinels') or '—'}\n"
             f"坐标：{r.get('coords') or '—'}\n"
-            f"符文串（glyphs）：{r.get('glyphs') or '—'}\n"
+            f"符文串：{r.get('glyphs') or '—'}\n"
             f"星系：{r.get('system_name') or r.get('galaxy_name') or r.get('galaxy') or '—'}")
         self.selection_hint.setText(
             f"已选择扫描结果 {r.get('coords') or r.get('glyphs') or '—'}；"
@@ -1240,7 +1242,7 @@ class GalaxyPage(QWidget):
         return str(self._selection.get("coords") or self._current_info.get("coords") or "").strip()
 
     def _copy_selected_glyph(self) -> None:
-        self._copy_text(self._selected_glyphs(), "符文串（glyphs）")
+        self._copy_text(self._selected_glyphs(), "符文串")
 
     def _copy_selected_coords(self) -> None:
         self._copy_text(self._selected_coords(), "坐标")
@@ -1249,8 +1251,8 @@ class GalaxyPage(QWidget):
         glyphs = self._selected_glyphs()
         if not glyphs:
             self.status.setText(
-                "浮窗显示失败：请先在行星表、扫描结果或银河索引中选择一个带符文串（glyphs）的星球。")
-            notify.warn("浮窗显示失败：请先选择一个带符文串（glyphs）的星球")
+                "浮窗显示失败：请先在行星表、扫描结果或银河索引中选择一个带符文串的星球。")
+            notify.warn("浮窗显示失败：请先选择一个带符文串的星球")
             return
         self.status.setText(f"加载中：正在生成符文浮窗 {glyphs}…")
         notify.toast(f"正在生成符文浮窗 {glyphs}…")

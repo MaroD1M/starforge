@@ -80,10 +80,10 @@ jobs:
           python scripts/size_report.py build/agent-runtime --top 15 --by package --compare $before
           if ($LASTEXITCODE -ne 0) { throw "agent runtime 裁剪后体积报告失败" }
 
-      - name: 打包（单 exe：双击=桌面窗口并隐藏控制台，带子命令=命令行；入口 packaging/entry.py）
+      - name: 打包（starforge-cli.exe：控制台 CLI + 原生 GUI；入口 packaging/entry.py）
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --name starforge --onedir `
+          pyinstaller --noconfirm --clean --name starforge-cli --onedir `
             --paths . --paths build/vendor --icon assets/starforge.ico `
             --collect-submodules nms_save --collect-submodules nms_procgen `
             --add-data "build/vendor/data;data" `
@@ -111,6 +111,20 @@ jobs:
             --exclude-module PySide6.QtUiTools --exclude-module PySide6.QtScxml `
             --exclude-module PySide6.QtStateMachine --exclude-module PySide6.QtSvg `
             packaging/entry.py
+
+      - name: 构建无控制台启动器（starforge.exe）
+        shell: pwsh
+        run: |
+          if (Test-Path "dist/starforge") { Remove-Item -Recurse -Force "dist/starforge" }
+          Move-Item "dist/starforge-cli" "dist/starforge"
+          pyinstaller --noconfirm --clean --onefile --windowed --name starforge `
+            --distpath "dist/launcher" --workpath "build/launcher" `
+            --specpath "build/launcher" --icon assets/starforge.ico `
+            packaging/launcher.py
+          Copy-Item "dist/launcher/starforge.exe" "dist/starforge/starforge.exe"
+          if (-not (Test-Path "dist/starforge/starforge.exe")) { throw "没有生成无控制台启动器" }
+          if (-not (Test-Path "dist/starforge/starforge-cli.exe")) { throw "没有生成 CLI 可执行文件" }
+          Write-Host "启动器已生成：dist/starforge/starforge.exe → starforge-cli.exe"
 
       - name: 体积报告（_internal 裁剪前基线）
         shell: pwsh
@@ -209,7 +223,7 @@ jobs:
         env:
           STARFORGE_HOME: ${{ runner.temp }}/sfhome-pkg
         run: |
-          $exe = "dist/starforge/starforge.exe"
+          $exe = "dist/starforge/starforge-cli.exe"
           if (-not (Test-Path $exe)) { throw "没有找到 $exe" }
           $help = & $exe --help 2>&1 | Out-String
           $help | Out-Host
@@ -239,7 +253,7 @@ jobs:
         env:
           STARFORGE_HOME: ${{ runner.temp }}/sfhome-doctor
         run: |
-          $exe = "dist/starforge/starforge.exe"
+          $exe = "dist/starforge/starforge-cli.exe"
           $out = & $exe doctor 2>&1 | Out-String
           $out | Out-Host
           # doctor 的退出码含"桌面窗口可用"这一项，CI 环境不保证，所以只断言关键依赖
@@ -263,7 +277,7 @@ jobs:
         env:
           STARFORGE_HOME: ${{ runner.temp }}/sfhome-web
         run: |
-          $exe = "dist/starforge/starforge.exe"
+          $exe = "dist/starforge/starforge-cli.exe"
           & $exe webcheck
           if ($LASTEXITCODE -ne 0) { throw "接口自检失败（exit $LASTEXITCODE）" }
 
@@ -272,7 +286,7 @@ jobs:
         env:
           STARFORGE_HOME: ${{ runner.temp }}/sfhome-serve
         run: |
-          $exe = "dist/starforge/starforge.exe"
+          $exe = "dist/starforge/starforge-cli.exe"
           $out = Join-Path $env:RUNNER_TEMP "serve.out.log"
           $err = Join-Path $env:RUNNER_TEMP "serve.err.log"
           $p = Start-Process -FilePath $exe -ArgumentList "serve","--port","8899","--no-browser" `

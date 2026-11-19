@@ -3,16 +3,74 @@
 游戏内 Mod 由 ``starforge.agent`` 安装/启动；它在 pymhf 的 HTTP API 上监听
 ``http://127.0.0.1:5000/StarforgeAgent``。本模块只做 HTTP 调用，不导入 nmspy，
 也不直接碰游戏内存。
+
+``launch`` 会把一次性 token 和实际端口写进 ``~/.starforge/agent/state.json``。
+客户端默认从该文件读取 base/token，并把 token 作为查询参数附加到**每个**请求。
+限制：pymhf 的 endpoint 没有稳定暴露 request header 的接口，所以 token 走
+query（会出现在本机 URL 和日志里，但只绑定 127.0.0.1，且每次启动都会更换）。
 """
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
 
-DEFAULT_BASE = "http://127.0.0.1:5000/StarforgeAgent"
+DEFAULT_PORT = 5000
+DEFAULT_BASE = f"http://127.0.0.1:{DEFAULT_PORT}/StarforgeAgent"
+STATE_NAME = "state.json"
+
+
+def agent_home() -> Path:
+    from ..core import paths
+
+    d = paths.app_home() / "agent"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def state_file() -> Path:
+    return agent_home() / STATE_NAME
+
+
+def base_for_port(port: int) -> str:
+    return f"http://127.0.0.1:{int(port)}/StarforgeAgent"
+
+
+def read_state() -> dict:
+    """读取启动状态；损坏/不存在时返回空 dict，绝不抛异常。"""
+    try:
+        data = json.loads(state_file().read_text("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def write_state(data: dict) -> Path:
+    """原子写私有状态文件（Linux/macOS 上 chmod 0600）。"""
+    path = state_file()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
+def clear_state() -> None:
+    try:
+        state_file().unlink()
+    except OSError:
+        pass
 
 
 class AgentError(RuntimeError):
@@ -20,8 +78,11 @@ class AgentError(RuntimeError):
 
 
 class AgentClient:
-    def __init__(self, base: str = DEFAULT_BASE, timeout: float = 5.0):
-        self.base = base.rstrip("/")
+    def __init__(self, base: str | None = None, timeout: float = 5.0,
+                 token: str | None = None):
+        state = read_state() if (base is None or token is None) else {}
+        self.base = (base or state.get("base") or DEFAULT_BASE).rstrip("/")
+        self.token = token if token is not None else str(state.get("token") or "")
         self.timeout = timeout
 
     # ---------------------------------------------------------------- HTTP
@@ -29,8 +90,11 @@ class AgentClient:
     def _call(self, path: str, method: str = "GET", params: dict | None = None,
               timeout: float | None = None) -> dict:
         url = self.base + path
-        if params:
-            clean = {k: v for k, v in params.items() if v is not None}
+        clean = {k: v for k, v in (params or {}).items() if v is not None}
+        if self.token:
+            # 见模块说明：pymhf 没有稳定的 header 读取接口，token 走 query。
+            clean["token"] = self.token
+        if clean:
             url += "?" + urllib.parse.urlencode(clean)
         req = urllib.request.Request(url, method=method)
         # 本机 agent 不经过系统代理（否则 http_proxy 会把 127.0.0.1 转给代理）
@@ -104,6 +168,7 @@ class AgentClient:
             "teleport.portal": lambda: self.teleport_portal(
                 params.get("glyphs", ""), params.get("galaxy")),
             "scan": lambda: self.scan(params.get("mode", "read")),
+            "scan.discover": lambda: self.scan("discover"),
             "scan.instant": lambda: self.scan_instant(bool(params.get("on", True))),
             "restore": self.restore,
         }.get(cmd)

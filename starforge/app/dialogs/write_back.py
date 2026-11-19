@@ -1,7 +1,6 @@
 """写回存档：同型槽位 → 备份/副本 → 读回校验。"""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -12,6 +11,8 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLa
 from ...services import get_services
 from ..widgets.worker import run as run_worker
 
+
+from ..dialogs.confirm import ask_write
 
 class WriteBackDialog(QDialog):
     def __init__(self, source: dict, parent=None):
@@ -123,11 +124,9 @@ class WriteBackDialog(QDialog):
         target = item.data(Qt.UserRole) if item else None
         if not target:
             return
-        if QMessageBox.warning(
-                self, "确认写入",
+        if not ask_write(self, "确认写入",
                 f"将把 {self.source.get('seed')} 写入槽位 {target.get('slot')}。\n"
-                "会先备份，写后读回校验；失败自动回滚。继续？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                "会先备份，写后读回校验；失败自动回滚。继续？",):
             return
         self.ok.setEnabled(False)
         self.info.setText("写入中…")
