@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QKeySequence, QPixmap, QShortcut
@@ -35,7 +36,9 @@ MAX_DEFAULT_WORKERS = 4
 
 
 def default_workers(cpu_count: int | None = None) -> int:
-    """搜索线程数：至少 1，默认不超过 min(4, CPU)。"""
+    """搜索线程数：冻结版默认 1，避免 Windows spawn 子进程卡在 0 种子。"""
+    if getattr(sys, "frozen", False):
+        return 1
     try:
         total = int(cpu_count) if cpu_count is not None else int(os.cpu_count() or 1)
     except (TypeError, ValueError):
@@ -256,14 +259,13 @@ class ShipLabPage(QWidget):
         workers_row.addWidget(QLabel("并行线程"))
         self.workers = QSpinBox()
         cpu_total = max(1, int(os.cpu_count() or 1))
-        max_workers = max(1, min(8, cpu_total))
+        max_workers = 1 if getattr(sys, "frozen", False) else max(1, min(8, cpu_total))
         self.workers.setRange(1, max_workers)
         preferred = int(getattr(settings_core.current(), "workers", 0) or 0)
         self.workers.setValue(
             preferred if 1 <= preferred <= max_workers else default_workers(cpu_total))
         self.workers.setToolTip(
-            f"默认 {default_workers(cpu_total)}（不超过 min(4, CPU)）；"
-            "机器较慢或界面卡顿时可调回 1")
+            "Windows 发布包默认 1；多进程搜索在部分机器会卡在 0 种子，稳定优先")
         workers_row.addWidget(self.workers, 1)
         v.addLayout(workers_row)
 
