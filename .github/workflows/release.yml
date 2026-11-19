@@ -117,10 +117,12 @@ jobs:
         run: |
           if (Test-Path "dist/starforge") { Remove-Item -Recurse -Force "dist/starforge" }
           Move-Item "dist/starforge-cli" "dist/starforge"
+          $icon = (Resolve-Path "assets/starforge.ico").Path
           pyinstaller --noconfirm --clean --onefile --windowed --name starforge `
             --distpath "dist/launcher" --workpath "build/launcher" `
-            --specpath "build/launcher" --icon assets/starforge.ico `
+            --specpath "build/launcher" --icon $icon `
             packaging/launcher.py
+          if ($LASTEXITCODE -ne 0) { throw "无控制台启动器构建失败（exit $LASTEXITCODE）" }
           Copy-Item "dist/launcher/starforge.exe" "dist/starforge/starforge.exe"
           if (-not (Test-Path "dist/starforge/starforge.exe")) { throw "没有生成无控制台启动器" }
           if (-not (Test-Path "dist/starforge/starforge-cli.exe")) { throw "没有生成 CLI 可执行文件" }
