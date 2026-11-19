@@ -27,6 +27,7 @@ class Card(QFrame):
             head.setSpacing(2)
             t = QLabel(title)
             t.setStyleSheet("font-size:14px;font-weight:700;")
+            self.title_label = t
             head.addWidget(t)
             if subtitle:
                 s = QLabel(subtitle)
@@ -34,6 +35,11 @@ class Card(QFrame):
                 s.setWordWrap(True)
                 head.addWidget(s)
             self.v.addLayout(head)
+
+    def set_title(self, title: str) -> None:
+        label = getattr(self, "title_label", None)
+        if label is not None:
+            label.setText(str(title or ""))
 
     def add(self, widget: QWidget) -> QWidget:
         self.v.addWidget(widget)

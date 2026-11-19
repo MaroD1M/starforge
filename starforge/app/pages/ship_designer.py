@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from ...services import get_services
 from .. import notify
 from ..dialogs.design_write import DesignWriteDialog
+from ..dialogs.part_preview import PartPreviewDialog
 from ..widgets.page import PageSplitter, page_layout
 from ..widgets.page_header import PageHeader
 from ..widgets.ship_viewer import ShipViewer
@@ -262,6 +263,11 @@ class ShipDesignerPage(QWidget):
         self._search_timer = QTimer(self)
         self._search_timer.setInterval(250)
         self._search_timer.timeout.connect(self._poll_search)
+        self._detail_item: QTreeWidgetItem | None = None
+        self._detail_timer = QTimer(self)
+        self._detail_timer.setSingleShot(True)
+        self._detail_timer.setInterval(120)
+        self._detail_timer.timeout.connect(self._refresh_detail)
         self._build_ui()
 
     # ------------------------------------------------------------ UI
@@ -307,16 +313,26 @@ class ShipDesignerPage(QWidget):
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.setIconSize(QSize(40, 40))
         self.tree.setStyleSheet("QTreeWidget::item { height: 38px; }")
+        self.tree.setMouseTracking(True)
+        self.tree.setUniformRowHeights(True)
         self.tree.itemChanged.connect(self._on_tree_changed)
         self.tree.itemClicked.connect(self._show_part_detail)
+        self.tree.currentItemChanged.connect(self._on_detail_current)
         v.addWidget(self.tree, 1)
 
-        self.part_detail = QLabel("点击部件查看预览与详情")
+        self.part_detail = QLabel("悬停或点击部件查看预览与详情")
         self.part_detail.setObjectName("muted")
         self.part_detail.setMinimumHeight(54)
         self.part_detail.setWordWrap(True)
         self.part_detail.setStyleSheet("background:#08111d;border:1px solid #24384a;border-radius:8px;padding:8px;")
         v.addWidget(self.part_detail)
+        detail_row = QHBoxLayout()
+        detail_row.addStretch(1)
+        self.part_3d_btn = QPushButton("3D 预览")
+        self.part_3d_btn.setToolTip("在独立小窗中 3D 预览当前部件")
+        self.part_3d_btn.clicked.connect(self._open_part_preview)
+        detail_row.addWidget(self.part_3d_btn)
+        v.addLayout(detail_row)
 
         self.parts_count = muted("尚未加载部件表")
         v.addWidget(self.parts_count)
@@ -503,10 +519,33 @@ class ShipDesignerPage(QWidget):
         if self._icon_queue:
             self._icon_timer.start(20)
 
+    def _on_detail_current(self, item: QTreeWidgetItem | None, *_args) -> None:
+        if item is None:
+            return
+        self._detail_item = item
+        self._detail_timer.start()
+
+    def _refresh_detail(self) -> None:
+        item = self._detail_item
+        if item is not None:
+            self._show_part_detail(item, 0)
+
+    def _open_part_preview(self) -> None:
+        item = self.tree.currentItem() or self._detail_item
+        if item is None:
+            notify.warn("先选择一个部件")
+            return
+        part = str(item.data(0, Qt.UserRole) or "")
+        if not part:
+            notify.warn("先选择一个部件")
+            return
+        PartPreviewDialog(str(self.ship.currentData() or ""), part, self).exec()
+
     def _show_part_detail(self, item: QTreeWidgetItem, _column: int) -> None:
         part = item.data(0, Qt.UserRole)
         if not part:
             return
+        self._detail_item = item
         gid = item.data(0, Qt.UserRole + 1) or item.text(1)
         self.part_detail.setText(f"{part}  ·  组 {gid}\n读取预览…")
 

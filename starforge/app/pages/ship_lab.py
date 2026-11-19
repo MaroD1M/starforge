@@ -17,6 +17,7 @@ from .. import notify
 from ..dialogs.compare import MAX_COMPARE, CompareDialog, merge_compare, ship_key
 from ..dialogs.favorites import FavoritesDialog
 from ..dialogs.locate import LocateDialog
+from ..dialogs.part_preview import PartPreviewDialog
 from ..dialogs.write_back import WriteBackDialog
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
 from ..widgets.page import PageSplitter, page_layout, scroll_panel
@@ -90,6 +91,11 @@ class ShipLabPage(QWidget):
         self._part_icon_timer.setSingleShot(True)
         self._part_icon_timer.setInterval(10)
         self._part_icon_timer.timeout.connect(self._next_part_icon)
+        self._part_preview_item: QTreeWidgetItem | None = None
+        self._part_preview_timer = QTimer(self)
+        self._part_preview_timer.setSingleShot(True)
+        self._part_preview_timer.setInterval(120)
+        self._part_preview_timer.timeout.connect(self._refresh_part_preview)
         self._job_timer = QTimer(self)
         self._job_timer.setInterval(250)
         self._job_timer.timeout.connect(self._poll_job)
@@ -172,8 +178,11 @@ class ShipLabPage(QWidget):
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.setIconSize(QSize(40, 40))
         self.tree.setStyleSheet("QTreeWidget::item { height: 38px; }")
+        self.tree.setMouseTracking(True)
+        self.tree.setUniformRowHeights(True)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.itemClicked.connect(self._lazy_part_icon)
+        self.tree.currentItemChanged.connect(self._on_part_current)
         v.addWidget(self.tree, 1)
 
         panel = QFrame()
@@ -184,10 +193,14 @@ class ShipLabPage(QWidget):
         self.part_thumb.setFixedSize(72, 72)
         self.part_thumb.setAlignment(Qt.AlignCenter)
         ph.addWidget(self.part_thumb)
-        self.part_text = QLabel("点击部件查看预览与详情")
+        self.part_text = QLabel("悬停或点击部件查看预览与详情")
         self.part_text.setObjectName("muted")
         self.part_text.setWordWrap(True)
         ph.addWidget(self.part_text, 1)
+        self.part_3d_btn = QPushButton("3D")
+        self.part_3d_btn.setToolTip("在独立小窗中 3D 预览当前部件")
+        self.part_3d_btn.clicked.connect(self._open_part_preview)
+        ph.addWidget(self.part_3d_btn)
         v.addWidget(panel)
 
         self.chips = QPushButton("未选择条件")
@@ -477,13 +490,22 @@ class ShipLabPage(QWidget):
     def _source_label(source: str | None) -> str:
         return {"game": "游戏资源", "gagarin": "Gagarin 数据表"}.get(source or "", "未知来源")
 
-    def _lazy_part_icon(self, item: QTreeWidgetItem, _column: int) -> None:
+    def _on_part_current(self, item: QTreeWidgetItem | None, *_args) -> None:
+        if item is None:
+            return
+        self._part_preview_item = item
+        self._part_preview_timer.start()
+
+    def _refresh_part_preview(self) -> None:
+        item = self._part_preview_item
+        if item is None:
+            return
         part = item.data(0, Qt.UserRole)
         if not part:
             return
         gid = item.data(0, Qt.UserRole + 1) or item.text(1)
-        self.part_text.setText(f"{part}  ·  组 {gid}\n读取预览…")
         ship = self.ship.currentData()
+        self.part_text.setText(f"{part}  ·  组 {gid}\n读取预览…")
 
         def done(data: bytes | None) -> None:
             if data:
@@ -495,9 +517,28 @@ class ShipLabPage(QWidget):
                     return
             self.part_text.setText(f"{part}  ·  组 {gid}\n该部件没有可渲染的几何（结构件/空槽）")
 
-        run_worker(self.svc.part_icon, done, lambda m: self.part_text.setText(f"{part} 预览失败：{m}"),
+        run_worker(self.svc.part_icon, done,
+                   lambda m: self.part_text.setText(f"{part} 预览失败：{m}"),
                    ship, part, 96)
-        self._load_part_3d_icon(item, ship, part)
+
+    def _lazy_part_icon(self, item: QTreeWidgetItem, _column: int) -> None:
+        self._on_part_current(item)
+        self._refresh_part_preview()
+        part = item.data(0, Qt.UserRole)
+        ship = self.ship.currentData()
+        if part and ship:
+            self._load_part_3d_icon(item, ship, part)
+
+    def _open_part_preview(self) -> None:
+        item = self.tree.currentItem() or self._part_preview_item
+        if item is None:
+            notify.warn("先选择一个部件")
+            return
+        part = str(item.data(0, Qt.UserRole) or "")
+        if not part:
+            notify.warn("先选择一个部件")
+            return
+        PartPreviewDialog(str(self.ship.currentData() or ""), part, self).exec()
 
     def _next_part_icon(self) -> None:
         if not self._part_icon_queue:

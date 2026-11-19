@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QFileSystemWatcher, QSize, Qt, QTimer
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -281,6 +281,7 @@ class FleetPage(QWidget):
         split.addWidget(mid)
 
         right = Card("飞船详情")
+        self.detail_card = right
         rv = right.v
         self.title = QLabel("未选择飞船")
         self.title.setStyleSheet("font-size:15px;font-weight:700;")
@@ -288,6 +289,12 @@ class FleetPage(QWidget):
         self.viewer = ShipViewer()
         self.viewer.setMinimumHeight(300)
         rv.addWidget(self.viewer, 1)
+        self.fallback = QLabel()
+        self.fallback.setAlignment(Qt.AlignCenter)
+        self.fallback.setWordWrap(True)
+        self.fallback.setMinimumHeight(300)
+        self.fallback.hide()
+        rv.addWidget(self.fallback, 1)
         self.pets_note = QLabel("同伴 3D 预览需要生物生成器；当前只展示描述符与种子。")
         self.pets_note.setWordWrap(True)
         self.pets_note.setAlignment(Qt.AlignCenter)
@@ -297,9 +304,9 @@ class FleetPage(QWidget):
         self.detail = muted("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
         rv.addWidget(self.detail)
         row2 = QHBoxLayout()
-        copy = QPushButton("复制种子")
-        copy.clicked.connect(self._copy_seed)
-        row2.addWidget(copy)
+        self.copy_btn = QPushButton("复制种子")
+        self.copy_btn.clicked.connect(self._copy_seed)
+        row2.addWidget(self.copy_btn)
         self.edit_btn = QPushButton("船级/属性…")
         self.edit_btn.setEnabled(False)
         self.edit_btn.setToolTip("修改选中飞船的等级与属性；先备份，可写入副本")
@@ -431,7 +438,10 @@ class FleetPage(QWidget):
     def _tab_changed(self, index: int) -> None:
         widget = self.tabs.widget(index)
         if widget is self.pets:
+            self.detail_card.set_title("同伴")
             self.title.setText("同伴")
+            self.copy_btn.hide()
+            self.edit_btn.hide()
             self.pets_note.setText("同伴 3D 预览需要生物生成器；当前只展示描述符与种子。")
             self.viewer.hide()
             self.pets_note.show()
@@ -441,7 +451,10 @@ class FleetPage(QWidget):
                 self.pets.ensure_loaded()
             return
         if self._is_extras_tab(index):
+            self.detail_card.set_title(self.tabs.tabText(index))
             self.title.setText(self.tabs.tabText(index))
+            self.copy_btn.hide()
+            self.edit_btn.hide()
             self.pets_note.setText("这里只读展示存档中的船队扩展数据；没有 API 的写回不会伪造。")
             self.pets_note.show()
             self.viewer.hide()
@@ -451,7 +464,10 @@ class FleetPage(QWidget):
             else:
                 self.detail.setText("先读取存档，再查看货船/护卫舰/多用途工具。")
             return
-        self.title.setText("飞船详情" if hasattr(self, "title") else "飞船详情")
+        self.detail_card.set_title("飞船详情")
+        self.title.setText("飞船详情")
+        self.copy_btn.show()
+        self.edit_btn.show()
         self.pets_note.hide()
         self.viewer.show()
         self.detail.setText("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
@@ -495,6 +511,8 @@ class FleetPage(QWidget):
             warns = res.get("warnings") or []
             self.info.setText(f"{len(self._ships)} 艘" + (f"  ·  {len(warns)} 条警告" if warns else ""))
             self._rebuild_ship_list()
+            if self.list.count() and not self.list.selectedItems():
+                self.list.setCurrentRow(0)
             self.load_btn.setEnabled(True)
             self._watch_save(self._loaded_path)
             self.pets.set_save_path(self._loaded_path, invalidate=True)
@@ -638,17 +656,39 @@ class FleetPage(QWidget):
         self.detail.setText("生成 3D 几何…")
 
         def done(mesh: dict) -> None:
+            self.fallback.hide()
+            self.viewer.show()
             self.viewer.set_mesh(mesh.get("groups") or {}, mesh.get("colours") or {})
             stats = s.get("stats") or {}
             st = "  ".join(f"{STAT_LABELS.get(k, k)}: {v}" for k, v in stats.items()) or "无属性数据"
             self.detail.setText(f"{st}\n{mesh.get('verts', 0):,} 顶点 / {mesh.get('tris', 0):,} 三角")
 
+        def image_fallback(msg: str) -> None:
+            self.viewer.hide()
+            self.fallback.show()
+            self.fallback.setText(f"实时 3D 不可用（{msg}）\n正在尝试静态渲染…")
+
+            def got(data: bytes | None) -> None:
+                if not data:
+                    self.fallback.setText(f"实时 3D 不可用（{msg}）")
+                    return
+                pix = QPixmap()
+                pix.loadFromData(data, "PNG")
+                if pix.isNull():
+                    self.fallback.setText(f"实时 3D 不可用（{msg}）")
+                    return
+                self.fallback.setPixmap(pix)
+                self.fallback.setToolTip(msg)
+                self.detail.setText(f"静态预览 · {msg}")
+
+            def bad(_m: str) -> None:
+                self.fallback.setText(f"实时 3D 不可用（{msg}）")
+
+            run_worker(self.svc.preview_png, got, bad,
+                       s.get("type"), s.get("seed"), s.get("parts"), 420)
+
         def fail(msg: str) -> None:
-            try:
-                self.viewer.set_demo()
-            except Exception:
-                pass
-            self.detail.setText(f"真实 3D 不可用（{msg}）")
+            image_fallback(msg)
 
         run_worker(self.svc.preview_mesh, done, fail,
                    s.get("type"), s.get("seed"), s.get("parts"))

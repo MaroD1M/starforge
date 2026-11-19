@@ -637,6 +637,15 @@ class Services:
 
         return preview.part_png(ship, part, size=size)
 
+    def part_mesh(self, ship: str, part: str) -> dict:
+        """单个部件的原生 3D 几何（供小窗预览）；不在 UI 线程调用。"""
+        from .. import preview
+
+        data = preview.part_model(ship, part)
+        return {"groups": data.get("groups") or {},
+                "bounds": data.get("bounds") or [],
+                "type": str(ship or ""), "part": str(part or "")}
+
     def part_icon(self, ship: str, part: str, size: int = 32) -> bytes | None:
         """部件树小图标：直接从游戏几何渲染（带磁盘缓存），不依赖 Gagarin。"""
         try:

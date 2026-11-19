@@ -286,7 +286,6 @@ class MainWindow(QMainWindow):
         self.breadcrumb.setAccessibleName(f"当前页面：{label}")
         self.breadcrumb.setToolTip(f"当前页面：{label}")
         page.setAccessibleName(f"{label}页面")
-        page.setToolTip(f"{label}页面内容")
         self._annotate_page_header(page, label)
         if remember:
             self.statusBar().showMessage(label)

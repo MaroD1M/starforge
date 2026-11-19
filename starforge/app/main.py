@@ -98,6 +98,7 @@ def run(argv: list[str] | None = None) -> int:
     QSurfaceFormat.setDefaultFormat(fmt)
 
     app = QApplication(list(sys.argv if argv is None else argv))
+    QApplication.setEffectEnabled(Qt.UI_AnimateTooltip, False)
     app.setApplicationName("starforge")
     app.setOrganizationName("starforge")
     app.setApplicationDisplayName("Starforge · 无人深空情报台")
