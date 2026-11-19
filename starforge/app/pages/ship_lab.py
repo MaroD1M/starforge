@@ -708,16 +708,20 @@ class ShipLabPage(QWidget):
     # ---------------------------------------------------------------- 搜索
 
     def _show_estimate(self, payload: dict, workers: int) -> None:
-        """搜索前显示 1 in N / 预计秒数；服务不可用或失败时静默降级。"""
+        """后台估算 1 in N / 预计秒数；绝不在 UI 线程跑目录/生成器查询。"""
         fn = getattr(self.svc, "search_estimate", None)
         if not callable(fn):
             self.estimate.setText("")
             return
-        try:
-            text = format_estimate(fn(dict(payload)), workers)
-        except Exception:                                  # noqa: BLE001
-            text = ""
-        self.estimate.setText(text)
+        self.estimate.setText("估算中…")
+
+        def done(res: dict) -> None:
+            self.estimate.setText(format_estimate(res, workers))
+
+        def fail(_msg: str) -> None:
+            self.estimate.setText("")
+
+        run_worker(fn, done, fail, dict(payload))
 
     def _start_search(self) -> None:
         want, avoid = self._checked()
