@@ -22,12 +22,12 @@
 请求：
 ```json
 {"v":1,"id":"c1a2","cmd":"player.ua","args":{}}
-{"v":1,"id":"c1a3","cmd":"ship.write_seed","args":{"slot":2,"type":"sentinel","seed":"0x884609884CEFFFFF"},"risk":"mid"}
+{"v":1,"id":"c1a3","cmd":"ship.write_seed","args":{"slot":2,"type":"sentinel","seed":"0x0123456789ABCDEF"},"risk":"mid"}
 ```
 
 响应：
 ```json
-{"v":1,"id":"c1a2","ok":true,"data":{"ua":"0x10400F19BDCE5","coords":"04E4:0070:01BC:0104","glyphs":"1104F19BDCE5"},"ms":3}
+{"v":1,"id":"c1a2","ok":true,"data":{"ua":"0x0011223344556677","coords":"<coords 示例>","glyphs":"123456789ABC"},"ms":3}
 {"v":1,"id":"c1a3","ok":false,"err":"E_SIGNATURE_MISSING","msg":"这版游戏没找到写飞船的签名","ms":11}
 ```
 

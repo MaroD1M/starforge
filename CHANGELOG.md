@@ -1,5 +1,45 @@
 # 更新记录
 
+## v0.15.0
+
+### 功能
+
+- **传送门传送（实验写入）**：agent 的 `/teleport/portal` 增加 `stage`（`warp_only` / `prepare_warp` / `full`），默认 `prepare_warp`。2026-11-21 在 build 185034 上实测 `prepare_warp` 能改变 UA/位置并触发 APPVIEW 加载；`warp_only` 无效但不会崩溃，`full` 未测。build 地址书仍为 `unverified`，因此仍需在设置里显式开启“允许未验证 build 的实验写入”。
+- **星图传送按钮**：扫描结果页新增「传送到此星球」。用结果里的 UA + 行星位生成 12 位门地址（非法/缺行星号时按钮保持禁用），二次确认后调用 portal 传送；成功后等待读回（portal 为 40 秒窗口），未确认或失败会明确提示，不会假装成功。
+- **agent 新增只读端点** `/multitool`（6 个工具槽 + 当前工具）、`/freighter`（货船、舰队与护卫舰）、`/pets`（同伴槽）。三者都走 `cGcPlayerState.SaveToData()` → `cGcPlayerStateData` 的存档布局解析，不使用运行时 `cGcPlayerState` 的 partial 偏移；单字段失败记入 `unsupported`，不编造默认值。
+- **游戏内页实时资产卡**：连接并进入存档后自动拉取工具 / 货船 / 同伴三个只读端点，按区块显示加载、错误与数据；错误合并到页面横幅，断开连接时只显示等待说明，不保留旧数据。
+- **模板 Mod 一键安装**：游戏内页新增「安装 / 更新模板 Mod」，直接把 `starforge-templates` 写入游戏 `GAMEDATA/MODS`（可一键打开目录，删除该文件夹即卸载）。Mod 同时生成 `REWARDTABLE`、`EMOTEMENU`、`PLAYERCHARACTER` 实体触发器和 `LocTable.mxml`，重启游戏后表情菜单出现 8 个可领取模板（实机已确认可领取）。
+- **表情图标与标题**：新增 `starforge/live/iconart.py`，用游戏模型把 8 个模板的真船渲成 128×128 BC1 DDS「蓝图风」图标并随包分发，不再复用游戏里含义不符的船型类别符号；表情标题由自带本地化表提供（简中 / 繁中 / 英文），领到的船名固定为中文。
+- **agent 热重载**：新增 `/admin/reload`（PUT）与 `Services.agent_reload()`，改完 agent 代码后不必退出游戏；打包态与“新增端点后热重载”仍未验证（见实验记录）。
+- **CLI `starforge live push`**：把外观种子写进模板槽，复用 UI/Web 的写闸门（写开关 + `--yes`），支持 `--json` 与可读错误提示；`live probe` 仍为只读诊断。
+
+### 修复
+
+- **`/ships` 结构与取值**：`cGcResourceElement` 的 `Seed` 是 `GcSeed` 结构体（取 `.Seed`），`Filename` 是 `VariableSizeString`（取 `.value`）；正确跳过 `0xFFFFFFFFFFFFFFFF` 空槽哨兵，补 `count`、每槽 `type` 和原始 `raw`，`primary` 直接来自 `miPrimaryShip`。
+- **模板槽探测并行化**：按内存区域用线程池只读扫描，主线程按区域顺序合并，保证候选顺序、截断语义与串行逐项一致；同一台机器全量探测由约 79 秒降到约 14 秒（8 线程），并新增等价性、截断、容错与粗粒度性能回归测试。`probe` 同时输出区域数/字节数/耗时/线程数与截断提示，只在自家模板确实缺候选时才做结构兜底二次扫描。
+- **写回副本的 `SameFileError`**：`save/writer.py` 统一走 `_ensure_copy()`；目标已经是 `.edited.hg` 时不再对自己 `copy2`，Windows 上不再抛未包装的 `SameFileError`。
+- **GAMEDATA 有效性**：新增 `settings.gamedata_valid()`，判据统一为必须存在 `Gagarin/ships/catalog.txt`；显式配置无效时回退自动发现，两者都无效返回 `None`，避免下游抛 `FileNotFoundError`。`doctor` 增加 `gamedata` 段并把无效数据目录计入失败原因；自动发现也支持与仓库并列的 `Gagarin_Titov/GAMEDATA`。
+- **测试夹具可移植**：`tests/conftest.py` 改为跨平台发现游戏 / 存档 / 数据目录（`NMS_DIR` → 自动查找 → 旧布局兜底），不再写死 `/workspace`；本机因此解锁 66 项原本被无谓跳过的用例。写测试默认打桩“游戏未运行”，但新增回归用例证明真正的运行中拒绝仍然生效。
+- **build 指纹**：`live/build.py` 在 `fast_load` 后补解析资源目录，优先读 `StringFileInfo` 的 `FileVersion`/`ProductVersion`（NMS.exe 为 `185034`），修正 `VS_FIXEDFILEINFO` 字段名（`FileVersionMS/LS`，兼容旧 `dw` 前缀）；文件缺失或解析失败时返回空 `version`，不再让 build 识别抛异常。
+- **首次安装顺序卡死**：`runtime_python()` 只认已装好 nmspy+pymhf 的运行时，导致干净机器上“准备运行时 → 安装组件”永远报“没有可用的 Python 运行时”。新增 `bare_runtime_python()` 作为首次 pip 安装入口，安装完成后再由严格检查确认依赖。
+- **token 文件认证**：游戏由 Steam 拉起时不会继承 `STARFORGE_AGENT_TOKEN`。`launch()` 现在同时把一次性 token 写入 `~/.starforge/agent/token`（尽量 `0600`），agent 按“环境变量 → token 文件 → `state.json`”解析，Steam 启动不再静默退化为 `auth=disabled`。
+- **连接/注入稳定性**：UI 的「连接游戏」不再走 `attach=True`（实测在 build 185034 上会让 NMS 访问冲突退出），改为要求游戏已运行并以 `attach=False` 发现实例；注入启动使用 `start_paused=True`，并在启动后检查游戏是否仍存活，被游戏当作模组冲突关闭时返回 `E_GAME_EXITED` 而不是假成功。客户端对 pymhf 只读端点同时兼容 GET 与 PUT（405 回退）。
+- **POI 扫描按钮**：`scan.poi` 端点尚未实现，四个扫描按钮改为禁用并给出明确提示，避免点击后必然报错。
+
+### 文档
+
+- **文档体系重构（V2 转正）**：`ARCHITECTURE.md`、`AGENT.md`、`MANUAL.md`、`DEV-GUIDE.md` 作为当前事实来源；旧网页版、旧 DLL/命名管道与一次性工作共 19 篇移入 `docs/archive/*-2026-11-18.md`，`docs/README.md` 重写为唯一入口（用户 / 开发 / 实验记录 / 归档）。
+- 新增 `docs/AUDIT-2026-11.md`（逐篇审计、错误清单、归档映射）、`docs/AGENT-INJECT-CRASH.md`（注入崩溃与写通道实机时间线、结论置顶）以及 `docs/research/` 下的专题研究（功能差距、生物搜索等）。
+- README 修正过期说法（WebGL、旧网页路由、文档链接），版本徽章与“当前状态”同步到 0.15.0；`THIRD_PARTY_NOTICES.md`、`PACKAGING.md` 与各文档的适用版本一并更新。
+
+### 实验记录
+
+- `teleport.portal` 三档结论（build 185034）：`warp_only` 无效（不崩溃）、`prepare_warp` 可传送到目标行星、`full` 未测。地址书未把 185034 标为 `verified`，所以默认只读，传送必须显式开启实验写入。
+- 注入：对已初始化进程 `attach=True` 会触发 `python311.dll` 访问冲突（0xC0000005）；由应用创建进程再注入时，NMS 仍可能把 Python/ctypes 识别为“模组冲突”并主动退出（无崩溃转储）。该路径默认拒绝，仅保留 `STARFORGE_ALLOW_ATTACH_INJECT=1` 调试开关。
+- 热重载：已有端点重注册的日志证据；打包态热重载、以及“新增端点后热重载是否可用”未做独立验证。
+- `scan.poi`（传送门/古遗迹/货船/飞船附近扫描）仍未实现；实时资产卡只读，依赖 agent 可达。
+- 以上实机结论仅覆盖 build 185034；其他 build 保持只读，不做能力承诺。
+
 ## v0.14.9
 
 - 修复 Windows 冻结包搜索默认多线程时卡在“已测 0 个种子”：发布版默认且限制为 1 线程，避免 spawn 子进程卡死。
@@ -209,7 +249,7 @@
 
 | Bug | 影响 | 修法 |
 |---|---|---|
-| `glyphs.digits_for(UA)` 截低 12 位十六进制 | `0x10400F19BDCE5` 算成 `0400F19BDCE5`（符文错） | 按位段重排（`glyphs_for_ua`），新增 6 项测试 |
+| `glyphs.digits_for(UA)` 截低 12 位十六进制 | `0x11200F19BDCE5` 算成 `1200F19BDCE5`（符文错） | 按位段重排（`glyphs_for_ua`），新增 6 项测试 |
 | `web/routes.py` 用 `WriteRefused` 却没 import | "游戏正在运行"时会 500 而不是 409 | 补 import，新增 4 项接口错误码测试 |
 | `glyphs._decode_dds` 里 `from . import dds` 指向不存在的模块 | 非 BC7 符文贴图静默退回位图字体 | 改用 `texture2ddecoder` 的 BC1/BC3 |
 | `selfcheck --no-write` 被 argparse 收下但忽略 | 参数无效 | 真正传给 `run(include_write=...)` |
@@ -352,8 +392,8 @@
 - **种子 → 星系反查（A4）**：`system.locate_seed()` + `POST /api/locate` + 详情面板「在哪（反查星系）」。
   先 `locate` 出候选（欠定，会撞假地址），再用 `systemgen.confirm` **真的把星系生成出来**，
   只有里面确实有这艘船才算命中；返回星系名/坐标/12 符文/出处（坠毁点、空间站…）/是否到过。
-  实测：存档里的船种子 `0x494CE787241EBCB2` → `0x10400F19BDCE5`、`04E4:0070:01BC:0104`、
-  符文 `1104F19BDCE5`、出处「space station · hauler」，4.8 s（含生成器冷启动）。
+  实测：存档里的船种子 `0x0123456789ABCDEF` → `0x11200F19BDCE5`、`<coords 示例>`、
+  符文 `1112F19BDCE5`、出处「space station · hauler」，4.8 s（含生成器冷启动）。
 - **改船级/属性（C3）**：`writer.apply_class()` + `POST /api/saves/class` + 详情面板「改级/属性…」。
   与写回同一套铁律（备份 → 原子写 → 重解码核对 → 失败回滚），额外两条：
   属性必须落在"这艘船这个等级游戏会给的区间"内；写完核对**其它船种子一个没动**。
@@ -361,8 +401,8 @@
 - 新增测试 `tests/test_locate_class.py`（9 项：反查自证、拒绝非法等级、C→S→回读、
   其它船不受影响、best 落在区间、副本模式原档不动）。
 - **修符文换算的真 bug（`glyphs.digits_for`）**：传 UA 整数时原来"取低 12 位十六进制"，
-  `0x10400F19BDCE5` 会得到 `0400F19BDCE5`（丢 system 最高半字节、不插行星位）；
-  现在按位段重排成 `1104F19BDCE5`（与上游 `locate.describe` 一致）。12 位十六进制串保持历史兼容。
+  `0x11200F19BDCE5` 会得到 `1200F19BDCE5`（丢 system 最高半字节、不插行星位）；
+  现在按位段重排成 `1112F19BDCE5`（与上游 `locate.describe` 一致）。12 位十六进制串保持历史兼容。
   新增 `tests/test_glyphs_ua.py`（6 项）。
 - **`selfcheck` 路径自愈（K21）**：开始前清 `gamepath.find` 缓存并 `settings.autodetect()`，
   避免"游戏装着但设置空 → 直接 4/10"；排障提示里的日志名 `nmsforge.log` 改为真实的 `starforge.log`。

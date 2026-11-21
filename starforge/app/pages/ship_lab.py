@@ -21,6 +21,7 @@ from ..dialogs.locate import LocateDialog
 from ..dialogs.part_preview import PartPreviewDialog
 from ..dialogs.write_back import WriteBackDialog
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.game_push import GamePushButton
 from ..widgets.page import PageSplitter, page_layout, scroll_panel
 from ..widgets.page_header import PageHeader
 from ..widgets.ship_card import install_card_delegate, set_card_accessibility
@@ -425,6 +426,8 @@ class ShipLabPage(QWidget):
         self.write_btn.setToolTip("写入同型号槽位；先备份，写入后读回校验")
         self.write_btn.clicked.connect(self._open_write)
         row2.addWidget(self.write_btn)
+        self.push_btn = GamePushButton(self.svc, self)
+        row2.addWidget(self.push_btn)
         self.import_btn = QPushButton("导入分享")
         self.import_btn.setToolTip("粘贴他人分享的 nsh1: 分享码")
         self.import_btn.clicked.connect(self._import_share)
@@ -683,6 +686,7 @@ class ShipLabPage(QWidget):
         self.title.setText("未选择飞船")
         self.detail.setText("选中结果后在这里查看 3D 模型与操作。")
         self.write_btn.setEnabled(False)
+        self.push_btn.set_ship(None)
         self.fav_btn.setText("收藏")
         self.fallback.hide()
         self.viewer.show()
@@ -1004,6 +1008,7 @@ class ShipLabPage(QWidget):
         self.title.setText(f"{row.get('type_label') or row.get('type')}  {row.get('seed')}")
         self.detail.setText("生成 3D 几何…")
         self.write_btn.setEnabled(bool(row))
+        self.push_btn.set_ship(row)
         self._update_fav_button(row)
         self.fallback.hide()
         self.viewer.show()

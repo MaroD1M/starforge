@@ -1,53 +1,73 @@
-# 文档
+# Starforge 文档索引
 
-| 文件 | 内容 |
+> **唯一入口。** 文档按「用户 / 开发 / 实验记录 / 研究 / 归档」分组，canonical 文件名不带版本后缀。
+> 事实以代码为准：`starforge/`、`tests/`、`scripts/`、`pyproject.toml`、`.github/workflows/` 与任何文字冲突时，以代码为准并回来改文档。
+> 最后核对：2026-11-22，工作区版本 **0.15.0**（`starforge/__init__.py`、`pyproject.toml`）。
+
+## 用户
+
+| 文档 | 一句话 | 最后核对 |
+|---|---|---|
+| [MANUAL.md](MANUAL.md) | 用户手册：安装、7 个页面、CLI、存档写入与备份/回滚、模板 Mod 一键安装、传送到星球、实时资产 | 2026-11-22 / 0.15.0 |
+
+## 开发
+
+| 文档 | 一句话 | 最后核对 |
+|---|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | as-built 架构：目录职责、调用链、体量、依赖违规与技术债（不是重构提案） | 2026-11-22 / 0.15.0 |
+| [AGENT.md](AGENT.md) | 游戏内通道：pymhf Python Mod 形态、15 个 HTTP 端点、认证、build 闸门、`SaveToData` 只读解析 | 2026-11-22 / 0.15.0 |
+| [LESSONS.md](LESSONS.md) | 经验与踩坑：注入三次崩溃与二分、`/ships` 两套结构、portal 三档、token 三源、热重载、图标、写闸门、文档漂移 | 2026-11-22 / 0.15.0 |
+| [DEV-GUIDE.md](DEV-GUIDE.md) | 开发/测试/打包：环境、fixture、约定、PyInstaller 与 vendor、自检、新增页面/端点 | 2026-11-22 / 0.15.0 |
+| [PACKAGING.md](PACKAGING.md) | 包体构成与削减：CI 裁剪项、体积报告脚本、110 MiB 预算与发布自检 | 2026-11-21 / 0.15.0 |
+
+## 实验记录
+
+| 文档 | 一句话 | 最后核对 |
+|---|---|---|
+| [AGENT-INJECT-CRASH.md](AGENT-INJECT-CRASH.md) | 注入实验记录：结论置顶，下面是 2026-11-18～21 的崩溃 dump、对照实验与写通道实测时间线 | 2026-11-22 |
+| [AUDIT-2026-11.md](AUDIT-2026-11.md) | 2026-11 文档审计（一次性）：逐篇结论、错误清单、归档映射与断链风险 | 2026-11-21 |
+| [SECURITY-REVIEW-2026-11.md](SECURITY-REVIEW-2026-11.md) | 发布前敏感信息审查：本机路径、存档派生数据、dump/PID、`.gitignore` 与脱敏待办 | 2026-11-22 |
+
+## 研究
+
+| 文档 | 一句话 | 最后核对 |
+|---|---|---|
+| [research/FEATURE-GAPS.md](research/FEATURE-GAPS.md) | 功能缺口审计（快照）：已实现/只读/占位/缺失清单、UI 断点与修复状态 | 2026-11-22 |
+| [research/CREATURE-SEARCH.md](research/CREATURE-SEARCH.md) | 生物建模与“按特征搜索 → 传送”研究：存档字段、上游方案、分阶段落地 | 2026-11-22 |
+
+## 归档（历史，不代表当前实现）
+
+以下文件描述旧网页版、旧 DLL/命名管道方案或已完成的一次性工作，**只用于追溯**。新文档不要再链接它们。
+
+| 文档 | 原主题 |
 |---|---|
-| [FEATURE-MAP.md](FEATURE-MAP.md) | **功能地图**：界面 → 服务 → 后端状态，标出已接/占位/待实现 |
-| [GAP-ANALYSIS.md](GAP-ANALYSIS.md) | **差距分析**：30 个缺口、功能矩阵、P0–P3 路线、包体/agent/UI 专项 |
-| [COMMUNITY-UI-ROADMAP.md](COMMUNITY-UI-ROADMAP.md) | **社区 UI/UX 研究**：坐标/符文、存档、搜索筛选、NMS 氛围层与实施阶段 |
-| [PACKAGING.md](PACKAGING.md) | **打包与体积**：131MB 构成、削减项、体积报告与目标 |
-| [INGAME-SCAN-FEASIBILITY.md](INGAME-SCAN-FEASIBILITY.md) | **游戏内扫描可行性**：矿物/动植物/POI/传送门的字段、函数与实机边界 |
-| [UI-TERMS.md](UI-TERMS.md) | **界面术语表**：中文/英文/使用场景，避免中英混用 |
-| [SAVE-API-INVENTORY.md](SAVE-API-INVENTORY.md) | **存档 API 盘点**：读写能力、风险分级、写事务缺口与接入顺序 |
-| [CREATURE-MODELING.md](CREATURE-MODELING.md) | **同伴/生物建模研究**：数据链、社区项目、3D 预览路线与边界 |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | **架构研究与重构方案**：分层、AppContext、任务模型、Strangler 迁移、测试与打包 |
-| [UI-REDESIGN.md](UI-REDESIGN.md) | **界面重构设计**：Command Deck 布局、设计令牌、组件库、六个页面与迁移计划 |
-| [CLEANUP-AUDIT.md](CLEANUP-AUDIT.md) | **过时资源清理审计**：旧 Web/desktop/文档/依赖盘点与安全删除顺序 |
-| [PLAN-V4.md](PLAN-V4.md) | **全功能路线图**：离线 / 存档 / 外部实时 / 进程内 agent 四条线，M0–M8 阶段与 Windows 实测轮次 |
-| [AGENT.md](AGENT.md) | **agent 是什么**：为什么传送/扫描必须在进程内、DLL 代理如何工作、build 绑定与安全边界 |
-| [AGENT-PROTOCOL.md](AGENT-PROTOCOL.md) | agent 命名管道协议 v1：帧格式、命令表、错误码、能力协商 |
-
-## 历史参考
-
-以下文档描述旧网页/旧版本，保留用于追溯；当前实现以 ARCHITECTURE / UI-REDESIGN / FEATURE-MAP / GAP-ANALYSIS / PLAN-V4 为准。
-
-| 文件 | 内容 |
-|---|---|
-| [USAGE.md](USAGE.md) | 旧逐屏使用指南（待按 7 页原生界面重写） |
-| [MANUAL.md](MANUAL.md) | 旧 nmshunter 软件手册 |
-| [DESIGN.md](DESIGN.md) | 旧网页架构设计 |
-| [CAPABILITIES.md](CAPABILITIES.md) | 旧能力快照 |
-| [VERIFY-WINDOWS.md](VERIFY-WINDOWS.md) | 旧 Windows 验收单 |
-| [VERIFY-AGENT-WINDOWS.md](VERIFY-AGENT-WINDOWS.md) | agent 验收单（需按 pymhf 更新） |
-| [archive/PLAN-V2.md](archive/PLAN-V2.md) | 已归档的旧方案 |
-| [archive/PLAN-V3.md](archive/PLAN-V3.md) | 已归档的旧方案 |
+| [archive/ARCHITECTURE-2026-11-18.md](archive/ARCHITECTURE-2026-11-18.md) | 旧分层重构方案（`application/` + `ui/`） |
+| [archive/AGENT-2026-11-18.md](archive/AGENT-2026-11-18.md) | 旧 agent 概念（winmm DLL 时代） |
+| [archive/AGENT-PROTOCOL-2026-11-18.md](archive/AGENT-PROTOCOL-2026-11-18.md) | 命名管道协议草案（未实现） |
+| [archive/MANUAL-2026-11-18.md](archive/MANUAL-2026-11-18.md) | 旧 11 卷软件手册（v0.9） |
+| [archive/USAGE-2026-11-18.md](archive/USAGE-2026-11-18.md) | 旧逐屏使用指南（已并入 MANUAL） |
+| [archive/PLAN-V4-2026-11-18.md](archive/PLAN-V4-2026-11-18.md) | 四线路线图（DLL 时代） |
+| [archive/GAP-ANALYSIS-2026-11-18.md](archive/GAP-ANALYSIS-2026-11-18.md) | 2026-11-19 缺口快照 |
+| [archive/FEATURE-MAP-2026-11-18.md](archive/FEATURE-MAP-2026-11-18.md) | 旧功能地图（状态已过期） |
+| [archive/CAPABILITIES-2026-11-18.md](archive/CAPABILITIES-2026-11-18.md) | 旧能力快照 |
+| [archive/UI-REDESIGN-2026-11-18.md](archive/UI-REDESIGN-2026-11-18.md) | Command Deck 设计提案 |
+| [archive/COMMUNITY-UI-ROADMAP-2026-11-18.md](archive/COMMUNITY-UI-ROADMAP-2026-11-18.md) | 社区 UI/UX 研究与提案 |
+| [archive/UI-TERMS-2026-11-18.md](archive/UI-TERMS-2026-11-18.md) | 中英界面术语表 |
+| [archive/DESIGN-2026-11-18.md](archive/DESIGN-2026-11-18.md) | 旧网页产品设计（nmshunter） |
+| [archive/SAVE-API-INVENTORY-2026-11-18.md](archive/SAVE-API-INVENTORY-2026-11-18.md) | 存档 API 盘点（现状列已过期） |
+| [archive/INGAME-SCAN-FEASIBILITY-2026-11-18.md](archive/INGAME-SCAN-FEASIBILITY-2026-11-18.md) | 游戏内扫描/矿物/POI 可行性 |
+| [archive/CREATURE-MODELING-2026-11-18.md](archive/CREATURE-MODELING-2026-11-18.md) | 同伴 3D 建模路线 |
+| [archive/VERIFY-WINDOWS-2026-11-18.md](archive/VERIFY-WINDOWS-2026-11-18.md) | v0.9 网页版验收单 |
+| [archive/VERIFY-AGENT-WINDOWS-2026-11-18.md](archive/VERIFY-AGENT-WINDOWS-2026-11-18.md) | winmm 代理 DLL 时代验收单 |
+| [archive/CLEANUP-AUDIT-2026-11-18.md](archive/CLEANUP-AUDIT-2026-11-18.md) | 旧资源清理审计（已完成） |
+| [archive/PLAN-V2.md](archive/PLAN-V2.md) | 更早的已归档方案 |
+| [archive/PLAN-V3.md](archive/PLAN-V3.md) | 更早的已归档方案 |
 
 ## 发布前自检
 
-发布前在仓库根目录运行（纯 stdlib，只读；详细清单见 [PACKAGING.md](PACKAGING.md#8-发布前自检selfcheck_releasepy)）：
-
 ```bash
-python3 scripts/selfcheck_release.py
-python3 scripts/selfcheck_release.py --json
-python3 scripts/selfcheck_release.py --fail-on error
+python scripts/selfcheck_release.py --fail-on error
 ```
 
-它检查版本号/CHANGELOG/tag、必需文件、文档相对链接、已移除依赖和 TODO 统计；
-默认发现 `error` 时退出码为 1。`--json` 输出适合 CI 或发布脚本消费。
-
-## 快速事实
-
-* **实测性能**（4 核开发机）：系统生成 0.039 s/系统；单船 3D 0.4–1.2 s（热）；搜索 13–20 M seeds/s。
-* **传送门符文 = 系统地址的 12 位十六进制**；图标在 `NMSARC.TexUI.pak` 的 `textures/ui/frontend/icons/update3/portalsymbol.<0-f>.dds`（BC7）。
-* **默认不做**：注入改游戏代码、跨型移植外观、改玩家资产、多人写入。
-* **可选 agent**：进程内 DLL 才能做游戏内传送/扫描/建造；按 build 指纹绑定，默认不安装、可完整卸载。
+它会校验版本号/CHANGELOG/tag、必需文件、本索引的相对链接、已移除依赖与 TODO 统计；
+`--json` 便于 CI 消费，`--fail-on warning` 可把告警也当失败。说明见 [DEV-GUIDE.md](DEV-GUIDE.md) §5.6 与 [PACKAGING.md](PACKAGING.md#8-发布前自检selfcheck_releasepy)。

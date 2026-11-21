@@ -349,7 +349,7 @@ ReserveStore, ReserveManaged, Store, Available, Enqueued
 
 ```json
 {
-  "DD": {"UA": 4933512850009402, "DT": "Planet", "VP": ["0xD0A259390B3921DC", 7]},
+  "DD": {"UA": 123456789012345, "DT": "Planet", "VP": ["0x0123456789ABCDEF", 7]}, // 示例，已脱敏
   "DM": {},
   "OWS": {"LID": "...", "UID": "...", "USN": "...", "PTK": "", "TS": 1791726683},
   "FL": {"C": 1},
@@ -611,7 +611,7 @@ ga.SolarSystemIndex = dest["system"]
 ga.VoxelX/Y/Z = ...
 ps.mLocation.RealityIndex = dest["reality"]
 
-state = basic.cTkFixedString[0x10]("APPLOCALLOAD")
+state = basic.cTkFixedString[0x10] ("APPLOCALLOAD")
 app.StateChange(ctypes.addressof(state), 0, False)
 ```
 

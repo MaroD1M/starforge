@@ -8,7 +8,6 @@
 """
 from __future__ import annotations
 
-import functools
 import threading
 
 import numpy as np

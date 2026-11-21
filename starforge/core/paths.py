@@ -90,8 +90,9 @@ def gagarin_gamedata() -> Path | None:
     env = os.environ.get("STARFORGE_GAMEDATA")
     here = Path(__file__).resolve()
     cands = [env,
-             here.parents[2] / "Gagarin_Titov" / "GAMEDATA",   # 开发布局
-             here.parents[2] / "vendor" / "gamedata",          # 发布包布局
+             here.parents[2] / "Gagarin_Titov" / "GAMEDATA",         # 仓库内开发布局
+             here.parents[2].parent / "Gagarin_Titov" / "GAMEDATA",  # 与仓库并列（和 shipwright_root 一致）
+             here.parents[2] / "vendor" / "gamedata",                # 发布包布局
              "/workspace/nms/Gagarin_Titov/GAMEDATA"]
     return _first_existing(*cands)
 

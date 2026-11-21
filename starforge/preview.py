@@ -15,7 +15,7 @@ import numpy as np
 
 from . import paint as paint_mod, render, tex as tex_mod
 from . import parts as parts_mod
-from .data.shipref import PROC_MODELS, ShipRef
+from .data.shipref import ShipRef
 from . import gltf
 
 log = log.get("preview")

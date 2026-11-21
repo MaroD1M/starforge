@@ -80,7 +80,7 @@ starforge\starforge.exe selfcheck  :: 命令行模式（保留控制台）
 **命令行方式**（可选，更省事）：
 
 ```bat
-starforge\starforge.exe glyph-overlay 1043FEE69929 --click-through
+starforge\starforge.exe glyph-overlay 123456789ABC --click-through
 ```
 
 - [ ] 出现置顶符文条；按 Esc 可关闭；加 `--click-through` 后鼠标能穿透到游戏

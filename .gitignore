@@ -13,7 +13,7 @@ dist/
 *.png
 !docs/img/*.png
 *.bak
-.part
+*.part
 cache/
 toolcache/
 artifacts/
@@ -23,6 +23,22 @@ No Man's Sky/
 NMS存档/
 *.hg
 *.sav
+
+# 本机运行状态 / 凭据 / 崩溃与日志（绝不入库）
+# .starforge 下含 token、state.json、快照与注入运行时
+.starforge/
+agent-runtime/
+*.log
+*.dmp
+*.mdmp
+*.pid
+.env
+.env.*
+
+# 测试/静态检查缓存
+.ruff_cache/
+.coverage
+htmlcov/
 
 # 编辑器/系统
 .vscode/

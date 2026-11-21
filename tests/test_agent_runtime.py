@@ -349,3 +349,100 @@ def test_scan_discover_is_a_known_client_command(monkeypatch):
     monkeypatch.setattr(c, "_call", fake_call)
     assert c.call("scan.discover")["ok"] is True
     assert seen == {"path": "/scan", "method": "PUT", "params": {"mode": "discover"}}
+
+
+def test_client_falls_back_to_put_on_405():
+    """pymhf 会把没显式声明 method 的 endpoint 注册成 PUT；读端点要能回退。"""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from starforge.live.agent_client import AgentClient
+
+    seen_methods = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen_methods.append("GET")
+            self.send_error(405)
+
+        def do_PUT(self):
+            seen_methods.append("PUT")
+            body = b'{"ok": true, "agent": "0.1.0"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        client = AgentClient(base=f"http://127.0.0.1:{srv.server_address[1]}/StarforgeAgent",
+                             token="")
+        assert client.hello()["agent"] == "0.1.0"
+    finally:
+        srv.shutdown()
+    assert seen_methods == ["GET", "PUT"]
+
+# ---------------------------------------------------------------- 首次安装依赖
+
+def test_install_deps_uses_bare_runtime(tmp_path, monkeypatch):
+    """干净机器上「准备运行时 → 安装组件」不能因为"还没装包"而找不到解释器。
+
+    回归：install_deps 曾用 runtime_python()（只认已装 nmspy+pymhf 的运行时），
+    导致刚 bootstrap 出来的空 runtime 永远被跳过，返回"没有可用的 Python 运行时"。
+    """
+    from starforge.live import agent_install as ai
+
+    py = tmp_path / "python.exe"
+    py.write_bytes(b"")
+    monkeypatch.setattr(ai, "_runtime_candidates", lambda: [py])
+    monkeypatch.setattr(ai, "_has_agent_packages", lambda _p: False)
+    monkeypatch.setattr(ai, "runtime_python", lambda: None)
+
+    seen = {}
+
+    class _Done:
+        returncode = 0
+        stdout = "installed"
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return _Done()
+
+    monkeypatch.setattr(ai.subprocess, "run", fake_run)
+    rep = ai.install_deps(version="185034.0")
+
+    assert rep.get("ok") is True, rep
+    assert seen["cmd"][0] == str(py)
+    assert any("NMSpy==185034.0" in str(part) for part in seen["cmd"])
+
+# ---------------------------------------------------------------- attach 注入闸门
+
+def test_launch_attach_is_refused_by_default(monkeypatch):
+    """对已运行的游戏做注入会让 NMS.exe 在 python311.dll 里闪退，默认必须拒绝。"""
+    from starforge.live import agent_install as ai
+
+    monkeypatch.delenv("STARFORGE_ALLOW_ATTACH_INJECT", raising=False)
+    monkeypatch.setattr(ai.mem, "IS_WINDOWS", True)
+    with pytest.raises(RuntimeError) as e:
+        ai.launch(attach=True)
+    msg = str(e.value)
+    assert "附加到已运行的游戏" in msg
+    assert "STARFORGE_ALLOW_ATTACH_INJECT" in msg
+
+
+def test_launch_attach_guard_can_be_overridden(monkeypatch):
+    """显式打开环境变量后，闸门不再拦（后续失败由运行时报错）。"""
+    from starforge.live import agent_install as ai
+
+    monkeypatch.setenv("STARFORGE_ALLOW_ATTACH_INJECT", "1")
+    monkeypatch.setattr(ai.mem, "IS_WINDOWS", True)
+    monkeypatch.setattr(ai, "install_mod", lambda: {"ok": True})
+    monkeypatch.setattr(ai, "_runtime_info", lambda: {"http_api": False})
+    with pytest.raises(RuntimeError) as e:
+        ai.launch(attach=True)
+    assert "pymhf[http_api]" in str(e.value)      # 已经越过 attach 闸门

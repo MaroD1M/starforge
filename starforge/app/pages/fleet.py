@@ -34,6 +34,7 @@ from ..dialogs.class_editor import ClassEditorDialog
 from ..dialogs.save_edit import SaveEditDialog
 from ..dialogs.save_extras import SaveExtrasDialog
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.game_push import GamePushButton
 from ..widgets.page import PageSplitter, page_layout
 from ..widgets.page_header import PageHeader
 from ..widgets.pets_view import PetsView
@@ -295,7 +296,8 @@ class FleetPage(QWidget):
         self.fallback.setMinimumHeight(300)
         self.fallback.hide()
         rv.addWidget(self.fallback, 1)
-        self.pets_note = QLabel("同伴 3D 预览需要生物生成器；当前只展示描述符与种子。")
+        self.pets_note = QLabel(
+            "同伴：可从存档 UA 解出来源星球的 12 位符文并复制；3D 预览仍需要生物生成器。")
         self.pets_note.setWordWrap(True)
         self.pets_note.setAlignment(Qt.AlignCenter)
         self.pets_note.setMinimumHeight(300)
@@ -312,6 +314,8 @@ class FleetPage(QWidget):
         self.edit_btn.setToolTip("修改选中飞船的等级与属性；先备份，可写入副本")
         self.edit_btn.clicked.connect(self._open_class_editor)
         row2.addWidget(self.edit_btn)
+        self.push_btn = GamePushButton(self.svc, self)
+        row2.addWidget(self.push_btn)
         rv.addLayout(row2)
         split.addWidget(right)
         split.setStretchFactor(1, 1)
@@ -442,10 +446,14 @@ class FleetPage(QWidget):
             self.title.setText("同伴")
             self.copy_btn.hide()
             self.edit_btn.hide()
-            self.pets_note.setText("同伴 3D 预览需要生物生成器；当前只展示描述符与种子。")
+            self.push_btn.hide()
+            self.pets_note.setText(
+                "同伴：可从存档 UA 解出来源星球的 12 位符文并复制；"
+                "3D 预览仍需要生物生成器。")
             self.viewer.hide()
             self.pets_note.show()
-            self.detail.setText("同伴目前只读：描述符、种子、群系；3D 需要生物生成器。")
+            self.detail.setText(
+                "同伴目前只读：描述符、种子、群系、来源星球与符文；传送需二次确认。")
             if self._loaded_path:
                 self.pets.set_save_path(self._loaded_path)
                 self.pets.ensure_loaded()
@@ -455,6 +463,7 @@ class FleetPage(QWidget):
             self.title.setText(self.tabs.tabText(index))
             self.copy_btn.hide()
             self.edit_btn.hide()
+            self.push_btn.hide()
             self.pets_note.setText("这里只读展示存档中的船队扩展数据；没有 API 的写回不会伪造。")
             self.pets_note.show()
             self.viewer.hide()
@@ -468,6 +477,7 @@ class FleetPage(QWidget):
         self.title.setText("飞船详情")
         self.copy_btn.show()
         self.edit_btn.show()
+        self.push_btn.show()
         self.pets_note.hide()
         self.viewer.show()
         self.detail.setText("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
@@ -701,6 +711,7 @@ class FleetPage(QWidget):
         self.export_btn.setEnabled(bool(self._ships) and not self._exporting)
         self.edit_btn.setEnabled(bool(ship) and ship.get("slot") is not None
                                  and bool(self._loaded_path))
+        self.push_btn.set_ship(ship)
 
     def _export_all(self) -> None:
         if not self._ships:

@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import pytest
 
 
 def _get_routes(app):

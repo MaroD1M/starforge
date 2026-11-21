@@ -24,7 +24,7 @@ def test_normalize_glyphs_accepts_common_forms(text, expected):
 
 
 @pytest.mark.parametrize("text", ["", "1043", "1043FEE6992", "1043FEE699299",
-                                  "1043FEE6992G", "0x10400F19BDCE5"])
+                                  "1043FEE6992G", "0x11200F19BDCE5"])
 def test_normalize_glyphs_rejects_bad_input(text):
     with pytest.raises(ValueError):
         normalize_glyphs(text)

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 
 # 模型文件名片段 → 船型（不要求带 _PROC：玩家存档里也可能是固定模型）
 MODEL_TOKENS = (

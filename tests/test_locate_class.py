@@ -39,7 +39,6 @@ def test_locate_real_save_ship_hits_own_system(save_copy, game_env):
     ships, _ = library.open_ships(save_copy)
     if not ships:
         pytest.skip("存档里没有船")
-    here = system.describe(system.current_ua(str(save_copy)))
     target = None
     for s in ships:                                     # 逐个试到命中（反查本身欠定）
         out = system.locate_seed(s.seed, save_path=str(save_copy))

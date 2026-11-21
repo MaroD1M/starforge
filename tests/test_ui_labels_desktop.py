@@ -5,7 +5,7 @@
   · glb 材质对未知类不再回退成主色（否则 3D "一片同色"）；
   · /api/health 明确给出"桌面窗口还是浏览器模式 + 原因"，界面据此提示装 WebView2。
 """
-from starforge import gltf, paint
+from starforge import gltf
 from starforge.data.shipref import ShipRef
 
 

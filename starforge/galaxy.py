@@ -8,7 +8,7 @@
 设计取舍：
   · **只存结构化字段**（ua/坐标/符文/种族/经济/冲突/行星数/dissonant + 行星行），
     行星原始字典进 `planet_list` JSON 备查，不做全字段建模——游戏更新加字段时不用迁移；
-  · `ua` 用十六进制字符串（如 `0x10400F19BDCE5`）做主键，便于人读与跟符文对照；
+  · `ua` 用十六进制字符串（如 `0x11200F19BDCE5`）做主键，便于人读与跟符文对照；
   · 写入用 `INSERT ... ON CONFLICT DO UPDATE`，重复扫同一星系就是刷新，不会膨胀。
 """
 from __future__ import annotations

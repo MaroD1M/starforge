@@ -102,6 +102,9 @@ class AgentClient:
         try:
             with opener.open(req, timeout=timeout or self.timeout) as r:
                 data = r.read()
+        except urllib.error.HTTPError as e:
+            # 保留状态码，调用方要靠 405 判断"方法不对"并回退。
+            raise AgentError(f"agent 返回 HTTP {e.code}：{e.reason}") from e
         except urllib.error.URLError as e:
             raise AgentError(f"连不上游戏内 agent：{e.reason}") from e
         except TimeoutError as e:
@@ -111,32 +114,62 @@ class AgentClient:
         except ValueError as e:
             raise AgentError(f"agent 返回的不是 JSON：{data[:120]!r}") from e
 
+    def _read(self, path: str, params: dict | None = None,
+              timeout: float | None = None) -> dict:
+        """读端点：优先 GET；405 时回退 PUT。
+
+        背景：pymhf 的 `@endpoint` 在**没有显式声明 method** 时会把路由注册成 PUT
+        （实测 build 185034 + pymhf 0.2.5 的 openapi.json 里 11 个端点全是 put）。
+        新版 agent 会给只读端点显式标 GET，这里两种都兼容，避免版本错位就全挂。
+        """
+        try:
+            return self._call(path, method="GET", params=params, timeout=timeout)
+        except AgentError as e:
+            if "HTTP 405" not in str(e):
+                raise
+            return self._call(path, method="PUT", params=params, timeout=timeout)
+
     # ---------------------------------------------------------------- 能力
 
     def ping(self, timeout: float = 2.0) -> bool:
         try:
-            self._call("/hello", timeout=timeout)
+            self._read("/hello", timeout=timeout)
             return True
         except Exception:                                  # noqa: BLE001
             return False
 
     def hello(self) -> dict:
-        return self._call("/hello")
+        return self._read("/hello")
 
     def player(self) -> dict:
-        return self._call("/player")
+        return self._read("/player")
 
     def system(self) -> dict:
-        return self._call("/system")
+        return self._read("/system")
 
     def planet(self) -> dict:
-        return self._call("/planet")
+        return self._read("/planet")
 
     def planet_scan(self) -> dict:
-        return self._call("/planet/scan")
+        return self._read("/planet/scan")
 
     def ships(self) -> dict:
-        return self._call("/ships")
+        return self._read("/ships")
+
+    def multitool(self) -> dict:
+        return self._read("/multitool")
+
+    def freighter(self) -> dict:
+        return self._read("/freighter")
+
+    def pets(self) -> dict:
+        return self._read("/pets")
+
+    # ---------------------------------------------------------------- 热重载
+
+    def admin_reload(self) -> dict:
+        """让进程内的 agent 重新加载自身（改完代码不必退出游戏）。"""
+        return self._call("/admin/reload", method="PUT", timeout=10.0)
 
     # ---------------------------------------------------------------- 写
 
@@ -145,10 +178,13 @@ class AgentClient:
                           params={"glyphs": glyphs, "galaxy": galaxy if galaxy is not None else -1},
                           timeout=15.0)
 
-    def teleport_portal(self, glyphs: str, galaxy: int | None = None) -> dict:
+    def teleport_portal(self, glyphs: str, galaxy: int | None = None,
+                        stage: str = "prepare_warp") -> dict:
         return self._call("/teleport/portal", method="PUT",
-                          params={"glyphs": glyphs, "galaxy": galaxy if galaxy is not None else -1},
-                          timeout=15.0)
+                          params={"glyphs": glyphs,
+                                  "galaxy": galaxy if galaxy is not None else -1,
+                                  "stage": stage},
+                          timeout=25.0)
 
     def scan(self, mode: str = "read") -> dict:
         return self._call("/scan", method="PUT", params={"mode": mode}, timeout=15.0)
@@ -164,13 +200,16 @@ class AgentClient:
         fn = {
             "hello": self.hello, "player": self.player, "system": self.system,
             "planet": self.planet, "planet.scan": self.planet_scan, "ships": self.ships,
+            "multitool": self.multitool, "freighter": self.freighter, "pets": self.pets,
             "teleport": lambda: self.teleport(params.get("glyphs", ""), params.get("galaxy")),
             "teleport.portal": lambda: self.teleport_portal(
-                params.get("glyphs", ""), params.get("galaxy")),
+                params.get("glyphs", ""), params.get("galaxy"),
+                params.get("stage") or "prepare_warp"),
             "scan": lambda: self.scan(params.get("mode", "read")),
             "scan.discover": lambda: self.scan("discover"),
             "scan.instant": lambda: self.scan_instant(bool(params.get("on", True))),
             "restore": self.restore,
+            "admin.reload": self.admin_reload,
         }.get(cmd)
         if fn is None:
             raise AgentError(f"未知 agent 命令：{cmd}")

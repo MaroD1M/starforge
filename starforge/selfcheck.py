@@ -15,7 +15,7 @@ import tempfile
 import time
 import traceback
 
-from .core import log, paths, settings
+from .core import log, settings
 
 log = log.get("selfcheck")
 
@@ -39,7 +39,7 @@ def _textures() -> str:
 
 
 def run(include_write: bool = True) -> dict:
-    from . import glyphs, preview, render, search, system
+    from . import preview, render, search, system
     from .data import load_catalog, load_icons
     from .data.shipref import ShipRef
     from .save import library, writer
@@ -152,7 +152,7 @@ def run(include_write: bool = True) -> dict:
 
     # 9) 实时通道：只报状态，不写
     def _live():
-        from .live import mem, writer as live_writer
+        from .live import writer as live_writer
         st = live_writer.status()
         if not st["supported"]:
             return "不支持（非 Windows）——存档写回与符文浮窗仍可用"

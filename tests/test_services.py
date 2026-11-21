@@ -23,7 +23,14 @@ def test_settings_roundtrip():
     assert "resolved" in after
 
 
-def test_live_capabilities_exposes_teleport_and_scan():
+def test_live_capabilities_exposes_teleport_and_scan(monkeypatch):
+    from starforge.live import agent_install
+
+    # 不能让测试依赖本机是否正在跑游戏：把 agent 状态钉成"未连接"。
+    monkeypatch.setattr(agent_install, "status", lambda: {
+        "attached": False, "reachable": False, "hello": {},
+        "build": {"verified": False, "write_allowed": False, "reason": "这版未验证"},
+    })
     svc = get_services()
     cap = svc.live_capabilities()
     names = set(cap["capabilities"])
@@ -106,3 +113,22 @@ def test_agent_install_mod_and_version_mapping():
 
     assert Path(res["path"]).exists()
     assert "StarforgeAgent" in Path(res["path"]).read_text("utf-8")
+
+# ---------------------------------------------------------------- 模板 Mod / 连接
+
+def test_install_template_mod_requires_confirm():
+    import pytest
+
+    from starforge.core.errors import BadRequest
+
+    with pytest.raises(BadRequest):
+        get_services().install_template_mod()
+
+
+def test_agent_connect_refuses_without_game(monkeypatch):
+    from starforge.live import mem
+
+    monkeypatch.setattr(mem, "find_pid", lambda *_a, **_k: None)
+    res = get_services().agent_connect()
+    assert res["ok"] is False
+    assert res["code"] == "E_NO_GAME"

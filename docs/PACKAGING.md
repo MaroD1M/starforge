@@ -214,7 +214,7 @@ python3 scripts/selfcheck_release.py --fail-on warning
 | `version.tag` | 最近 git tag 与包版本一致，作为发布提示 | warning |
 | `files.required` | `app/shell.py`、`app/pages/*`、agent、`live/builds/*.json`、文档索引等存在 | error |
 | `files.builds` | `live/builds/*.json` 可解析且为 JSON 对象 | error |
-| `docs.index` | 已存在的 GAP/COMMUNITY/INGAME/UI-TERMS/PACKAGING/SAVE-API/CLEANUP-AUDIT 已收录进索引 | warning |
+| `docs.index` | 脚本保留的历史文档名中，若仍存在于 `docs/` 却未收录进索引则告警（多数已归档，当前只剩 `PACKAGING.md` 需保持收录） | warning |
 | `docs.links` | `docs/README.md` 中相对链接目标存在 | error |
 | `deps.legacy` | `requirements*.txt` / CI 不再安装 pywebview/pythonnet/clr_loader/tkinter | error |
 | `markers.todo` | 关键代码里的 TODO/FIXME/“待实现”数量 | 仅报告 |

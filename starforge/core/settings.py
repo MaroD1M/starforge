@@ -47,6 +47,25 @@ def _as_bool(value: object, default: bool) -> bool:
     return default
 
 
+GAMEDATA_MARKER = ("Gagarin", "ships", "catalog.txt")
+
+
+def gamedata_valid(path: str | Path | None) -> bool:
+    """GAMEDATA 目录是否可用：必须含 Gagarin/ships/catalog.txt。
+
+    只看目录存在会把 Steam 原版的 GAMEDATA（只有 PCBANKS/INPUT/MODS/SHADERCACHE）
+    误判为有效，下游随后在 catalog.txt 上抛 FileNotFoundError。自动发现与解析
+    统一用这一个判据。
+    """
+    if not path:
+        return False
+    try:
+        p = Path(path).expanduser()
+    except (OSError, TypeError, ValueError):
+        return False
+    return p.joinpath(*GAMEDATA_MARKER).is_file()
+
+
 @dataclass
 class Settings:
     write_enabled: bool = False
@@ -91,10 +110,17 @@ class Settings:
         return None
 
     def gamedata_resolved(self) -> Path | None:
+        """解析可用的 GAMEDATA；显式配置无效时回退自动发现，两者都无效返回 None。
+
+        无效路径绝不返回：否则下游会在 catalog.txt / icons.bin 上抛
+        FileNotFoundError，而不是得到可读的"未配置数据目录"。
+        """
         if self.gamedata_dir:
             p = Path(self.gamedata_dir).expanduser()
-            return p if p.exists() else None
-        return paths.gagarin_gamedata()
+            if gamedata_valid(p):
+                return p
+        auto = paths.gagarin_gamedata()
+        return auto if auto and gamedata_valid(auto) else None
 
 
 _CURRENT: Settings | None = None
@@ -128,7 +154,7 @@ def require_write() -> None:
 # ---------------------------------------------------------------- 自动发现
 
 def autodetect(apply: bool = True) -> dict:
-    """自动找游戏 / 存档 / 数据目录（只在对应项为空时填），返回找到的结果与来源。
+    """自动找游戏 / 存档 / 数据目录（对应项为空或无效时填），返回找到的结果与来源。
 
     优先级：
       游戏   NMS_DIR 环境变量 → Shipwright 的 gamepath.find()（Steam/GOG/注册表）
@@ -160,16 +186,20 @@ def autodetect(apply: bool = True) -> dict:
                 break
 
     # 数据目录（Gagarin 的 GAMEDATA；优先游戏目录下的那份）
-    if not cur.gamedata_dir:
+    # 已填但无效（例如误填 Steam 原版的 GAMEDATA）同样自愈，判据与 gamedata_resolved 一致。
+    def _gamedata_candidate() -> str | None:
         g = found.get("game_dir") or cur.game_dir
         if g:
             cand = os.path.join(g, "GAMEDATA")
-            if os.path.exists(os.path.join(cand, "Gagarin", "ships", "catalog.txt")):
-                found["gamedata_dir"] = cand
-        if "gamedata_dir" not in found:
-            gd = paths.gagarin_gamedata()
-            if gd:
-                found["gamedata_dir"] = str(gd)
+            if gamedata_valid(cand):
+                return cand
+        gd = paths.gagarin_gamedata()
+        return str(gd) if gd and gamedata_valid(gd) else None
+
+    if not gamedata_valid(cur.gamedata_dir):
+        cand = _gamedata_candidate()
+        if cand:
+            found["gamedata_dir"] = cand
 
     if apply and found:
         update(**found)

@@ -10,10 +10,19 @@
 from __future__ import annotations
 
 import os
+import re
 
 from .core import log, paths
+from .glyphs import glyphs_for_ua, unpack_ua
 
 log = log.get("creature")
+
+# 银河序号 → 名称（与上游 `nms_procgen.locate.GALAXIES` 一致；只用于显示，不参与换算）
+GALAXY_NAMES = ("Euclid", "Hilbert Dimension", "Calypso", "Hesperius Dimension", "Hyades",
+                "Ickjamatew", "Butterfly", "Tikomaa", "Occupati", "Budullangr")
+
+# 描述符末尾的纯数字（实测 8–10 位）是社区所称的「唯一 ID」，不参与部件分组
+_UNIQUE_ID_RE = re.compile(r"^\d{8,12}$")
 
 # 游戏里 `CreatureType` 的取值 → 中文（其余原样显示）
 TYPE_ZH = {"Prey": "猎物", "Predator": "掠食者", "Passive": "温顺",
@@ -51,6 +60,181 @@ def _clean(v) -> str:
     return str(v or "").lstrip("^")
 
 
+def _ua_value(v) -> int | None:
+    """UA → 正整数；缺失/0/非法都返回 None（不猜一个默认地址）。"""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, str):
+        text = v.strip()
+        if not text:
+            return None
+        try:
+            value = int(text, 16) if text.lower().startswith("0x") else int(text)
+        except ValueError:
+            return None
+    else:
+        try:
+            value = int(v)
+        except (TypeError, ValueError):
+            return None
+    return value if value > 0 else None
+
+
+def portal_glyphs_valid(glyphs) -> bool:
+    """与 agent 端 `_decode_glyphs` 一致的合法门地址校验（只校验，不改写）。"""
+    text = str(glyphs or "").strip().upper()
+    if len(text) != 12 or any(c not in "0123456789ABCDEF" for c in text):
+        return False
+    try:
+        if not 1 <= int(text[0], 16) <= 6:
+            return False
+        if int(text[1:4], 16) in (0, 0xFFF):
+            return False
+        if int(text[4:6], 16) == 0x80:
+            return False
+        return not (int(text[6:9], 16) == 0x800 or int(text[9:12], 16) == 0x800)
+    except ValueError:
+        return False
+
+
+def origin_for_ua(ua) -> dict | None:
+    """UA → 来源行星位域；UA 缺失/0/非法返回 None。
+
+    只用 `glyphs.unpack_ua` 做位段拆分，不调用 `nms_procgen`，也不访问游戏进程。
+    `planet` 为 0 时仍保留 origin（地址本身可读），但 `glyphs` 会是 None。
+    """
+    value = _ua_value(ua)
+    if value is None:
+        return None
+    try:
+        u = unpack_ua(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    g = int(u["galaxy"])
+    return {
+        "galaxy": g,
+        "galaxy_name": GALAXY_NAMES[g] if 0 <= g < len(GALAXY_NAMES) else f"Galaxy {g + 1}",
+        "system": int(u["system"]),
+        "planet": int(u["planet"]),
+        "voxel_x": int(u["x"]),
+        "voxel_y": int(u["y"]),
+        "voxel_z": int(u["z"]),
+        "ua": f"0x{value:X}",
+    }
+
+
+def _glyphs_for(origin: dict | None) -> str | None:
+    """origin → 12 位门地址；行星位不是 1..6（含 0）或地址不合法时返回 None。"""
+    if not isinstance(origin, dict):
+        return None
+    planet = origin.get("planet")
+    try:
+        planet = int(planet)
+        value = int(str(origin.get("ua") or ""), 16)
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= planet <= 6:
+        return None
+    try:
+        glyphs = glyphs_for_ua(value, planet)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return glyphs if portal_glyphs_valid(glyphs) else None
+
+
+def _descriptor_group(part: str) -> str:
+    """`_BODY_PLANT` → `BODY`；认不出前缀的归到 `OTHER`（不丢部件）。"""
+    text = str(part or "").strip().lstrip("^").lstrip("_")
+    head = text.split("_", 1)[0].strip()
+    return head.upper() if head else "OTHER"
+
+
+def _descriptor_layout(descriptors) -> tuple[dict, str | None]:
+    """描述符 → ({组: [{id, rarity}]}, 末尾纯数字唯一 ID 或 None)。"""
+    items = [_clean(x) for x in (descriptors or []) if _clean(x)]
+    unique_id = None
+    if items and _UNIQUE_ID_RE.match(items[-1]):
+        unique_id = items.pop()
+    groups: dict[str, list[dict]] = {}
+    for part in items:
+        group = _descriptor_group(part)
+        groups.setdefault(group, []).append({
+            "id": part,
+            "rarity": "XRARE" in part.upper(),
+        })
+    return groups, unique_id
+
+
+def _nonzero_seed(v) -> str:
+    text = _seed_str(v).strip()
+    return "" if text.lower() in ("", "0", "0x0", "0x0000000000000000") else text
+
+
+def _species_key(cid: str, pet: dict) -> tuple[str, str]:
+    """(物种标识, 来源说明)。
+
+    存档没有现成的「物种 ID」字段，这里用现有字段推导：`CreatureID` 是角色/物种名，
+    `SpeciesSeed` 是该物种在存档里的种子；种子为 0 时退回 `GenusSeed`，再没有就只用角色名。
+    """
+    species = _nonzero_seed(pet.get("SpeciesSeed"))
+    if species:
+        return f"{cid}|{species}", "CreatureID + SpeciesSeed"
+    genus = _nonzero_seed(pet.get("GenusSeed"))
+    if genus:
+        return f"{cid}|{genus}", "CreatureID + GenusSeed（SpeciesSeed 为空）"
+    return cid, "CreatureID（SpeciesSeed/GenusSeed 为空）"
+
+
+def companion_entry(pet: dict, index: int = 0) -> dict | None:
+    """单条 `Pets[]` → 展示用字典；空槽/坏条目返回 None。
+
+    `origin` / `glyphs` 在 UA 缺失、为 0 或行星位为 0 时为 None——**不编造默认值**。
+    """
+    if not isinstance(pet, dict):
+        return None
+    cid = _clean(pet.get("CreatureID"))
+    if cid in ("", "^"):
+        return None
+    descriptors = [_clean(x) for x in (pet.get("Descriptors") or [])]
+    ctype = _clean((pet.get("CreatureType") or {}).get("CreatureType"))
+    biome = _clean((pet.get("Biome") or {}).get("Biome"))
+    ua_number = _ua_value(pet.get("UA")) or 0
+    origin = origin_for_ua(ua_number)
+    glyphs = _glyphs_for(origin)
+    groups, unique_id = _descriptor_layout(descriptors)
+    species_key, species_source = _species_key(cid, pet)
+    return {
+        "index": index,
+        "name": _clean(pet.get("CustomName")) or "(未命名)",
+        "creature": cid,
+        "creature_zh": cid.replace("_", " ").title(),
+        "type": ctype,
+        "type_zh": TYPE_ZH.get(ctype, ctype),
+        "biome": biome,
+        "biome_zh": BIOME_ZH.get(biome, biome),
+        "predator": bool(pet.get("Predator")),
+        "scale": round(float(pet.get("Scale") or 1.0), 3),
+        "has_fur": bool(pet.get("HasFur")),
+        "descriptors": descriptors,
+        "descriptor_groups": groups,
+        "unique_id": unique_id,
+        "species_key": species_key,
+        "species_key_source": species_source,
+        "seeds": {
+            "creature": _seed_str(pet.get("CreatureSeed")),
+            "creature2": _seed_str(pet.get("CreatureSecondarySeed")),
+            "species": _seed_str(pet.get("SpeciesSeed")),
+            "genus": _seed_str(pet.get("GenusSeed")),
+        },
+        "ua": ua_number,
+        "origin": origin,
+        "glyphs": glyphs,
+        "trust": pet.get("Trust"),
+        "birth": pet.get("BirthTime"),
+        "traits": len(pet.get("Traits") or []),
+    }
+
+
 def companions(save_path: str | None = None) -> dict:
     """→ {path, count, creatures:[...], note}"""
     from .save import library
@@ -60,36 +244,9 @@ def companions(save_path: str | None = None) -> dict:
     raw = ps.get("Pets") or []
     out = []
     for i, pet in enumerate(raw):
-        cid = _clean(pet.get("CreatureID"))
-        if cid in ("", "^"):
-            continue                                   # 空槽
-        descriptors = [_clean(x) for x in (pet.get("Descriptors") or [])]
-        ctype = _clean((pet.get("CreatureType") or {}).get("CreatureType"))
-        biome = _clean((pet.get("Biome") or {}).get("Biome"))
-        out.append({
-            "index": i,
-            "name": _clean(pet.get("CustomName")) or "(未命名)",
-            "creature": cid,
-            "creature_zh": cid.replace("_", " ").title(),
-            "type": ctype,
-            "type_zh": TYPE_ZH.get(ctype, ctype),
-            "biome": biome,
-            "biome_zh": BIOME_ZH.get(biome, biome),
-            "predator": bool(pet.get("Predator")),
-            "scale": round(float(pet.get("Scale") or 1.0), 3),
-            "has_fur": bool(pet.get("HasFur")),
-            "descriptors": descriptors,
-            "seeds": {
-                "creature": _seed_str(pet.get("CreatureSeed")),
-                "creature2": _seed_str(pet.get("CreatureSecondarySeed")),
-                "species": _seed_str(pet.get("SpeciesSeed")),
-                "genus": _seed_str(pet.get("GenusSeed")),
-            },
-            "ua": _int(pet.get("UA")),
-            "trust": pet.get("Trust"),
-            "birth": pet.get("BirthTime"),
-            "traits": len(pet.get("Traits") or []),
-        })
+        entry = companion_entry(pet, i)
+        if entry is not None:
+            out.append(entry)
     try:
         known = set(role_names().get("roles") or [])
     except Exception:                                  # noqa: BLE001
@@ -231,7 +388,7 @@ def role_names(limit: int = 400) -> dict:
            "note": "字段名哈希编码，未实现通用 MBIN 字段读取器（T8-3 后续）"}
     try:
         import re
-        from .core import settings, paths
+        from .core import paths
         paths.ensure_shipwright_importable()
         from nms_save import gamefiles
         dest = os.path.join(str(paths.cache_dir()), "creaturedata")
@@ -299,6 +456,8 @@ def role_table() -> dict:
         from nms_save import gamemeta
         meta = gamemeta.exe_meta()
         name_hash, guid = struct.unpack_from("<I", blob, 0x0C)[0], struct.unpack_from("<Q", blob, 0x10)[0]
+        out["name_hash"] = name_hash
+        out["guid"] = guid
         lay = meta.layout("cGcCreatureDataTable")
         out["layout_matches"] = lay.matches(blob)
         out["class"] = lay.name

@@ -18,7 +18,8 @@ from starforge.app.widgets.pets_view import (  # noqa: E402
 
 def test_table_headers_are_chinese_and_complete():
     headers = pet_table_headers()
-    assert headers == ["名称", "生物类型", "群系", "CreatureID", "种子", "信任/特征数量"]
+    assert headers == ["名称", "生物类型", "群系", "CreatureID", "来源", "种子",
+                       "信任/特征数量"]
     assert tuple(headers) == PET_TABLE_HEADERS
     headers.append("临时")
     assert pet_table_headers() == list(PET_TABLE_HEADERS)
@@ -51,9 +52,9 @@ def test_pet_rows_normalize_missing_values():
     rows = pet_rows(creatures)
     assert len(rows) == 3
     assert all(len(row) == len(PET_TABLE_HEADERS) for row in rows)
-    assert rows[0] == ["小蓝", "飞行", "茂盛", "BIRD", "0x12", "2 / 3"]
-    assert rows[1] == ["(未命名)", "Prey", "Lush", "DEER", "0xAB", "— / 0"]
-    assert rows[2] == ["坏数据", "未知", "未知", "未知", "—", "— / 0"]
+    assert rows[0] == ["小蓝", "飞行", "茂盛", "BIRD", "未知", "0x12", "2 / 3"]
+    assert rows[1] == ["(未命名)", "Prey", "Lush", "DEER", "未知", "0xAB", "— / 0"]
+    assert rows[2] == ["坏数据", "未知", "未知", "未知", "未知", "—", "— / 0"]
 
 
 def test_seed_and_trust_helpers():

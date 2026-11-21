@@ -4,19 +4,35 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QAbstractItemView, QHeaderView, QHBoxLayout, QLabel,
-                               QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
+from ...creature import portal_glyphs_valid
 from ...services import Services, get_services
 from .. import notify
 from .feedback import EmptyState, ErrorBanner, LoadingOverlay
 from .ui import muted
 from .worker import run as run_worker
 
-PET_TABLE_HEADERS = ("名称", "生物类型", "群系", "CreatureID", "种子", "信任/特征数量")
-PET_PREVIEW_NOTE = "同伴 3D 预览需要生物生成器；当前只展示描述符与种子，不伪造模型。"
+PET_TABLE_HEADERS = ("名称", "生物类型", "群系", "CreatureID", "来源", "种子",
+                     "信任/特征数量")
+PET_PREVIEW_NOTE = "同伴 3D 预览仍需要生物生成器；来源与符文来自存档 UA，不伪造模型。"
 PET_NO_SAVE_NOTE = "请先在「存档」中选择 save.hg；同伴 3D 预览需要生物生成器。"
+# 传送失败时（E_BUILD_UNVERIFIED）给用户的下一步；与星图页保持同一口径。
+BUILD_UNVERIFIED_HINT = (
+    "需要先开启实验写入开关（设置页 → 安全 → 允许未验证 build 的实验写入）")
+WARP_WARNING = "会调用游戏内传送门机制，失败可用「还原」回滚。"
 
 
 def pet_table_headers() -> list[str]:
@@ -49,6 +65,129 @@ def format_trust_traits(trust: Any, traits: Any) -> str:
     return f"{trust_text} / {trait_count}"
 
 
+def pet_source(creature: dict) -> str:
+    """来源列：星系名 + 行星序号；缺 UA/行星位为 0 时显示「未知」，不猜。"""
+    origin = creature.get("origin") if isinstance(creature, dict) else None
+    if not isinstance(origin, dict):
+        return "未知"
+    galaxy = str(origin.get("galaxy_name") or "").strip()
+    if not galaxy and origin.get("galaxy") is not None:
+        galaxy = f"银河 #{origin.get('galaxy')}"
+    try:
+        planet = int(origin.get("planet"))
+    except (TypeError, ValueError):
+        planet = None
+    if galaxy and planet is not None and planet > 0:
+        return f"{galaxy} · 行星 #{planet}"
+    if galaxy:
+        return f"{galaxy} · 行星未知"
+    if planet is not None and planet > 0:
+        return f"行星 #{planet}"
+    return "未知"
+
+
+def pet_glyphs(creature: dict) -> str | None:
+    """只接受 `creature.glyphs` 里已经算好且合法的 12 位门地址。"""
+    raw = creature.get("glyphs") if isinstance(creature, dict) else None
+    text = str(raw or "").strip().upper()
+    return text if portal_glyphs_valid(text) else None
+
+
+def pet_warp_target(creature: dict) -> dict | None:
+    """传送目标；没有合法 glyphs 时返回 None（按钮因此保持禁用）。"""
+    glyphs = pet_glyphs(creature)
+    if not glyphs:
+        return None
+    origin = creature.get("origin") if isinstance(creature, dict) else None
+    galaxy = None
+    if isinstance(origin, dict) and origin.get("galaxy") is not None:
+        try:
+            galaxy = int(origin.get("galaxy"))
+        except (TypeError, ValueError):
+            galaxy = None
+    return {"glyphs": glyphs, "galaxy": galaxy, "label": pet_source(creature)}
+
+
+def format_descriptor_groups(groups: Any, limit: int = 4) -> str:
+    """描述符分组 → 一行中文摘要；没有分组时给「—」。"""
+    if not isinstance(groups, dict) or not groups:
+        return "—"
+    parts: list[str] = []
+    for group, items in list(groups.items())[:max(1, int(limit))]:
+        ids = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            part = _text(item.get("id"), "")
+            if not part:
+                continue
+            ids.append(f"{part}{'(稀有)' if item.get('rarity') else ''}")
+        if ids:
+            parts.append(f"{group}: {', '.join(ids)}")
+    return "；".join(parts) or "—"
+
+
+def pet_detail_text(creature: dict) -> str:
+    """详情区：UA、12 位符文、物种标识与部件分组；缺失字段明确写「未知」。"""
+    if not isinstance(creature, dict):
+        return "选中一只同伴后查看来源与符文。"
+    origin = creature.get("origin")
+    lines: list[str] = []
+    if isinstance(origin, dict):
+        system = origin.get("system")
+        system_text = f"（system {int(system):03X}）" if isinstance(system, int) else ""
+        lines.append(f"来源：{pet_source(creature)}{system_text}")
+        lines.append(f"UA：{_text(origin.get('ua'))}")
+    else:
+        lines.append("来源：未知（UA 缺失、为 0 或不可解析）")
+        lines.append("UA：—")
+    glyphs = pet_glyphs(creature)
+    if glyphs:
+        lines.append(f"符文：{glyphs}")
+    elif isinstance(origin, dict):
+        lines.append("符文：—（行星位为 0 或地址不合法）")
+    else:
+        lines.append("符文：—（没有可用的 UA）")
+    species = _text(creature.get("species_key"), "未知")
+    source = _text(creature.get("species_key_source"), "现有字段推导")
+    lines.append(f"物种标识：{species}（来源：{source}）")
+    unique = _text(creature.get("unique_id"), "—")
+    if unique != "—":
+        lines.append(f"唯一 ID：{unique}")
+    lines.append(f"部件：{format_descriptor_groups(creature.get('descriptor_groups'))}")
+    return "\n".join(lines)
+
+
+def pet_warp_confirm_text(creature: dict) -> str:
+    target = pet_warp_target(creature) or {}
+    name = _text((creature or {}).get("name"), "(未命名)")
+    label = target.get("label") or pet_source(creature)
+    glyphs = target.get("glyphs") or "—"
+    return (
+        f"即将传送到「{name}」的来源星球：{label}\n"
+        f"门地址 {glyphs}。\n\n"
+        f"{WARP_WARNING}\n"
+        "这是高风险写操作，请确认游戏已就绪。是否继续？")
+
+
+def pet_warp_message(res: dict | None, creature: dict | None = None) -> tuple[str, str]:
+    """传送结果 → (kind, 中文文案)；kind 为 success / unconfirmed / failed。"""
+    res = res if isinstance(res, dict) else {}
+    label = pet_source(creature or {})
+    if not res.get("ok"):
+        code = str(res.get("code") or "").strip()
+        error = str(res.get("error") or "").strip() or "未知错误"
+        message = " · ".join(p for p in (code, error) if p)
+        if code == "E_BUILD_UNVERIFIED":
+            message += "；" + BUILD_UNVERIFIED_HINT
+        return "failed", f"传送失败：{message}"
+    if res.get("confirmed") is False:
+        detail = str(res.get("confirm_error") or "40 秒内未读回目标位置")
+        return ("unconfirmed",
+                f"传送未确认：{detail}（命令已执行；失败可用「还原」回滚）")
+    return "success", f"已传送到来源星球：{label}"
+
+
 def pet_rows(creatures: list[dict] | None) -> list[list[str]]:
     """把服务层同伴字典整理成表格行；缺字段时给中文占位，不抛异常。"""
     rows: list[list[str]] = []
@@ -60,6 +199,7 @@ def pet_rows(creatures: list[dict] | None) -> list[list[str]]:
             _text(creature.get("type_zh") or creature.get("type"), "未知"),
             _text(creature.get("biome_zh") or creature.get("biome"), "未知"),
             _text(creature.get("creature"), "未知"),
+            pet_source(creature),
             pet_seed(creature),
             format_trust_traits(creature.get("trust"), creature.get("traits")),
         ])
@@ -105,6 +245,8 @@ class PetsView(QWidget):
         self._loading = False
         self._token = 0
         self._payload: dict | None = None
+        self._pairs: list[tuple[list[str], dict]] = []
+        self._detail_creature: dict | None = None
         self._sort_column = 0
         self._sort_desc = False
         self._build_ui()
@@ -151,7 +293,30 @@ class PetsView(QWidget):
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
         header.setStretchLastSection(True)
         header.sectionClicked.connect(self._sort_by)
+        self.table.itemSelectionChanged.connect(self._selection_changed)
         root.addWidget(self.table, 1)
+
+        self.detail_label = QLabel("选中一只同伴后查看来源、UA 与符文。")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        root.addWidget(self.detail_label)
+
+        detail_bar = QHBoxLayout()
+        self.copy_glyph_btn = QPushButton("复制符文")
+        self.copy_glyph_btn.setEnabled(False)
+        self.copy_glyph_btn.setToolTip("复制选中同伴来源行星的 12 位门地址")
+        self.copy_glyph_btn.clicked.connect(self._copy_glyph)
+        detail_bar.addWidget(self.copy_glyph_btn)
+        self.warp_btn = QPushButton("传送到来源星球")
+        self.warp_btn.setEnabled(False)
+        self.warp_btn.setToolTip("选中一只有合法符文的同伴后可传送到它的来源星球")
+        self.warp_btn.clicked.connect(self._warp_selected)
+        detail_bar.addWidget(self.warp_btn)
+        detail_bar.addStretch(1)
+        root.addLayout(detail_bar)
+
+        self.status = muted("")
+        root.addWidget(self.status)
 
         self.foot = muted(PET_PREVIEW_NOTE)
         root.addWidget(self.foot)
@@ -225,7 +390,7 @@ class PetsView(QWidget):
     @staticmethod
     def _sort_value(row: list[str], column: int):
         value = str(row[column]) if column < len(row) else ""
-        if column == 5:
+        if column == 6:
             parts = []
             for part in value.split("/"):
                 try:
@@ -282,6 +447,7 @@ class PetsView(QWidget):
         self.foot.setText(pets_preview_note(payload))
 
     def _fill_table(self, pairs: list[tuple[list[str], dict]]) -> None:
+        self._pairs = list(pairs)
         self.table.setSortingEnabled(False)
         self.table.clearContents()
         self.table.setRowCount(len(pairs))
@@ -293,15 +459,117 @@ class PetsView(QWidget):
                         item.setToolTip("角色库里没有这个 CreatureID")
                     else:
                         item.setToolTip("CreatureID 同时是生物角色名")
+                elif c == 4:
+                    item.setToolTip("来源星系 / 行星；没有可解析的 UA 时显示「未知」")
                 self.table.setItem(r, c, item)
         header = self.table.horizontalHeader()
         header.setSortIndicator(
             self._sort_column,
             Qt.DescendingOrder if self._sort_desc else Qt.AscendingOrder)
+        if pairs:
+            self.table.selectRow(0)
+            self._show_detail(pairs[0][1])
+        else:
+            self._clear_detail()
+
+    def _selection_changed(self) -> None:
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            self._clear_detail()
+            return
+        row = rows[0].row()
+        if 0 <= row < len(self._pairs):
+            self._show_detail(self._pairs[row][1])
+
+    def _show_detail(self, creature: dict) -> None:
+        self._detail_creature = creature if isinstance(creature, dict) else None
+        self.detail_label.setText(pet_detail_text(creature))
+        target = pet_warp_target(creature)
+        enabled = target is not None
+        self.copy_glyph_btn.setEnabled(enabled)
+        self.warp_btn.setEnabled(enabled)
+        if target:
+            self.copy_glyph_btn.setToolTip(f"复制符文 {target['glyphs']}")
+            self.warp_btn.setToolTip(
+                f"调用游戏内传送门机制，传送到 {target['label']}（门地址 {target['glyphs']}）")
+        else:
+            self.copy_glyph_btn.setToolTip("这只同伴没有合法符文可复制")
+            self.warp_btn.setToolTip("只在符文合法时可用；行星位为 0 或 UA 缺失时不能传送")
+
+    def _clear_detail(self, text: str = "选中一只同伴后查看来源、UA 与符文。") -> None:
+        self._detail_creature = None
+        self.detail_label.setText(text)
+        self.copy_glyph_btn.setEnabled(False)
+        self.warp_btn.setEnabled(False)
+
+    def _copy_glyph(self) -> None:
+        glyphs = pet_glyphs(self._detail_creature or {})
+        if not glyphs:
+            text = "复制符文失败：这只同伴没有合法符文。"
+            self.status.setText(text)
+            notify.warn(text)
+            return
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(glyphs)
+        text = f"已复制符文：{glyphs}"
+        self.status.setText(text)
+        notify.toast(text)
+
+    def _warp_selected(self) -> None:
+        creature = self._detail_creature or {}
+        target = pet_warp_target(creature)
+        if not target:
+            text = "传送失败：这只同伴没有合法符文（行星位为 0 或 UA 缺失）。"
+            self.status.setText(text)
+            notify.warn("传送失败：请先选择一只有合法符文的同伴")
+            return
+        answer = QMessageBox.warning(
+            self, "确认传送到来源星球", pet_warp_confirm_text(creature),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            self.status.setText("已取消传送。")
+            return
+
+        glyphs = target["glyphs"]
+        self.warp_btn.setEnabled(False)
+        self.copy_glyph_btn.setEnabled(False)
+        self.warp_btn.setText("传送中…")
+        self.status.setText(
+            f"传送中：正在调用游戏内传送门传送到 {target['label']}（{glyphs}）…")
+        notify.toast(f"正在传送到 {target['label']}（{glyphs}）…")
+
+        def restore() -> None:
+            self.warp_btn.setText("传送到来源星球")
+            still = pet_warp_target(self._detail_creature or {}) is not None
+            self.warp_btn.setEnabled(still)
+            self.copy_glyph_btn.setEnabled(still)
+
+        def done(res: dict) -> None:
+            restore()
+            kind, text = pet_warp_message(res, creature)
+            self.status.setText(text)
+            if kind == "success":
+                notify.success(text)
+            elif kind == "unconfirmed":
+                notify.warn(text)
+            else:
+                notify.error(text)
+
+        def fail(msg: str) -> None:
+            restore()
+            text = f"传送失败：{msg}"
+            self.status.setText(text)
+            notify.error(text)
+
+        run_worker(self.svc.warp_portal, done, fail,
+                   glyphs=glyphs, galaxy=target.get("galaxy"))
 
     def _show_empty(self, title: str, text: str) -> None:
         self.table.hide()
         self.table.setRowCount(0)
+        self._pairs = []
+        self._clear_detail()
         self.count_label.setText("同伴 · 0 只")
         self.state.setText(text)
         self.state.setVisible(False)
@@ -316,6 +584,8 @@ class PetsView(QWidget):
         text = f"读取同伴失败：{msg}"
         self.table.hide()
         self.table.setRowCount(0)
+        self._pairs = []
+        self._clear_detail()
         self.count_label.setText("读取同伴失败")
         self.state.setText(text)
         self.state.setVisible(False)

@@ -14,7 +14,7 @@ from starforge import creature, system
 
 
 def test_planet_rows_have_sentinel_presets(game_env):
-    info = system.system(0x10400F19BDCE5, planets=True)
+    info = system.system(0x11200F19BDCE5, planets=True)
     pl = info["planet_list"]
     assert pl, "这个星系应当有行星"
     for p in pl:

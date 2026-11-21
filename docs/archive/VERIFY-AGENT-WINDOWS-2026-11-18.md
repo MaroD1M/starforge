@@ -27,7 +27,7 @@
 在 PowerShell 里跑（把路径换成你的游戏根目录）：
 
 ```powershell
-$exe = "C:\Program Files (x86)\Steam\steamapps\common\No Man's Sky\Binaries\NMS.exe"
+$exe = "<游戏目录>\Binaries\NMS.exe"
 $f = Get-Item $exe
 "path   : $($f.FullName)"
 "size   : $($f.Length)"

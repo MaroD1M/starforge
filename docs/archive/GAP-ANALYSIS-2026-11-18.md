@@ -1,10 +1,10 @@
 # Starforge 差距分析（GAP-ANALYSIS）
 
 > 分析日期：2026-11-18；**状态复核 2026-11-19**
-> 分析对象：`/workspace/nms/starforge`（`main` @ `3e2a7a5` + 工作区未提交改动）
+> 分析对象：`<仓库>`（`main` @ `3e2a7a5` + 工作区未提交改动）
 > 分析方式：**只读**。未修改代码、未 commit/push、未构建。
 > 说明：2026-11-19 只按当前工作区代码复核表格与结论；**不代表 Windows 实机通过**。
-> 参考项目：`/workspace/nms/Gagarin_Titov`、`/workspace/nms/NMS-Shipwright`、`/workspace/nms/NMS-Super-Ship-Hunter`；社区资料见文末“参考来源”。
+> 参考项目：`<工作区>/Gagarin_Titov`、`<工作区>/NMS-Shipwright`、`<工作区>/NMS-Super-Ship-Hunter`；社区资料见文末“参考来源”。
 
 ---
 
@@ -789,7 +789,7 @@ starforge/app/pages/game_link.py
 | A2 | **NMSpy/Python 版本矩阵** | 已统一到 `AGENT_RUNTIME_MANIFEST`（Python 3.11.9 / pymhf 0.2.5 / NMSpy 185034.0）；`requirements` 的 pymhf 仍为 `>=0.2.5` | 已缓解 | requirements 与 manifest 同源锁定；实机确认 |
 | A3 | **`install_deps` 更新策略** | `runtime_report` 已比较 Python/pymhf 与 manifest，`install_deps(force=True)` 可更新；NMSpy 版本不匹配时仍可能早退 | P1 | 用 `expected_nmspy_version()` 做强制不一致判断 |
 | A4 | **每次 status 可能重复哈希 90 MB NMS.exe** | `build.fingerprint` 无缓存；`agent_install.status` 调 `fingerprint` + `summary`；`expected_nmspy_version` 再调 | P1 | `lru_cache` 按 `(path, mtime_ns, size)`；缓存到 `~/.starforge/builds/last.json` |
-| A5 | **NMSpy 私有 API 脆弱** | agent 使用 `gameData`、`basic.cTkFixedString[0x10]("APPLOCALLOAD")`、`nms.cGcBinoculars.UpdateScanBarProgress.before`、`GetNodeAbsoluteTransMatrix(gameData.player.mRootNode)`、`ps.mShipResources`、`mbMultiplayerActive` | P0 | 每个端点独立 try/except 并返回 `capability=false`；hello 做探测；锁定 NMSpy 版本；不要用未验证的私有构造 |
+| A5 | **NMSpy 私有 API 脆弱** | agent 使用 `gameData`、`basic.cTkFixedString[0x10] ("APPLOCALLOAD")`、`nms.cGcBinoculars.UpdateScanBarProgress.before`、`GetNodeAbsoluteTransMatrix(gameData.player.mRootNode)`、`ps.mShipResources`、`mbMultiplayerActive` | P0 | 每个端点独立 try/except 并返回 `capability=false`；hello 做探测；锁定 NMSpy 版本；不要用未验证的私有构造 |
 | A6 | **传送/还原确认**：已接，待实机 | `_persist_snapshot` 先落盘再传送；`services._confirm_teleport_location` 轮询 `/player`；多人/build 已拦截 | 待实机 | R5 实机通过后才算完成 |
 | A7 | **HTTP 认证/固定端口** | 已加一次性 token（query）与 5000 冲突检测；pymhf 仍固定端口；Host/Origin 未校验 | P1 | 随机端口需 pymhf 支持；补 Host/Origin 或说明 loopback 限制 |
 | A8 | **多人模式拦截** | `services.agent_call` 对 high risk 先查 `hello.multiplayer`；agent `_multiplayer_block` 再兜底；UI 显示 `blocked_by=multiplayer` | 已缓解 | 实机确认多人检测可靠性 |

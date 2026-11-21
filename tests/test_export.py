@@ -3,6 +3,8 @@ import io
 import json
 import zipfile
 
+import pytest
+
 
 def test_export_zip_contains_files(game_env):
     from starforge import export

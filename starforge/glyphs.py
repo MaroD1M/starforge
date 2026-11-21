@@ -3,14 +3,14 @@
 关键事实（已在游戏文件里核实）：
   · 传送门符文 = **按位段重排**后拼出的 12 个十六进制字符：行星位 + system(3) + Y(2) + Z(3) + X(3)。
     不是"地址的 12 位十六进制"——UA 是 52 位、字段宽度与符文分段不一致，直接截位是错的
-    （0x10400F19BDCE5 正确符文是 1104F19BDCE5，截低位会得到 0400F19BDCE5）。
+    （0x11200F19BDCE5 正确符文是 1112F19BDCE5，截低位会得到 1200F19BDCE5）。
     实测见 handbook 01 卷 §6 与 tests/test_glyphs_ua.py。
   · 游戏内图标：NMSARC.TexUI.pak → textures/ui/frontend/icons/update3/portalsymbol.<0-f>.dds
     16 张 256×256，DX10/DXGI 98 = BC7。BC7 解码需要额外依赖；没有依赖时退回内置位图字体，
     面板依然可用（只是不如游戏原图好看）。
 
 对外：
-  digits_for(text)      -> "1104F19BDCE5"（int/0x… 按位段重排；12 位串按原样规范化）
+  digits_for(text)      -> "1112F19BDCE5"（int/0x… 按位段重排；12 位串按原样规范化）
   glyphs_for_ua(ua)     -> 同上（显式 UA 入口）
   icon_png(digit)    -> bytes|None（游戏原图，需解码器；结果缓存到磁盘）
   panel_png(glyphs)  -> bytes（12 联符文图，原图或位图字体）
@@ -83,7 +83,7 @@ def digits_for(text: str | int) -> str:
     if raw.lower().startswith("0x"):
         digits = raw[2:]
         # 歧义处理：12 位十六进制既可能是符文串、也可能是 UA。历史上（v0.9–v0.12）12 位一律
-        # 当符文串，这里保持兼容；UA 的真实长度通常 >12 位（本例 0x10400F19BDCE5 是 13 位），
+        # 当符文串，这里保持兼容；UA 的真实长度通常 >12 位（本例 0x11200F19BDCE5 是 13 位），
         # 需要精确换算请直接传 int。
         if len(digits) != 12:
             return glyphs_for_ua(int(raw, 16))

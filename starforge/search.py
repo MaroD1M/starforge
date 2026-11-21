@@ -16,8 +16,7 @@ import time
 from dataclasses import dataclass, field
 
 from .core import log
-from .data import load_catalog, ShipRef
-from .data.shipref import PROC_MODELS, ShipRefError
+from .data import ShipRef
 
 log = log.get("search")
 

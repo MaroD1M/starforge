@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import queue
 import threading
 import struct
 import zlib
@@ -15,7 +16,9 @@ import zlib
 import numpy as np
 
 from . import gltf
-from .core import paths
+from .core import log as _log, paths
+
+log = _log.get("render")
 
 GROUP_COLOR = {"paint": (0.55, 0.62, 0.78), "secondary": (0.30, 0.33, 0.40),
                "metal": (0.45, 0.47, 0.50), "dark": (0.13, 0.14, 0.17),
@@ -239,11 +242,7 @@ def rasterize(groups: dict, views=("iso",), size=(640, 640), colours: dict | Non
         ln = np.linalg.norm(fn, axis=1, keepdims=True)
         fn = fn / np.where(ln == 0, 1, ln)
         L = R.T @ light
-        F = R.T @ fill_light
-        RIM = R.T @ rim_light
         d_main = np.clip(fn @ L, 0, 1)
-        d_fill = np.clip(fn @ F, 0, 1)
-        d_rim = np.clip(fn @ RIM, 0, 1) ** 3
         shade = ambient + (1.0 - ambient) * d_main
         # 高光：半角向量的高次幂（面法线近似）
         Half = (L + np.array([0, 0, 1], np.float32)); Half /= np.linalg.norm(Half)
@@ -322,7 +321,7 @@ def rasterize(groups: dict, views=("iso",), size=(640, 640), colours: dict | Non
 
 # ---------------------------------------------------------------- 后台预取
 
-_PREFETCH_Q: "queue.Queue" = None
+_PREFETCH_Q: queue.Queue | None = None
 _PREFETCH_THREAD = None
 _PREFETCH_LOCK = threading.Lock()
 

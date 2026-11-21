@@ -13,10 +13,14 @@ from __future__ import annotations
 from typing import Any
 
 from ..core import log, paths, settings, strings
-from ..core.errors import BadRequest, NotFound
+from ..core.errors import BadRequest, NotFound, WriteDisabled
 from . import history
 
 log = log.get("services")
+
+# 写游戏内存的两个拒绝码：CLI/JSON 用它们，Web 仍沿用现有的 error.kind。
+E_CONFIRM_REQUIRED = "E_CONFIRM_REQUIRED"
+E_WRITE_DISABLED = "E_WRITE_DISABLED"
 
 _HIGH_RISK_CAPABILITIES = frozenset({
     "teleport", "restore", "scan.discover", "scan.instant", "teleport.portal",
@@ -940,6 +944,9 @@ class Services:
             "planet.scan": (bool(real.get("planet.scan")),
                             "读取当前行星完整档案（实验只读）", "mid"),
             "ships": (bool(real.get("ships")), "读取游戏内 12 个船槽", "low"),
+            "multitool": (bool(real.get("multitool")), "读取多功能工具（6 槽 + 当前槽）", "low"),
+            "freighter": (bool(real.get("freighter")), "读取货船与护卫舰列表", "low"),
+            "pets": (bool(real.get("pets")), "读取同伴（30 槽）", "low"),
             "teleport": (bool(real.get("teleport")), "写入位置并触发加载；可用 restore 还原", "high"),
             "teleport.portal": (bool(real.get("teleport.portal")),
                                 "实验：cGcPortalComponent portal warp（未校准默认不可用）", "high"),
@@ -1049,8 +1056,29 @@ class Services:
         except Exception as e:                              # noqa: BLE001
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         if cmd in ("teleport", "teleport.portal") and res.get("ok") and not res.get("confirmed"):
-            res = self._confirm_teleport_location(client, res)
+            # portal warp 的加载通常要 15–25 秒（实测 APPVIEW 后 UA 才更新），
+            # 3 秒的默认确认窗口不够，会导致 UI 误报 unconfirmed。
+            res = self._confirm_teleport_location(
+                client, res, timeout=40.0 if cmd == "teleport.portal" else None)
         return res
+
+    def warp_portal(self, glyphs: str, galaxy: int | None = None,
+                    stage: str = "prepare_warp") -> dict:
+        """用游戏传送门机制传送到 12 位门地址（高风险，需 allow_unverified_agent）。
+
+        `stage` 传空则用 agent 默认档（prepare_warp，已实机验证可传送到目标行星）。
+        """
+        return self.agent_call("teleport.portal", glyphs=glyphs,
+                               galaxy=galaxy if galaxy is not None else -1,
+                               stage=stage)
+
+    def agent_reload(self) -> dict:
+        """热重载游戏内 agent（改完 agent 代码后调用，不必退出游戏）。"""
+        try:
+            res = self.agent_client().call("admin.reload")
+        except Exception as e:                             # noqa: BLE001
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"ok": bool(res.get("ok", True)), **res}
 
     @staticmethod
     def _location_key(loc: dict | None) -> tuple[int, ...] | None:
@@ -1104,8 +1132,35 @@ class Services:
         with mem.attach("NMS.exe") as proc:
             return _ok(**writer.probe(proc))
 
-    def live_push(self, type_: str, seed: str | int) -> dict:
+    @staticmethod
+    def require_live_write(confirm: bool = False) -> None:
+        """写游戏内存的唯一闸门：先看写开关，再要二次确认。
+
+        与存档写入（``writer.apply_seed``）保持同一顺序：
+        1. ``write_enabled=False`` → ``WriteDisabled``（HTTP 403 / E_WRITE_DISABLED）；
+        2. 缺 ``confirm`` → ``BadRequest``（HTTP 400 / E_CONFIRM_REQUIRED）。
+        """
+        settings.require_write()
+        if not confirm:
+            raise BadRequest(
+                "写游戏内存需要二次确认",
+                hint="只写 8 字节模板种子、不改存档；Web 传 confirm=true，CLI 加 --yes")
+
+    def live_push(self, type_: str, seed: str | int, confirm: bool = False) -> dict:
+        """把种子写进游戏模板槽；所有入口都必须先过 ``require_live_write``。"""
         from ..live import mem, writer
+
+        try:
+            self.require_live_write(confirm)
+        except (BadRequest, WriteDisabled) as e:
+            _record("agent", "送进游戏被拒绝", f"{type_} {seed} · {e}", "live", False)
+            raise
+        if not type_ or seed is None or str(seed).strip() == "":
+            raise BadRequest("需要 type 与 seed")
+        if not mem.IS_WINDOWS:
+            msg = "实时通道仅支持 Windows（Linux/Proton 无法读写进程内存）"
+            _record("agent", "送进游戏失败", f"{type_} {seed} · {msg}", "live", False)
+            raise mem.LiveUnsupported(msg)
 
         try:
             with mem.attach("NMS.exe") as proc:
@@ -1118,12 +1173,143 @@ class Services:
                 bool(res.get("ok", True)))
         return _ok(**res)
 
+    def live_push_ship(self, ref: dict, confirm: bool = False) -> dict:
+        """把一条 ShipRef 的种子送进游戏模板槽（界面/网页共用的"送进游戏"入口）。
+
+        闸门与 ``live_push`` 完全一致：写开关 + ``confirm=True``，缺一不可。
+        之后只做编排：校验 ShipRef → 该船型是否有模板 → 游戏是否在运行 → ``live_push``。
+        可预期的前置失败统一返回 ``{"ok": False, "reason", "error"}``，方便界面原样提示；
+        闸门拒绝与真正的写入失败沿用服务的异常/最近活动，不重试、不猜地址。
+        成功时额外带上 ``emote``（表情中文标题）与 ``template``（模板 id），
+        界面据此提示"去表情菜单选「星铸 · X」领取"。
+        """
+        from ..data.shipref import ShipRefError, coerce
+        from ..live import exml
+
+        try:
+            self.require_live_write(confirm)
+        except (BadRequest, WriteDisabled) as e:
+            _record("agent", "送进游戏被拒绝", f"{ref} · {e}", "live", False)
+            raise
+
+        try:
+            ship = coerce(ref)
+        except (ShipRefError, TypeError, ValueError) as e:
+            msg = f"飞船数据不完整：{e}"
+            _record("agent", "送进游戏失败", msg, "live", False)
+            return {"ok": False, "reason": "bad_ref", "error": msg}
+        type_, seed = ship.type, ship.seed
+        if int(seed, 16) == 0:
+            msg = "种子是 0x0（空槽占位），不能送进游戏"
+            _record("agent", "送进游戏失败", f"{type_} {seed} · {msg}", "live", False)
+            return {"ok": False, "reason": "bad_seed", "type": type_, "error": msg}
+
+        try:
+            entries = exml.manifest()
+        except Exception as e:                              # noqa: BLE001
+            msg = "先在游戏内页安装模板 Mod 并重启游戏"
+            detail = f"读取模板清单失败：{type(e).__name__}: {e}"
+            _record("agent", "送进游戏失败", f"{type_} {seed} · {detail}", "live", False)
+            return {"ok": False, "reason": "no_template", "type": type_,
+                    "error": msg, "detail": detail}
+        entry = next((e for e in entries if e.get("type") == type_), None)
+        if entry is None:
+            msg = "先在游戏内页安装模板 Mod 并重启游戏"
+            _record("agent", "送进游戏失败", f"{type_} {seed} · 模板缺失", "live", False)
+            return {"ok": False, "reason": "no_template", "type": type_,
+                    "error": msg, "detail": f"模板清单里没有船型 {type_}"}
+
+        emote = (exml.TITLE_TEXT.get(type_) or ("",))[0]
+        template = str(entry.get("id") or exml.template_id(type_))
+
+        try:
+            status = self.live_status()
+        except Exception as e:                              # noqa: BLE001
+            status = {"supported": True, "running": False,
+                      "error": f"{type(e).__name__}: {e}"}
+        if not status.get("supported", True):
+            msg = str(status.get("note") or "实时通道仅支持 Windows")
+            _record("agent", "送进游戏失败", f"{type_} {seed} · {msg}", "live", False)
+            return {"ok": False, "reason": "unsupported", "type": type_,
+                    "error": msg, "emote": emote, "template": template}
+        if not status.get("running"):
+            msg = "先启动游戏并进入存档，再送进游戏"
+            detail = str(status.get("error") or status.get("note") or "")
+            _record("agent", "送进游戏失败", f"{type_} {seed} · 游戏未运行", "live", False)
+            return {"ok": False, "reason": "game_not_running", "type": type_,
+                    "error": msg, "detail": detail, "emote": emote,
+                    "template": template}
+
+        try:
+            res = self.live_push(type_, seed, confirm=True)
+        except (BadRequest, WriteDisabled):
+            raise
+        except Exception as e:                              # noqa: BLE001
+            # live_push 已经记录过失败；这里只把原始错误交回界面，绝不重试/猜地址。
+            return {"ok": False, "reason": "write_failed", "type": type_,
+                    "seed": seed, "error": f"送进游戏失败：{type(e).__name__}: {e}",
+                    "emote": emote, "template": template}
+        return _ok(**{**res, "type": type_, "seed": seed, "emote": emote,
+                      "template": template, "label": str(entry.get("label") or "")})
+
     def live_template_mod(self, dest: str | None = None) -> dict:
         from .. import paths as _paths
         from ..live import exml
 
         dest = dest or str(_paths.app_home() / "starforge-templates")
         return _ok(**exml.write_mod(dest))
+
+    def install_template_mod(self, confirm: bool = False) -> dict:
+        """生成模板 Mod 并**安装到游戏目录** `GAMEDATA/MODS`（会写游戏目录，需 confirm）。
+
+        与 `live_template_mod()` 的区别：后者只写到应用缓存，需要用户手工复制；
+        这里直接落到游戏目录，装完提示重启游戏。删除同名文件夹即可卸载。
+        """
+        if not confirm:
+            raise BadRequest("缺少 confirm=true（会向游戏目录写入模板 Mod）")
+        import os
+
+        from .. import locate_game
+        from ..live import exml
+
+        s = settings.current()
+        game = locate_game.normalize(s.game_dir or "") or ""
+        if not game:
+            return {"ok": False, "code": "E_NO_GAME",
+                    "error": "没有配置游戏目录：请先在设置页选择游戏根目录"}
+        mods = os.path.join(game, "GAMEDATA", "MODS")
+        try:
+            os.makedirs(mods, exist_ok=True)
+            out = exml.write_mod(mods)
+        except OSError as e:
+            return {"ok": False, "code": "E_WRITE",
+                    "error": f"写入游戏目录失败：{type(e).__name__}: {e}"}
+        _record("mod", "安装模板 Mod", f"{out['path']}", "live")
+        return _ok(**out, game_dir=game, restart_required=True,
+                   note="已安装；重启游戏后表情菜单会出现 8 个模板")
+
+    def agent_connect(self) -> dict:
+        """连接到**已运行**的游戏（pymhf 走“发现已运行实例”分支）。
+
+        UI 的「连接游戏」原来传 `attach=True`，而那条路径在 build 185034 上会让游戏
+        以访问冲突退出，默认已拒绝。这里改成“要求游戏已在运行 + attach=False”，
+        既避开不安全的 attach 注入，也不会替用户启动游戏。
+        """
+        from ..live import agent_install, mem
+
+        try:
+            pid = mem.find_pid("NMS.exe")
+        except Exception as e:                             # noqa: BLE001
+            return {"ok": False, "code": "E_AGENT",
+                    "error": f"无法检测游戏进程：{type(e).__name__}: {e}"}
+        if not pid:
+            return {"ok": False, "code": "E_NO_GAME",
+                    "error": "游戏没有运行：先启动游戏（进入主菜单即可）再点连接"}
+        try:
+            return agent_install.launch(attach=False)
+        except Exception as e:                             # noqa: BLE001
+            return {"ok": False, "code": "E_AGENT",
+                    "error": f"{type(e).__name__}: {e}"}
 
     # ------------------------------------------------------------ 诊断
 
@@ -1312,4 +1498,11 @@ def get_services() -> Services:
     return SERVICES
 
 
-__all__ = ["SERVICES", "Services", "get_services", "history"]
+__all__ = [
+    "E_CONFIRM_REQUIRED",
+    "E_WRITE_DISABLED",
+    "SERVICES",
+    "Services",
+    "get_services",
+    "history",
+]

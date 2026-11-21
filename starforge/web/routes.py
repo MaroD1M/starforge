@@ -15,7 +15,7 @@ import time
 from flask import Blueprint, Response, jsonify, request
 
 from ..core import log, paths, settings, strings
-from ..core.errors import BadRequest, GameFilesMissing, NotFound, WriteDisabled, WriteRefused
+from ..core.errors import BadRequest, GameFilesMissing, NotFound, WriteRefused
 from ..data import load_catalog, load_icons
 from ..save import library
 
@@ -583,7 +583,7 @@ def api_part_thumb(ship: str, part: str):
 
 @bp.get("/thumb/<ship>/<seed>.png")
 def api_thumb(ship: str, seed: str):
-    from .. import preview, render
+    from .. import render
     from ..data.shipref import PROC_MODELS
     parts = [p for p in (request.args.get("parts") or "").split(",") if p]
     views = tuple(v for v in (request.args.get("views") or "iso").split(",") if v in render.VIEWS)
@@ -743,23 +743,20 @@ def api_live_probe():
 
 @bp.post("/live/push")
 def api_live_push():
+    """写游戏内存的统一入口：闸门（写开关 + confirm）只在 ``Services`` 里实现一份。"""
     from ..live import mem, writer
-    settings.require_write()                       # 仍受写开关约束
+    from ..services import get_services
+
     body = request.get_json(silent=True) or {}
-    if not body.get("confirm"):
-        raise BadRequest("缺少 confirm=true（写入游戏内存必须二次确认）")
-    type_, seed = body.get("type"), body.get("seed")
-    if not type_ or not seed:
-        raise BadRequest("需要 type 与 seed")
-    if not mem.IS_WINDOWS:
-        raise GameFilesMissing("实时通道仅支持 Windows（Linux/Proton 无法读写进程内存）",
-                               hint="可以改用存档写回，或把游戏内符文浮窗当作替代")
     try:
-        proc = mem.attach("NMS.exe")
+        return jsonify(get_services().live_push(
+            body.get("type") or "", body.get("seed") or "",
+            confirm=bool(body.get("confirm"))))
     except mem.LiveUnsupported as e:
-        raise WriteRefused(str(e))
-    with proc:
-        try:
-            return ok(**writer.push(proc, str(type_), str(seed)))
-        except writer.LocateError as e:
-            raise WriteRefused(str(e))
+        if not mem.IS_WINDOWS:
+            raise GameFilesMissing(
+                "实时通道仅支持 Windows（Linux/Proton 无法读写进程内存）",
+                hint="可以改用存档写回，或把游戏内符文浮窗当作替代") from e
+        raise WriteRefused(str(e)) from e
+    except writer.LocateError as e:
+        raise WriteRefused(str(e)) from e

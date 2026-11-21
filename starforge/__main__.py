@@ -14,8 +14,6 @@ import json
 import os
 import socket
 import sys
-import threading
-import webbrowser
 from pathlib import Path
 
 from .core import console, lock, log, paths, settings, strings
@@ -168,46 +166,303 @@ def cmd_live_probe(a) -> int:
     return 0
 
 
-def cmd_agent(a) -> int:
-    """游戏内代理（M4）的握手/自检入口。
+def cmd_live(a) -> int:
+    """``starforge live`` 的分派：默认 probe，push 走模板槽写入。"""
+    if getattr(a, "action", "probe") == "push":
+        return cmd_live_push(a)
+    return cmd_live_probe(a)
 
-    现在还没有 DLL，但入口先固定下来：`agent hello` 打印**能力表**（每项 available/reason），
-    与 `docs/AGENT-PROTOCOL.md` 的命令表一一对应。装上 agent 之后同一条命令就会走真实握手。
+
+def cmd_live_push(a) -> int:
+    """把外观种子写进模板槽：定位 → 写入 → 回读校验（全部由 writer.push 完成）。
+
+    这是 ``starforge live push`` 的实现。写闸门与 UI/Web 共用 ``Services.live_push``：
+    写开关关闭或没给 ``--yes`` 都会在连接游戏之前被拒绝。没有 ``--force``：
+    定位不唯一或回读不符时宁可失败，也不猜地址写内存。
     """
     import json as _json
-    from .live import mem
-    caps = {
-        "player.ua": (False, "需要 agent（M4）", "low"),
-        "player.position": (False, "需要 agent（M4）", "low"),
-        "player.stats": (False, "需要 agent（M4）", "low"),
-        "system.current": (False, "需要 agent（M4）", "low"),
-        "planet.current": (False, "需要 agent（M4）", "low"),
-        "ship.read": (False, "需要 agent（M4）", "low"),
-        "ship.write_seed": (False, "需要 agent（M4）", "mid"),
-        "ship.write_class": (False, "需要 agent（M4）", "mid"),
-        "ship.write_parts": (False, "实验性：部件数组布局未确认", "high"),
-        "teleport.system": (False, "需要 agent（M5）", "high"),
-        "teleport.position": (False, "需要 agent（M5）+ 落点预检", "high"),
-        "scan.planet": (False, "需要 agent（M6）", "mid"),
-        "debug.flags": (False, "实验性：位域未验证", "high"),
-    }
+
+    from .core.errors import BadRequest, WriteDisabled
+    from .live import exml, mem, writer
+    from .services import E_CONFIRM_REQUIRED, E_WRITE_DISABLED, get_services
+
+    type_ = str(getattr(a, "type", "") or "").strip()
+    types: list[str] = []
+    try:
+        types = sorted({e["type"] for e in exml.manifest()})
+    except Exception as e:                                 # noqa: BLE001
+        return _live_push_error(a, f"读取模板类型清单失败：{type(e).__name__}: {e}",
+                                "确认安装包完整后重试。", code=2)
+    if not type_:
+        return _live_push_error(a, "缺少 --type", f"可用类型：{', '.join(types)}", code=2)
+    if type_ not in types:
+        return _live_push_error(a, f"未知船型：{type_}", f"可用类型：{', '.join(types)}", code=2)
+    try:
+        seed = _parse_seed(getattr(a, "seed", None))
+    except ValueError as e:
+        return _live_push_error(a, f"种子无效：{e}",
+                                "用 0x 前缀十六进制（例如 0x1111222233334444）或十进制，"
+                                "范围 0..2^64-1。", code=2)
+
+    try:
+        result = get_services().live_push(
+            type_, seed, confirm=bool(getattr(a, "yes", False)))
+    except WriteDisabled as e:
+        return _live_push_error(
+            a, str(e),
+            "到设置页打开“允许写入”（或运行 starforge settings --write 1）后重试。",
+            code=2, error_code=E_WRITE_DISABLED)
+    except BadRequest as e:
+        return _live_push_error(
+            a, str(e),
+            "确认只写 8 字节模板种子、不改存档后，加 --yes 重跑。",
+            code=2, error_code=E_CONFIRM_REQUIRED)
+    except mem.LiveUnsupported as e:
+        if not mem.IS_WINDOWS:
+            return _live_push_error(a, "实时写入仅支持 Windows。",
+                                    "Linux/Proton 下请改用存档写回；符文浮窗不受影响。",
+                                    code=3)
+        return _live_push_error(a, f"连不上游戏：{e}",
+                                "先启动 NMS.exe 并载入存档，再重试；不需要结束游戏进程。", code=4)
+    except writer.LocateError as e:
+        msg = str(e)
+        if "模板槽" in msg or "templates" in msg:
+            hint = ("没找到模板槽：确认 starforge-templates 模板 Mod 已安装并重启游戏，"
+                    "且已经进入存档；可先运行 live probe 检查候选。")
+        elif "回读" in msg:
+            hint = ("回读校验失败：地址可能已失效。不要反复重试写入；"
+                    "重启游戏后先用 live probe 检查模板槽。")
+        else:
+            hint = "写入被拒绝；先运行 live probe 检查模板槽与游戏状态。"
+        return _live_push_error(a, f"写入失败：{msg}", hint, code=5)
+    except Exception as e:                                 # noqa: BLE001
+        return _live_push_error(a, f"写入失败：{type(e).__name__}: {e}",
+                                "先运行 live probe 检查游戏状态。", code=5)
+
+    if getattr(a, "json", False):
+        print(_json.dumps(result, ensure_ascii=False, indent=1))
+        return 0
+    if result.get("unchanged"):
+        print(f"{type_} 模板槽已经是这个种子（0x{result['seed']:016X}），无需写入。")
+    else:
+        print(f"已写入 {type_} 模板槽。")
+    print(f"  地址：0x{int(result.get('address') or 0):X}")
+    print(f"  种子：0x{int(result.get('seed') or 0):016X}")
+    if "before" in result and "after" in result:
+        print(f"  回读：0x{int(result['before']):016X} → 0x{int(result['after']):016X}")
+    if result.get("score") is not None:
+        print(f"  置信：{float(result['score']):.2f}")
+    return 0
+
+
+def _parse_seed(text) -> int:
+    """解析 ``--seed``：``0x`` 前缀按十六进制，其余按十进制；必须是 u64。"""
+    raw = str(text if text is not None else "").strip().replace("_", "")
+    if not raw:
+        raise ValueError("没有提供 --seed")
+    try:
+        value = int(raw, 16) if raw.lower().startswith("0x") else int(raw, 10)
+    except ValueError as e:
+        raise ValueError(f"{raw!r} 不是十六进制/十进制整数") from e
+    if not 0 <= value < 2 ** 64:
+        raise ValueError(f"{raw!r} 超出 0..2^64-1")
+    return value
+
+
+def _live_push_error(a, message: str, hint: str = "", code: int = 1,
+                     error_code: str = "") -> int:
+    """统一失败输出：``--json`` 时 stdout 仍是可解析的 JSON，人读模式走 stderr。"""
+    if getattr(a, "json", False):
+        payload = {"ok": False, "error": message, "hint": hint}
+        if error_code:
+            payload["code"] = error_code
+        print(json.dumps(payload, ensure_ascii=False, indent=1))
+    else:
+        print(message, file=sys.stderr)
+        if hint:
+            print(hint, file=sys.stderr)
+    return code
+
+
+# 能力表：名字 → (风险, 类别)。类别只决定"需要什么条件才可用"：
+#   read         agent 可达即可（未验证 build 也只读）
+#   write        agent 可达 **且** build.write_allowed
+#   experimental 布局/位域尚未确认，即使条件满足也保持关闭
+_AGENT_CAPABILITIES: dict[str, tuple[str, str]] = {
+    "player.ua": ("low", "read"),
+    "player.position": ("low", "read"),
+    "player.stats": ("low", "read"),
+    "system.current": ("low", "read"),
+    "planet.current": ("low", "read"),
+    "ship.read": ("low", "read"),
+    "ship.write_seed": ("mid", "write"),
+    "ship.write_class": ("mid", "write"),
+    "ship.write_parts": ("high", "experimental"),
+    "teleport.system": ("high", "write"),
+    "teleport.position": ("high", "write"),
+    "scan.planet": ("mid", "write"),
+    "debug.flags": ("high", "experimental"),
+}
+
+_AGENT_EXPERIMENTAL_REASONS = {
+    "ship.write_parts": "实验性：部件数组布局未确认",
+    "debug.flags": "实验性：位域未验证",
+}
+
+
+def _module_available(name: str) -> bool:
+    """只查模块是否存在，不 import（pymhf 首次 import 可能很慢）。"""
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec(name) is not None
+    except Exception:                                      # noqa: BLE001
+        return False
+
+
+def _runtime_ready(python_path, runtime_dir) -> bool:
+    """pymhf/NMSpy 可导入，或 agent runtime 目录已经存在。"""
+    if python_path:
+        return True
+    if _module_available("pymhf") and _module_available("nmspy"):
+        return True
+    try:
+        return bool(runtime_dir) and Path(runtime_dir).exists()
+    except OSError:
+        return False
+
+
+def _agent_probe(timeout: float = 1.5) -> dict:
+    """真实探测游戏内 agent（只读）：Mod 文件、runtime、本机 HTTP hello。
+
+    agent 是 pymhf 注入的 **Python Mod**（``starforge_agent.py`` + NMSpy），不是 DLL。
+    连接探测只发一个 ``GET /hello``，超时默认 1.5s，绝不写游戏状态。
+    """
+    info: dict = {"installed": False, "installed_path": "", "runtime": False,
+                  "runtime_python": "", "runtime_dir": "", "reachable": False,
+                  "base": "", "hello": {}, "error": ""}
+    try:
+        from .live import agent_install
+    except Exception as e:                                 # noqa: BLE001
+        info["error"] = f"无法加载 agent 安装模块：{type(e).__name__}: {e}"
+        return info
+
+    try:
+        mod = agent_install.installed_mod()
+        info["installed_path"] = str(mod)
+        info["installed"] = bool(mod.exists())
+    except Exception as e:                                 # noqa: BLE001
+        info["error"] = f"无法检查 agent Mod 文件：{type(e).__name__}: {e}"
+
+    py = None
+    rdir = ""
+    try:
+        py = agent_install.runtime_python()
+        rdir = str(agent_install.runtime_dir())
+        info["runtime_python"] = str(py) if py else ""
+        info["runtime_dir"] = rdir
+    except Exception as e:                                 # noqa: BLE001
+        tail = f"无法检查 agent 运行时：{type(e).__name__}: {e}"
+        info["error"] = f"{info['error']}；{tail}" if info["error"] else tail
+    info["runtime"] = _runtime_ready(py, rdir)
+
+    try:
+        from .live import agent_client
+
+        client = agent_client.AgentClient(timeout=timeout)
+        info["base"] = str(getattr(client, "base", "") or "")
+        try:
+            hello = client.hello()
+        except Exception as e:                             # noqa: BLE001
+            info["error"] = f"{type(e).__name__}: {e}"
+        else:
+            info["reachable"] = True
+            info["hello"] = hello if isinstance(hello, dict) else {"value": hello}
+    except Exception as e:                                 # noqa: BLE001
+        info["error"] = f"无法创建 agent 客户端：{type(e).__name__}: {e}"
+    return info
+
+
+def _agent_capabilities(*, reachable: bool, write_allowed: bool, status: str) -> dict:
+    """按真实 agent/build 状态推导能力表（不是常量）。"""
+    disconnected = "agent 未运行/未连接"
+    build_block = f"build 未校准（status={status or 'unknown'}），只允许只读"
+    table: dict[str, dict] = {}
+    for name, (risk, kind) in _AGENT_CAPABILITIES.items():
+        if not reachable:
+            available, reason = False, disconnected
+        elif kind in ("write", "experimental") and not write_allowed:
+            available, reason = False, build_block
+        elif kind == "experimental":
+            available, reason = False, _AGENT_EXPERIMENTAL_REASONS[name]
+        else:
+            available, reason = True, ""
+        table[name] = {"available": available, "reason": reason, "risk": risk}
+    return table
+
+
+def cmd_agent(a) -> int:
+    """游戏内代理的握手/自检入口。
+
+    agent 是 pymhf + NMSpy 的 Python Mod：``agent hello`` 真实检查 Mod 文件、
+    runtime 与本机 HTTP，并按 build 闸门推导 13 项能力表。未连接时返回 5，
+    已连接返回 0；所有探测只读。
+    """
+    import json as _json
+    from .live import build, mem
+
+    probe = _agent_probe()
     attached = False
-    note = ""
+    pid = None
+    attach_error = ""
     if not mem.IS_WINDOWS:
         note = "非 Windows：内存通道不可用（存档写回与符文浮窗不受影响）"
     else:
         try:
             with mem.attach("NMS.exe") as proc:
                 attached = True
-                note = f"已连上游戏进程 pid={getattr(proc, 'pid', '?')}，但 agent DLL 尚未安装（M4）"
+                pid = getattr(proc, "pid", None)
         except Exception as e:                             # noqa: BLE001
-            note = f"未连上游戏：{type(e).__name__}: {e}"
-    table = {k: {"available": False, "reason": r, "risk": risk} for k, (_ok, r, risk) in caps.items()}
-    rep = {"proto": 1, "agent": None, "attached": attached, "note": note,
+            attach_error = f"{type(e).__name__}: {e}"
+        if not attached:
+            note = f"未连上游戏进程：{attach_error or '没有找到 NMS.exe'}"
+            if probe["reachable"]:
+                note += "；但本机 agent HTTP 可达（游戏可能尚未载入存档或进程权限不足）"
+        elif probe["reachable"]:
+            note = (f"已连上游戏进程 pid={pid if pid is not None else '?'}；"
+                    "agent 已连接（pymhf + NMSpy 的 Python Mod）")
+        elif not probe["installed"]:
+            note = (f"已连上游戏进程 pid={pid if pid is not None else '?'}；agent 未安装"
+                    "（它是 pymhf + NMSpy 的 Python Mod，不是 DLL；请在「游戏内」页安装）")
+        elif not probe["runtime"]:
+            note = (f"已连上游戏进程 pid={pid if pid is not None else '?'}；agent Mod 已安装"
+                    f"（{probe['installed_path']}），但 pymhf/NMSpy 运行时缺失")
+        else:
+            note = (f"已连上游戏进程 pid={pid if pid is not None else '?'}；agent Mod 已安装"
+                    "但未连接（需要注入/启动 pymhf agent）")
+
+    try:
+        build_info = build.summary()
+    except Exception as e:                                 # noqa: BLE001
+        build_info = {"version": "", "status": "unknown", "verified": False,
+                      "write_allowed": False,
+                      "reason": f"无法确认游戏 build：{type(e).__name__}: {e}；只允许只读能力"}
+    status = str(build_info.get("status") or "unknown")
+    write_allowed = bool(build_info.get("write_allowed"))
+    table = _agent_capabilities(reachable=probe["reachable"],
+                                write_allowed=write_allowed, status=status)
+    rep = {"proto": 1, "agent": probe, "attached": attached, "note": note,
            "capabilities": table,
-           "next": "按 docs/VERIFY-AGENT-WINDOWS.md 第 4 节回报；M4 落地后这里会变成真实握手"}
+           "build": {"id": build_info.get("build_id") or "",
+                     "version": build_info.get("version") or "",
+                     "status": status,
+                     "verified": bool(build_info.get("verified")),
+                     "write_allowed": write_allowed},
+           "next": ("按 docs/AGENT.md 第 8 节「故障排查表」回报；agent 是 pymhf + NMSpy "
+                    "的 Python Mod，连接后再按 build 闸门决定只读/写入")}
     print(_json.dumps(rep, ensure_ascii=False, indent=1))
-    return 0 if a.action != "hello" else (0 if attached else 5)
+    action = getattr(a, "action", "hello")
+    return 0 if action != "hello" else (0 if probe["reachable"] else 5)
 
 
 def cmd_internal(a) -> int:
@@ -276,7 +531,7 @@ def cmd_doctor(a) -> int:
     """环境体检：把"运行时会不会缺东西"一次说清（打包产物排障的第一条命令）。
 
     检查项：Python/平台、关键三方库、unicorn（能不能建 Uc）、系统生成器能不能借用、
-    Qt/PySide6 原生界面、上游数据层。
+    Qt/PySide6 原生界面、上游数据层、GAMEDATA（是否含 Gagarin/ships/catalog.txt）。
     """
     import json as _json
     import platform
@@ -322,9 +577,30 @@ def cmd_doctor(a) -> int:
         out["upstream"] = paths.ensure_shipwright_importable()
     except Exception as e:                                 # noqa: BLE001
         out["upstream"] = f"{type(e).__name__}: {e}"
+    # GAMEDATA：目录存在不等于可用（Steam 原版也有 GAMEDATA，但没有 Gagarin 的 catalog.txt）
+    try:
+        s = settings.current()
+        gd = s.gamedata_resolved()
+        if gd:
+            out["gamedata"] = {"path": str(gd), "valid": True,
+                               "reason": "含 Gagarin/ships/catalog.txt"}
+        else:
+            configured = s.gamedata_dir or ""
+            reason = ("配置的目录缺少 Gagarin/ships/catalog.txt，自动发现也没有可用项"
+                      if configured else
+                      "未配置，且自动发现找不到含 Gagarin/ships/catalog.txt 的目录")
+            out["gamedata"] = {"path": configured, "valid": False, "reason": reason}
+            out["notes"].append(
+                "GAMEDATA 无效（部件目录/搜索/3D/缩略图会失败）→ 在设置里把数据目录指向"
+                "含 Gagarin/ships/catalog.txt 的 GAMEDATA，或设置环境变量 STARFORGE_GAMEDATA")
+    except Exception as e:                                 # noqa: BLE001
+        out["gamedata"] = {"path": "", "valid": False, "reason": f"{type(e).__name__}: {e}"}
+        out["notes"].append(
+            "GAMEDATA 检查失败 → 在设置里确认数据目录（需含 Gagarin/ships/catalog.txt）")
     optional = {"capstone"}
     required_ok = all(v == "ok" for k, v in out["deps"].items() if k not in optional)
-    ok = out["unicorn"]["ok"] and required_ok and bool(out["gui"].get("available"))
+    ok = (out["unicorn"]["ok"] and required_ok and bool(out["gui"].get("available"))
+          and bool(out["gamedata"].get("valid")))
     out["ok"] = ok
     print(_json.dumps(out, ensure_ascii=False, indent=1))
     return 0 if ok else 7
@@ -485,9 +761,21 @@ def main(argv=None) -> int:
     p.add_argument("--click-through", action="store_true", help="鼠标穿透（不挡游戏点击）")
     p.set_defaults(func=cmd_glyph_overlay)
 
-    p = sub.add_parser("live", help="实时通道（只读诊断）")
-    p.add_argument("action", choices=["probe"], nargs="?", default="probe")
-    p.set_defaults(func=lambda a: cmd_live_probe(a))
+    p = sub.add_parser("live", help="实时通道（probe 只读诊断 / push 写入模板槽）")
+    p.add_argument("action", choices=["probe", "push"], nargs="?", default="probe")
+    try:
+        from .live.exml import manifest as _template_manifest
+
+        _ship_types = sorted({e["type"] for e in _template_manifest()})
+    except Exception:                                      # noqa: BLE001
+        _ship_types = None                                 # 命令里再报可读错误
+    p.add_argument("--type", choices=_ship_types,
+                   help="模板船型：" + (", ".join(_ship_types) if _ship_types else "读取清单失败"))
+    p.add_argument("--seed", help="外观种子：0x 前缀十六进制或十进制（u64）")
+    p.add_argument("-y", "--yes", "--confirm", dest="yes", action="store_true",
+                   help="确认写游戏内存（只写 8 字节模板种子，不改存档）")
+    p.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    p.set_defaults(func=cmd_live)
 
     p = sub.add_parser("_internal", help=argparse.SUPPRESS)
     p.add_argument("kind", choices=["system", "locate", "system-scan", "galaxy-scan"])

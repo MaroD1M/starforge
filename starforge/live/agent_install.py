@@ -159,12 +159,8 @@ def _has_agent_packages(py: Path) -> bool:
     return (site / "nmspy").is_dir() and (site / "pymhf").is_dir()
 
 
-def runtime_python() -> Path | None:
-    """找一个可用来运行 pymhf 的 Python。
-
-    优先级：应用自带 runtime → 用户运行时 → 非冻结环境的本进程 Python → PATH。
-    **必须真的含 nmspy+pymhf**；旧版本留下的空 runtime 会被跳过。
-    """
+def _runtime_candidates() -> list[Path]:
+    """所有可能放 agent runtime 的位置（按优先级）。"""
     exe_dir = Path(sys.executable).resolve().parent
     cands = [
         exe_dir / "agent-runtime" / "python.exe",
@@ -174,7 +170,30 @@ def runtime_python() -> Path | None:
     ]
     if getattr(sys, "_MEIPASS", ""):
         cands.append(Path(sys._MEIPASS) / "agent-runtime" / "python.exe")
-    for cand in cands:
+    return cands
+
+
+def bare_runtime_python() -> Path | None:
+    """只要 python.exe 存在就返回（不要求已装依赖）。
+
+    为什么需要单独一个：``runtime_python()`` 只认"已经装好 nmspy+pymhf"的运行时，
+    而**第一次安装依赖**时恰恰还没有这些包。用它做 pip 安装的入口，否则
+    「准备运行时 → 安装组件」在干净机器上永远报"没有可用的 Python 运行时"。
+    """
+    for cand in _runtime_candidates():
+        if cand.exists():
+            return cand
+    return None
+
+
+def runtime_python() -> Path | None:
+    """找一个可用来运行 pymhf 的 Python。
+
+    优先级：应用自带 runtime → 用户运行时 → 非冻结环境的本进程 Python → PATH。
+    **必须真的含 nmspy+pymhf**；旧版本留下的空 runtime 会被跳过（装依赖用
+    ``bare_runtime_python()``）。
+    """
+    for cand in _runtime_candidates():
         if cand.exists() and _has_agent_packages(cand):
             return cand
     # 开发环境：本进程 Python 已装 pymhf 时可以直接用
@@ -532,7 +551,7 @@ def install_deps(version: str | None = None, timeout: int = 600,
         log.info("游戏内组件需要更新：%s", "; ".join(report["mismatches"]))
     elif not version:
         raise ValueError("无法从游戏 build 推断 NMSpy 版本")
-    py = rt or runtime_python()
+    py = rt or bare_runtime_python()
     if not py:
         return {"ok": False, "needs_runtime": True,
                 "error": "没有可用的 Python 运行时；请先点「准备游戏内运行时」"}
@@ -575,7 +594,20 @@ def launch(attach: bool = True) -> dict:
     每次启动生成一次性 token 写入私有 state.json，并注入 agent 子进程环境；
     AgentClient 随后自动读取。pymhf 的 HTTP API 目前固定 5000，无法可靠随机端口，
     所以这里只做可配置覆盖（STARFORGE_AGENT_PORT）+ 占用检测，不假装已经随机。
+
+    **attach 默认被拒绝**：实测在 build 185034 上，对已初始化的游戏进程做注入会让
+    NMS.exe 在 ``python311.dll`` 里访问冲突闪退（0xC0000005）。pymhf 的受支持路径是
+    “先创建进程、再注入”，所以请用 ``attach=False`` 由应用启动游戏。调试时可用
+    环境变量 ``STARFORGE_ALLOW_ATTACH_INJECT=1`` 强制打开（风险自负）。
     """
+    if not mem.IS_WINDOWS:
+        raise RuntimeError("游戏内通道仅支持 Windows")
+    if attach and os.environ.get("STARFORGE_ALLOW_ATTACH_INJECT") != "1":
+        raise RuntimeError(
+            "不支持“附加到已运行的游戏”注入：pymhf 在游戏初始化后注入会与游戏线程竞争，"
+            "实测在 build 185034 上会导致 NMS.exe 访问冲突闪退（python311.dll 0xC0000005）。"
+            "请改用“由应用启动游戏”的方式（会先创建进程再注入）。"
+            "仅调试时可用环境变量 STARFORGE_ALLOW_ATTACH_INJECT=1 强制。")
     if not mem.IS_WINDOWS:
         raise RuntimeError("游戏内通道仅支持 Windows")
     install_mod()
@@ -615,9 +647,16 @@ def launch(attach: bool = True) -> dict:
         raise RuntimeError("没有配置游戏目录（设置页选择游戏根目录）")
     overrides = {
         "pid": pid if attach else None,
-        "exe": exe or None,
+        # attach 模式不能传 exe：pymhf 见到 exe 会走"按进程名注入"分支，
+        # 并把我们给的 `...\Binaries\NMS.exe` 再拼一次 Binaries（实测报
+        # `...\Binaries\Binaries\NMS.exe`）。只给 pid，pymhf 会自己从进程取路径。
+        "exe": None if attach else (exe or None),
         "start_exe": not attach,
-        "start_paused": False,
+        # 注入完成前保持进程暂停：对 NMS 这种一启动就有大量线程/DRM 钩子的宿主，
+        # “先跑起来再注入”会让注入线程撞上加载器锁（实测 python311.dll 里
+        # PyImport_GetModule 空指针崩溃）。ping/notepad 对照实验两种取值都正常，
+        # 所以这里选更保守的一侧。
+        "start_paused": True,
         "steam_gameid": 275850,
         "interactive_console": False,
         "gui": {"shown": False},
@@ -632,6 +671,17 @@ def launch(attach: bool = True) -> dict:
         "load_mod_file(sys.argv[1], config_overrides=cfg)\n"
     )
     token = secrets.token_urlsafe(32)
+    # 游戏若由 Steam 拉起就不会继承这里的环境变量，所以同时落盘一份 token，
+    # 供 agent 在进程内按“环境变量 → 文件”顺序读取（见 starforge_agent._resolve_agent_token）。
+    try:
+        tok_path = agent_dir() / "token"
+        tok_path.write_text(token, encoding="utf-8")
+        try:
+            os.chmod(tok_path, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        log.warning("无法写入 agent token 文件；Steam 启动时认证会退化为 disabled")
     env = dict(os.environ)
     env["PYTHONUTF8"] = "1"
     # agent 端读取并在每个 endpoint 校验；客户端通过 ?token= 传入。
@@ -672,10 +722,33 @@ def launch(attach: bool = True) -> dict:
             "token_in": "query",
             "port_note": "pymhf 固定端口；STARFORGE_AGENT_PORT 仅在 runtime 支持时生效",
         })
-    return {"ok": True, "pid": _LAUNCH.pid, "log": str(log_path),
-            "port": port, "base": base, "state": str(state_file()),
-            "token_auth": "query",
-            "build_id": build.build_id(fp), "attach": attach}
+    out = {"ok": True, "pid": _LAUNCH.pid, "log": str(log_path),
+           "port": port, "base": base, "state": str(state_file()),
+           "token_auth": "query",
+           "build_id": build.build_id(fp), "attach": attach}
+    # 不要只看 Popen 成功：NMS 可能因为检测到注入而自行退出。
+    if not injected_game_alive():
+        out.update({
+            "ok": False, "code": "E_GAME_EXITED",
+            "error": ("注入后游戏进程已退出：NMS 会把注入的 Python/ctypes 识别为模组冲突并关闭游戏"
+                      "（build 185034 实测，无崩溃转储）。不要反复重试；"
+                      "存档写回、模板槽读写与表情领取都不受影响。"),
+        })
+    return out
+
+
+def injected_game_alive(wait: float = 6.0) -> bool:
+    """注入后短暂观察游戏是否还活着。
+
+    实测 build 185034：NMS 会把注入的 Python/ctypes 识别成"模组冲突"，
+    弹出“是否禁用所有模组”后主动退出（无崩溃转储、不写 DISABLEMODS.TXT）。
+    所以 launch() 不能只因为 Popen 成功就报告成功。
+    """
+    time.sleep(max(0.0, wait))
+    try:
+        return bool(mem.find_pid("NMS.exe"))
+    except Exception:                                      # noqa: BLE001
+        return False
 
 
 def stop() -> dict:

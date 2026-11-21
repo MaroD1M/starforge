@@ -14,7 +14,7 @@ from starforge import galaxy
 
 def _sys(ua, *, planets=3, dissonant=False, race="Korvax", interceptor=None, biome="Lush",
          sentinels="none"):
-    return {"ua": "0x%X" % ua, "coords": "04E4:0070:01BC:0104", "glyphs": "1104F19BDCE5",
+    return {"ua": "0x%X" % ua, "coords": "04E4:0070:01BC:0104", "glyphs": "1112F19BDCE5",
             "galaxy": 0, "race": race, "economy": "Trading", "conflict": "low",
             "planets": planets, "moons": 0, "dissonant": dissonant,
             "interceptor": interceptor, "region_valid": True,
@@ -87,7 +87,7 @@ def test_scan_uses_injected_provider_and_persists(tmp_path):
                     interceptor="0xBEEF" if n % 2 == 0 else None)
 
     st = galaxy.GalaxyStore(str(tmp_path / "scan.db"))
-    out = galaxy.scan(center_ua=0x10400F19BDCE5, radius=0, systems_per_region=6,
+    out = galaxy.scan(center_ua=0x11200F19BDCE5, radius=0, systems_per_region=6,
                       filters={"dissonant": True}, limit=10, provider=provider, store=st)
     assert out["scanned"] == len(seen) == 6
     assert out["store"]["systems"] == 6
@@ -101,7 +101,7 @@ def test_scan_respects_limit(tmp_path):
         return _sys(ua, planets=4)
 
     st = galaxy.GalaxyStore(str(tmp_path / "cap.db"))
-    out = galaxy.scan(center_ua=0x10400F19BDCE5, radius=0, systems_per_region=20,
+    out = galaxy.scan(center_ua=0x11200F19BDCE5, radius=0, systems_per_region=20,
                       filters={}, limit=3, provider=provider, store=st)
     assert len(out["hits"]) == 3 and out["scanned"] == 3      # 到量即停，不多扫
     st.close()
@@ -109,7 +109,7 @@ def test_scan_respects_limit(tmp_path):
 
 def test_api_galaxy_query_and_stats(client, monkeypatch, tmp_path):
     monkeypatch.setenv("STARFORGE_HOME", str(tmp_path))
-    from starforge.core import paths, settings
+    from starforge.core import settings
     settings._CURRENT = None
     settings.update(saves_dir="/tmp/nonexistent")
     st = galaxy.GalaxyStore()

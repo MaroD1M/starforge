@@ -1,6 +1,6 @@
 [project]
 name = "starforge"
-version = "0.14.9"
+version = "0.15.0"
 description = "无人深空飞船/星球搜寻与预览（原生桌面 + Python 内核）"
 requires-python = ">=3.10"
 dependencies = ["flask>=3.0", "numpy>=1.24", "lz4>=4.0"]
@@ -21,7 +21,7 @@ build-backend = "setuptools.build_meta"
 packages = ["starforge", "starforge.core", "starforge.data", "starforge.save", "starforge.web", "starforge.live", "starforge.services", "starforge.app", "starforge.app.pages", "starforge.app.widgets", "starforge.app.dialogs", "starforge.agent"]
 
 [tool.setuptools.package-data]
-"starforge.live" = ["builds/*.json"]
+"starforge.live" = ["builds/*.json", "assets/icons/*.dds"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

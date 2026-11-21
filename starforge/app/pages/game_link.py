@@ -2,17 +2,20 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QPushButton,
+                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QScrollArea, QSpinBox, QTextEdit, QVBoxLayout, QWidget)
 
 from ...services import get_services
 from .. import notify
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.live_assets import (BLOCK_LABELS, BLOCKS, NO_SAVE_TEXT,
+                                   LiveAssetsCard, live_asset_error_text)
 from ..widgets.page import PAGE_SPACING, SCROLL_MARGINS
 from ..widgets.page_header import PageHeader
 from ..widgets.planet_dossier import (MISSING, PlanetDossier, PoiDossier,
@@ -52,6 +55,9 @@ class GameLinkPage(QWidget):
         self._read_btns: list[QPushButton] = []
         self._safety_btns: list[QPushButton] = []
         self._cap_buttons: list[tuple[QWidget, str]] = []
+        self._live_asset_errors: dict[str, str] = {}
+        self._live_asset_generation = 0
+        self._asset_banner_active = False
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(1500)
         self._poll_timer.timeout.connect(self._poll_hello)
@@ -174,6 +180,10 @@ class GameLinkPage(QWidget):
         top.setColumnStretch(1, 2)
         outer.addLayout(top)
 
+        self.live_assets = LiveAssetsCard()
+        self.live_assets_card = self.live_assets
+        outer.addWidget(self.live_assets)
+
         planet = Card("行星档案", "读取当前行星档案；需要先进入存档")
         pv = planet.v
         prow = QHBoxLayout()
@@ -274,11 +284,11 @@ class GameLinkPage(QWidget):
         for i, (text, kind) in enumerate((("传送门", "portal"), ("古遗迹", "ruins"),
                                           ("货船", "freighter"), ("飞船", "ship"))):
             btn = QPushButton(text)
-            btn.setToolTip(f"扫描附近的{text}；未校准前不显示结果，也不伪造坐标")
+            btn.setToolTip(f"扫描附近的{text}：需要 agent 的 scan.poi 端点，当前尚未实现")
+            btn.setEnabled(False)                         # scan.poi 端点未实现，避免点了必然报错
             btn.clicked.connect(lambda _=False, k=kind, t=text: self._scan_poi(k, t))
             poi_grid.addWidget(btn, i // 2, i % 2)
             self.poi_buttons[kind] = btn
-            self._cap_buttons.append((btn, "scan.poi"))
         poi_grid.setColumnStretch(0, 1)
         poi_grid.setColumnStretch(1, 1)
         ov.addLayout(poi_grid)
@@ -288,6 +298,23 @@ class GameLinkPage(QWidget):
             "附近兴趣点：需要游戏内代理实机校准；未校准前不会显示任何结果，也不会伪造坐标。")
         ov.addWidget(self.poi_result)
         outer.addWidget(poi)
+
+        mods = Card("表情模板 Mod", "安装后游戏表情菜单会出现 8 个可领取模板；只写游戏 GAMEDATA/MODS 目录")
+        modbar = QHBoxLayout()
+        self.install_mod_btn = QPushButton("安装 / 更新模板 Mod")
+        self.install_mod_btn.setToolTip("把 starforge-templates 写入游戏 GAMEDATA/MODS；重启游戏后生效")
+        self.install_mod_btn.clicked.connect(self._install_template_mod)
+        modbar.addWidget(self.install_mod_btn)
+        modbar.addStretch(1)
+        self.open_mods_btn = QPushButton("打开 Mod 目录")
+        self.open_mods_btn.setToolTip("在资源管理器中打开游戏 GAMEDATA/MODS")
+        self.open_mods_btn.clicked.connect(self._open_mods_dir)
+        modbar.addWidget(self.open_mods_btn)
+        mods.add_layout(modbar)
+        self.mod_status = QLabel("未安装（或未知）：点左侧按钮安装，装完需要重启游戏")
+        self.mod_status.setWordWrap(True)
+        mods.add(self.mod_status)
+        outer.addWidget(mods)
 
         logcard = Card("日志", "诊断数据按 JSON 格式原样记录，便于回报问题")
         logbar = QHBoxLayout()
@@ -457,7 +484,12 @@ class GameLinkPage(QWidget):
             portal_reason = self._cn(str(portal.get("reason") or "")) or self._portal_reason
         self._set_portal_available(portal_ok, portal_reason)
         self.error_banner.clear()
+        self._asset_banner_active = False
         self._update_connection_empty()
+        if reachable and self._in_game:
+            self._refresh_live_assets()
+        else:
+            self._reset_live_assets()
         if reachable and not self._in_game:
             if not self._poll_timer.isActive():
                 self._poll_timer.start()
@@ -506,6 +538,84 @@ class GameLinkPage(QWidget):
                 return reason or "当前游戏内代理不支持扫描附近兴趣点。"
             return reason or "当前游戏内代理不支持该读取能力。"
         return ""
+
+    # ------------------------------------------------------------ 实时资产
+
+    def _reset_live_assets(self) -> None:
+        """未连接/未进存档：只显示等待说明，不保留旧数据也不伪造空数据。"""
+        self._live_asset_generation += 1
+        self._live_asset_errors.clear()
+        self._clear_asset_banner()
+        if not self._reachable:
+            self.live_assets.set_waiting()
+        elif not self._in_game:
+            self.live_assets.set_waiting(NO_SAVE_TEXT)
+        else:
+            self.live_assets.set_waiting()
+
+    def _refresh_live_assets(self) -> None:
+        """连接成功或页面刷新后自动拉一次三个只读端点。"""
+        if not (self._reachable and self._in_game):
+            self._reset_live_assets()
+            return
+        self._live_asset_generation += 1
+        generation = self._live_asset_generation
+        self._live_asset_errors.clear()
+        self._clear_asset_banner()
+        self.live_assets.set_loading()
+        for cmd in BLOCKS:
+            run_worker(
+                self.svc.agent_call,
+                lambda res, c=cmd, g=generation: self._asset_done(c, res, g),
+                lambda msg, c=cmd, g=generation: self._asset_failed(c, msg, g),
+                cmd)
+
+    def _asset_done(self, cmd: str, res, generation: int) -> None:
+        if generation != self._live_asset_generation:
+            return                                   # 已被更新一轮刷新取代
+        label = BLOCK_LABELS.get(cmd, cmd)
+        if not isinstance(res, dict):
+            self._asset_failed(cmd, f"返回类型异常：{type(res).__name__}", generation)
+            return
+        if res.get("ok") is False:
+            text = live_asset_error_text(
+                label,
+                res.get("error") or res.get("reason") or "",
+                code=str(res.get("code") or ""),
+                unsupported=bool(res.get("unsupported")))
+            self._asset_failed(cmd, text, generation, formatted=True)
+            return
+        self._live_asset_errors.pop(cmd, None)
+        self.live_assets.set_data(cmd, res)
+        self._log(f"实时资产：{label}已更新。")
+        self._sync_asset_banner()
+
+    def _asset_failed(self, cmd: str, message: str, generation: int,
+                      formatted: bool = False) -> None:
+        if generation != self._live_asset_generation:
+            return
+        label = BLOCK_LABELS.get(cmd, cmd)
+        text = message if formatted else live_asset_error_text(label, message)
+        self._live_asset_errors[cmd] = text
+        self.live_assets.set_error(cmd, text)
+        self._log(text)
+        self._sync_asset_banner()
+
+    def _sync_asset_banner(self) -> None:
+        """把各区块的错误合并到页面横幅；全部成功后再收起。"""
+        if self._live_asset_errors:
+            text = "；".join(self._live_asset_errors[cmd] for cmd in BLOCKS
+                             if cmd in self._live_asset_errors)
+            self.error_banner.show_error(text)
+            self._asset_banner_active = True
+        elif self._asset_banner_active:
+            self._clear_asset_banner()
+
+    def _clear_asset_banner(self) -> None:
+        """只收起本卡片此前展示的横幅，避免清掉其它操作的错误。"""
+        if self._asset_banner_active:
+            self.error_banner.clear()
+            self._asset_banner_active = False
 
     def _set_portal_available(self, ok: bool, reason: str) -> None:
         self._portal_available = bool(ok)
@@ -656,7 +766,12 @@ class GameLinkPage(QWidget):
             self.error_banner.show_error(text)
             notify.error(text)
 
-        run_worker(self.svc.agent_launch, launched, fail, attach=not start_game)
+        if start_game:
+            run_worker(self.svc.agent_launch, launched, fail, attach=False)
+        else:
+            # 已运行的游戏：走 agent_connect（内部用 attach=False，pymhf 会发现已运行实例）。
+            # 不能再用 attach=True——实测那条路会让游戏以访问冲突退出。
+            run_worker(self.svc.agent_connect, launched, fail)
 
     def _after_wait(self, res: dict) -> None:
         self._log(json.dumps(res, ensure_ascii=False, indent=1))
@@ -865,6 +980,48 @@ class GameLinkPage(QWidget):
 
     def _read_planet(self) -> None:
         self._planet_scan()
+
+    def _install_template_mod(self) -> None:
+        answer = QMessageBox.question(
+            self, "安装模板 Mod",
+            "将把 starforge-templates 写入游戏目录的 GAMEDATA/MODS/。\n"
+            "不会修改游戏原始文件；删除该文件夹即可卸载。\n\n继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        self.install_mod_btn.setEnabled(False)
+        self.mod_status.setText("正在安装…")
+
+        def done(res: dict) -> None:
+            self.install_mod_btn.setEnabled(True)
+            if not res.get("ok", True):
+                text = f"安装失败：{res.get('error') or res.get('code') or '未知错误'}"
+                self.mod_status.setText(text)
+                notify.error(text)
+                return
+            files = len(res.get("files") or [])
+            self.mod_status.setText(
+                f"已安装 {files} 个文件到 {res.get('path')}；重启游戏后生效")
+            notify.success("模板 Mod 已安装，重启游戏后表情菜单可见")
+
+        def fail(msg: str) -> None:
+            self.install_mod_btn.setEnabled(True)
+            self.mod_status.setText(f"安装失败：{msg}")
+            notify.error(f"安装失败：{msg}")
+
+        run_worker(self.svc.install_template_mod, done, fail, confirm=True)
+
+    def _open_mods_dir(self) -> None:
+        from ... import locate_game
+        from ...core import settings
+
+        game = locate_game.normalize(settings.current().game_dir or "")
+        if not game:
+            notify.warn("还没有配置游戏目录（设置页选择游戏根目录）")
+            return
+        path = os.path.join(game, "GAMEDATA", "MODS")
+        os.makedirs(path, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _scan_poi(self, kind: str = "portal", label: str = "") -> None:
         label = label or {"portal": "传送门", "ruins": "古遗迹",

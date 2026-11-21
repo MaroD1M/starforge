@@ -39,17 +39,17 @@
 ### 2.1 星球搜索（第 1、2 项）
 
 ```
-圆心 0x4300FEE69929  0128:007D:0668:0043  glyphs=1043FEE69929  Euclid  region=(-1751,-2,-407)
+圆心 <ua 示例>  <coords 示例>  glyphs=123456789ABC  Euclid  region=(<rx>,<ry>,<rz>)
 扫描 9 个系统，用时 0.9s（9.9 系统/秒）→ 命中 10 条
 
  # planet biome        sentinels  glyphs         coords
- 1      2 Lush         none       1001FEE69929   0128:007D:0668:0001
- 2      5 Lush         aggressive 1001FEE69929   0128:007D:0668:0001
- 3      3 Lush         none       1002FEE69929   0128:007D:0668:0002
- 8      4 Lush         corrupted  1008FEE69929   0128:007D:0668:0008   ✓ dissonant
+ 1      2 Lush         none       123456789AB1   <coords 示例>
+ 2      5 Lush         aggressive 123456789AB2   <coords 示例>
+ 3      3 Lush         none       123456789AB3   <coords 示例>
+ 8      4 Lush         corrupted  123456789AB8   <coords 示例>   ✓ dissonant
  …
 其中有拦截机的 dissonant 星系 1 个：
-  0x800FEE69929  glyphs=1008FEE69929  拦截机=0x538561AE903338BD
+  <ua 示例>  glyphs=123456789AB8  拦截机=<seed 示例>
 ```
 
 **效果**：给出"去哪儿、第几颗行星、能不能刷拦截机"，玩家照着 glyph 走过去即可。这一条已经把「搜索星系/星球 + 传送地址」的 80% 价值交付了。
@@ -57,9 +57,9 @@
 ### 2.2 当前星球信息（第 4 项）
 
 ```
-当前位置: 0x4300FEE69929  0128:007D:0668:0043  glyphs 1043FEE69929 | Euclid | 行星号 0
-星系: 种族=Gek 行星=6 卫星=0 dissonant=True 拦截机=0x333DB75929DF7EBE
-当前星球: index 1  Toxic  哨兵 none  seed 0x17FF0B09B5E15CE1
+当前位置: <ua 示例>  <coords 示例>  glyphs 123456789ABC | Euclid | 行星号 0
+星系: 种族=Gek 行星=6 卫星=0 dissonant=True 拦截机=<seed 示例>
+当前星球: index 1  Toxic  哨兵 none  seed <seed 示例>
 本星系全部星球:
    #1 Toxic      none         #2 Frozen     low
    #3 Exotic     none         #4 Toxic      low
@@ -71,11 +71,11 @@
 ```
 约束: ['_PIT_A', '_TOPFLAP_A', '_WINGS_V']
 命中 3 个（0.0s, tested=65536）：
-   0xD7A2A2A499B078E2   0x84AC37AEAF34F55C   0x14BF9C287376340F
-→ 渲图：artifacts/search_hit_preview.png（三视角）
+   <seed 示例 1>   <seed 示例 2>   <seed 示例 3>
+→ 渲图：`<缓存目录>/search_hit_preview.png`（三视角）
 ```
 
-![搜索命中预览](</workspace/nms/artifacts/search_hit_preview.png>)
+<!-- 旧图路径已删除：仓库无此文件，避免断链与本机路径 -->
 
 ---
 

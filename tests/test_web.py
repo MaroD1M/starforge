@@ -1,5 +1,4 @@
 """Web 层：安全闸门 + API 契约。"""
-import pytest
 
 from starforge.core import settings as settings_mod
 

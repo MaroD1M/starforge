@@ -6,9 +6,10 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
-                               QTabWidget, QVBoxLayout, QWidget)
+                               QMessageBox, QPushButton, QSpinBox, QTableWidget,
+                               QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
+from ...glyphs import glyphs_for_ua
 from ...services import get_services
 from .. import notify
 from ..dialogs.address import (classify_address_input, normalize_glyphs, parse_seed)
@@ -30,6 +31,101 @@ RACES = [("", "不限"), ("Gek", "吉克"), ("Korvax", "科瓦克斯"), ("Vy'kee
          ("None", "无"), ("Abandoned", "废弃"), ("Traveller", "旅行者"), ("Atlas", "阿特拉斯")]
 RACE_LABELS = dict(RACES)
 
+# 传送失败时（E_BUILD_UNVERIFIED）给用户的下一步；不在这里代做设置预检，
+# 统一以服务层返回的错误为准，避免界面和 agent 端两套判断互相打脸。
+BUILD_UNVERIFIED_HINT = (
+    "需要先开启实验写入开关（设置页 → 安全 → 允许未验证 build 的实验写入）")
+
+
+def _valid_portal_glyphs(glyphs: str) -> bool:
+    """与 agent 端 `_decode_glyphs` 的合法门地址规则保持一致（只校验，不编码）。"""
+    text = str(glyphs or "").strip().upper()
+    if len(text) != 12 or any(c not in "0123456789ABCDEF" for c in text):
+        return False
+    if not 1 <= int(text[0], 16) <= 6:
+        return False
+    if int(text[1:4], 16) in (0, 0xFFF):
+        return False
+    if int(text[4:6], 16) == 0x80:
+        return False
+    return not (int(text[6:9], 16) == 0x800 or int(text[9:12], 16) == 0x800)
+
+
+def _planet_digit(value) -> int | None:
+    """扫描结果里的行星序号 → 门地址第 1 位（1..6）；其他值不猜。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= 6 else None
+
+
+def _warp_glyphs_for(result: dict) -> str:
+    """从扫描结果生成门地址：优先 UA + 行星位，退回结果里已有的符文串。"""
+    if not isinstance(result, dict):
+        return ""
+    planet_value = result.get("planet_index")
+    if planet_value in (None, ""):
+        planet_value = result.get("index")
+    planet = _planet_digit(planet_value)
+    # 有明确行星序号但不在 1..6 时不能退化成"传送到 1 号行星"——宁可不给按钮。
+    if planet_value not in (None, "") and planet is None:
+        return ""
+
+    ua = result.get("ua")
+    if ua not in (None, "") and planet is not None:
+        try:
+            value = int(str(ua), 16) if isinstance(ua, str) else int(ua)
+            glyphs = glyphs_for_ua(value, planet=planet)
+        except (TypeError, ValueError):
+            glyphs = ""
+        if _valid_portal_glyphs(glyphs):
+            return glyphs
+
+    glyphs = str(result.get("glyphs") or "").strip().upper()
+    if not _valid_portal_glyphs(glyphs):
+        return ""
+    # 只有星系级符文串（第 1 位通常是 1）时，按选中行星替换第一位。
+    if planet is not None:
+        candidate = f"{planet:X}{glyphs[1:]}"
+        if _valid_portal_glyphs(candidate):
+            return candidate
+    return glyphs
+
+
+def _warp_target_for(result: dict) -> dict | None:
+    glyphs = _warp_glyphs_for(result)
+    if not glyphs:
+        return None
+    planet = _planet_digit(result.get("planet_index") or result.get("index"))
+    galaxy = result.get("galaxy")
+    if isinstance(galaxy, str) and galaxy.strip().lower().startswith("0x"):
+        try:
+            galaxy = int(galaxy, 16)
+        except ValueError:
+            galaxy = None
+    elif galaxy is not None:
+        try:
+            galaxy = int(galaxy)
+        except (TypeError, ValueError):
+            galaxy = None
+    return {
+        "glyphs": glyphs,
+        "galaxy": galaxy,
+        "planet": planet,
+        "planet_label": f"行星 #{planet}" if planet is not None else "行星",
+        "system": str(result.get("system_name") or result.get("name")
+                      or result.get("coords") or glyphs),
+    }
+
+
+def _warp_confirm_text(target: dict) -> str:
+    return (
+        f"即将传送到 {target['system']}/{target['planet_label']}"
+        f"（门地址 {target['glyphs']}）。\n\n"
+        "会调用游戏内传送门机制，落到目标星球；失败可用「还原」回滚。\n"
+        "这是高风险写操作，请确认游戏已就绪。是否继续？")
+
 
 class GalaxyPage(QWidget):
     def __init__(self, parent=None):
@@ -43,6 +139,7 @@ class GalaxyPage(QWidget):
         self._addr_coords: str | None = None
         self._teleport_glyphs: str | None = None
         self._addr_busy = False
+        self._warp_target: dict | None = None
         self._current_info: dict = {}
         self._selection: dict = {}
         self._last_scan_filters: dict = {}
@@ -202,7 +299,7 @@ class GalaxyPage(QWidget):
         self.scan_empty = EmptyState(
             "还没有扫描结果", "点右上角「扫描」按当前条件扫描附近星系；结果会写入银河索引。",
             icon="◇")
-        self.scan_page = self._wrap_table(self.scan_table, self.scan_empty)
+        self.scan_page = self._build_scan_page()
         self.tabs.addTab(self.scan_page, "扫描结果")
 
         self.index_page = QWidget()
@@ -334,6 +431,26 @@ class GalaxyPage(QWidget):
         self._set_empty_state(self.scan_table, self.scan_empty, False)
         self._set_empty_state(self.index_table, self.index_empty, False)
         self._update_subtitle()
+
+    def _build_scan_page(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.warp_btn = QPushButton("传送到此星球")
+        self.warp_btn.setToolTip("调用游戏内传送门机制，传送到选中的扫描结果行星")
+        self.warp_btn.setEnabled(False)
+        self.warp_btn.clicked.connect(self._warp_selected_planet)
+        row.addWidget(self.warp_btn)
+        self.warp_hint = muted("选择一条扫描结果后可传送到该星球。")
+        row.addWidget(self.warp_hint, 1)
+        v.addLayout(row)
+        v.addWidget(self.scan_table, 1)
+        v.addWidget(self.scan_empty, 1)
+        self.scan_empty.hide()
+        return page
 
     def _wrap_table(self, table: QTableWidget, empty: EmptyState) -> QWidget:
         page = QWidget()
@@ -1056,6 +1173,7 @@ class GalaxyPage(QWidget):
         filters = self._scan_filters()
         self._last_scan_filters = filters
         self._update_filter_summary()
+        self._update_warp_action(None)
         self.scan_btn.setEnabled(False)
         self.scan_cancel_btn.setEnabled(True)
         self.scan_cancel_btn.setVisible(True)
@@ -1172,6 +1290,11 @@ class GalaxyPage(QWidget):
         self._refresh_index_stats()
 
     def _fill_scan_rows(self, rows: list[dict]) -> None:
+        self._warp_target = None
+        self.warp_btn.setText("传送到此星球")
+        self.warp_btn.setEnabled(False)
+        self.warp_btn.setToolTip("选中一条能生成合法门地址的扫描结果后可传送")
+        self.warp_hint.setText("选择一条扫描结果后可传送到该星球。")
         self.scan_table.setSortingEnabled(False)
         self.scan_table.setRowCount(len(rows))
         for i, r in enumerate(rows):
@@ -1234,6 +1357,82 @@ class GalaxyPage(QWidget):
             f"已选择扫描结果 {r.get('coords') or r.get('glyphs') or '—'}；"
             "可复制地址、显示浮窗或填入传送。")
         self._set_glyph(self.detail_glyph, r.get("glyphs"))
+        self._update_warp_action(r)
+
+    def _update_warp_action(self, row: dict | None = None) -> None:
+        """刷新「传送到此星球」：只有能生成合法门地址的结果才可点。"""
+        target = _warp_target_for(row) if isinstance(row, dict) else None
+        self._warp_target = target
+        if target:
+            self.warp_btn.setEnabled(True)
+            self.warp_btn.setToolTip(
+                f"调用游戏内传送门机制，传送到 {target['system']}/{target['planet_label']}"
+                f"（门地址 {target['glyphs']}）")
+            self.warp_hint.setText(
+                f"可传送：{target['system']}/{target['planet_label']}"
+                f" · 门地址 {target['glyphs']}")
+        else:
+            self.warp_btn.setEnabled(False)
+            self.warp_btn.setToolTip("选中一条能生成合法门地址的扫描结果后可传送")
+            self.warp_hint.setText(
+                "该结果没有可用的门地址，无法传送。" if isinstance(row, dict)
+                else "选择一条扫描结果后可传送到该星球。")
+
+    def _warp_selected_planet(self) -> None:
+        target = self._warp_target
+        if not target:
+            self.status.setText("传送失败：当前扫描结果没有可用的门地址。")
+            notify.warn("传送失败：请先选择一条能生成合法门地址的扫描结果")
+            return
+        answer = QMessageBox.warning(
+            self, "确认传送到此星球", _warp_confirm_text(target),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            self.status.setText("已取消传送。")
+            return
+
+        glyphs = target["glyphs"]
+        self.warp_btn.setEnabled(False)
+        self.warp_btn.setText("传送中…")
+        self.status.setText(
+            f"传送中：正在调用游戏内传送门传送到 "
+            f"{target['system']}/{target['planet_label']}（{glyphs}）…")
+        notify.toast(
+            f"正在传送到 {target['system']}/{target['planet_label']}（{glyphs}）…")
+
+        def restore() -> None:
+            self.warp_btn.setText("传送到此星球")
+            self.warp_btn.setEnabled(bool(self._warp_target))
+
+        def done(res: dict) -> None:
+            restore()
+            res = res if isinstance(res, dict) else {}
+            if not res.get("ok"):
+                code = str(res.get("code") or "").strip()
+                error = str(res.get("error") or "").strip() or "未知错误"
+                message = " · ".join(p for p in (code, error) if p)
+                if code == "E_BUILD_UNVERIFIED":
+                    message += "；" + BUILD_UNVERIFIED_HINT
+                self.status.setText(f"传送失败：{message}")
+                notify.error(f"传送失败：{message}")
+                return
+            if res.get("confirmed") is False:
+                detail = str(res.get("confirm_error") or "40 秒内未读回目标位置")
+                self.status.setText(
+                    f"传送未确认：{detail}（命令已执行；失败可用「还原」回滚）")
+                notify.warn(f"传送未确认：{detail}")
+                return
+            self.status.setText(
+                f"已传送到 {target['system']}/{target['planet_label']}。")
+            notify.success(f"已传送到 {target['system']}/{target['planet_label']}")
+
+        def fail(msg: str) -> None:
+            restore()
+            self.status.setText(f"传送失败：{msg}")
+            notify.error(f"传送失败：{msg}")
+
+        run_worker(self.svc.warp_portal, done, fail,
+                   glyphs=glyphs, galaxy=target.get("galaxy"))
 
     def _selected_glyphs(self) -> str:
         return str(self._selection.get("glyphs") or self._current_info.get("glyphs") or "").strip()

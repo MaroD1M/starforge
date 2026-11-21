@@ -84,7 +84,8 @@ def test_generated_xml_is_valid_and_has_all_slots():
     assert len(entries) == 8
     seeds = [int(p.get("value")) for p in root.iter("Property") if p.get("name") == "Seed"]
     assert exml.factory_seed(0) in seeds
-    slots = [int(p.get("value")) for p in root.iter("Property") if p.get("name") == "Slots"]
+    slots = [int(p.get("value")) for p in root.iter("Property")
+             if p.get("name") == "Slots" and (p.get("value") or "").isdigit()]
     assert sorted(slots) == [120, 121, 122, 123, 124, 125, 126, 127]
 
 
@@ -215,6 +216,28 @@ def test_live_push_needs_confirm(client):
     settings_mod.update(write_enabled=True)
     r = client.post("/api/live/push", json={"type": "sentinel", "seed": "0x1"})
     assert r.status_code == 400
+    assert r.get_json()["error"]["message"] == "写游戏内存需要二次确认"
+
+
+def test_live_push_route_delegates_gate_to_service(client, monkeypatch):
+    """Web 不再自己实现 confirm/写开关；行为必须与服务层完全一致。"""
+    from starforge.core import settings as settings_mod
+    from starforge.live import mem
+    from starforge.services import Services
+
+    settings_mod.update(write_enabled=True)
+    monkeypatch.setattr(mem, "IS_WINDOWS", True)
+    seen: dict = {}
+
+    def fake_push(self, type_, seed, confirm=False):
+        seen.update(type=type_, seed=seed, confirm=confirm)
+        return {"ok": True, "type": type_, "seed": seed, "address": 0x10}
+
+    monkeypatch.setattr(Services, "live_push", fake_push)
+    r = client.post("/api/live/push",
+                    json={"type": "sentinel", "seed": "0x1", "confirm": True})
+    assert r.status_code == 200
+    assert seen == {"type": "sentinel", "seed": "0x1", "confirm": True}
 
 
 def test_live_push_unsupported_platform(client):
@@ -381,3 +404,21 @@ def test_probe_reports_structural_candidates_without_writing():
     assert sent["structural"], "应当报告结构候选"
     assert "结构候选" in sent["reason"]
     assert proc.writes == []                       # 只读
+
+
+# ---------------------------------------------------------------- 高区域数：扫描不能漏掉末尾区域
+
+
+def test_scan_all_sees_slot_beyond_old_region_limit():
+    """NMS 实测有 4224 个可读区域；旧的 4096 上限会漏掉末尾的模板槽。"""
+    import struct
+    entries = exml.manifest()[:1]
+    n, tail = 4224, 4200
+    images = [(0x10000000 + i * 0x1000, bytearray(0x1000)) for i in range(n)]
+    buf = images[tail][1]
+    buf[0x100:0x108] = struct.pack("<Q", entries[0]["factory_seed"])
+    buf[0x120:0x124] = struct.pack("<I", entries[0]["slots"])
+    proc = mem_mod.FakeProcess(images)
+    found = writer.scan_all(proc, entries, fresh=True)
+    addrs = [a for a, _score in found[entries[0]["id"]]]
+    assert 0x10000000 + tail * 0x1000 + 0x100 in addrs

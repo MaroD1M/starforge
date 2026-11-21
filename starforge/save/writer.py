@@ -137,10 +137,7 @@ def apply_seed(save_path: str, slot: int, source: ShipRef, confirm: bool = False
 
     original_path = save_path
     if copy:
-        if not save_path.endswith(".edited.hg"):
-            base = save_path[:-3] if save_path.lower().endswith(".hg") else save_path
-            save_path = base + ".edited.hg"          # save.hg → save.edited.hg
-        shutil.copy2(original_path, save_path)
+        save_path = _ensure_copy(original_path, save_path)
         log.info("写回使用副本：%s（原档 %s 不动）", save_path, original_path)
 
     opened = nms_save.open_save(save_path)
@@ -220,8 +217,7 @@ def apply_class(save_path: str, slot: int, ship_class: str = "", values: dict | 
 
     original_path = save_path
     if copy:
-        save_path = _copy_path(save_path)
-        shutil.copy2(original_path, save_path)
+        save_path = _ensure_copy(original_path, save_path)
         log.info("改级使用副本：%s（原档 %s 不动）", save_path, original_path)
 
     opened = nms_save.open_save(save_path)
@@ -276,6 +272,21 @@ def _copy_path(save_path: str) -> str:
         return save_path
     base = save_path[:-3] if save_path.lower().endswith(".hg") else save_path
     return base + ".edited.hg"
+
+
+def _ensure_copy(original_path: str, save_path: str) -> str:
+    """按需把原档复制成 `.edited.hg`，返回真正要写入的路径。
+
+    · `save.hg` → 复制成 `save.edited.hg`，原档不动；
+    · 传入的已经是 `.edited.hg` → 目标就是原文件，直接原地安全写入，**不再复制**。
+
+    同一路径必须跳过 `shutil.copy2`，否则在 Windows 上会变成"自己复制自己"，
+    抛未包装的 SameFileError（事务层也是用 abspath 比较来避免同一个坑）。
+    """
+    target_path = _copy_path(save_path)
+    if os.path.abspath(target_path) != os.path.abspath(original_path):
+        shutil.copy2(original_path, target_path)
+    return target_path
 
 
 def restore(save_path: str, backup_path: str, confirm: bool = False) -> dict:
