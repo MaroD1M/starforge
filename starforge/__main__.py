@@ -599,8 +599,10 @@ def cmd_doctor(a) -> int:
             "GAMEDATA 检查失败 → 在设置里确认数据目录（需含 Gagarin/ships/catalog.txt）")
     optional = {"capstone"}
     required_ok = all(v == "ok" for k, v in out["deps"].items() if k not in optional)
-    ok = (out["unicorn"]["ok"] and required_ok and bool(out["gui"].get("available"))
-          and bool(out["gamedata"].get("valid")))
+    # 数据目录属于"用户环境"，不是运行时缺陷：缺它只降低能力（搜索/3D/缩略图不可用），
+    # 不该让 doctor 整体失败——CI/干净机器本来就没有游戏数据。用 data_ready 单独表达。
+    out["data_ready"] = bool(out["gamedata"].get("valid"))
+    ok = out["unicorn"]["ok"] and required_ok and bool(out["gui"].get("available"))
     out["ok"] = ok
     print(_json.dumps(out, ensure_ascii=False, indent=1))
     return 0 if ok else 7
