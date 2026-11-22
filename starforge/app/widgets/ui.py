@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QSizePolicy,
     QTreeWidget,
     QVBoxLayout,
@@ -17,7 +18,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..theme import (
-    SPACE_M,
+    CARD_PADDING,
+    CARD_SPACING,
     SPACE_S,
     SPACE_XS,
     icon_size,
@@ -41,11 +43,11 @@ class ElidedLabel(QLabel):
     def _sync_tooltip(self, text: str) -> None:
         self.setToolTip(text or "")
 
-    def setText(self, text: str) -> None:                   # noqa: N802 - Qt API
+    def setText(self, text: str) -> None:
         super().setText(text)
         self._sync_tooltip(text)
 
-    def paintEvent(self, event) -> None:                    # noqa: N802 - Qt 回调
+    def paintEvent(self, event) -> None:
         painter = QPainter(self)
         rect = self.contentsRect()
         elided = self.fontMetrics().elidedText(
@@ -60,8 +62,9 @@ class Card(QFrame):
         super().__init__(parent)
         self.setObjectName("card")
         self.v = QVBoxLayout(self)
-        self.v.setContentsMargins(SPACE_M, SPACE_M, SPACE_M, SPACE_M)
-        self.v.setSpacing(SPACE_S)
+        # 所有卡片共用同一套间距 token，页面不再各自写 16/14/12。
+        self.v.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
+        self.v.setSpacing(CARD_SPACING)
         if title:
             head = QVBoxLayout()
             head.setSpacing(SPACE_XS)
@@ -87,6 +90,17 @@ class Card(QFrame):
 
     def add_layout(self, layout) -> None:
         self.v.addLayout(layout)
+
+    def set_spotlight(self, on: bool = True) -> None:
+        """被“下一页/下一步”定位时短暂高亮，不改变卡片内容。"""
+        if bool(self.property("spotlight")) == bool(on):
+            return
+        self.setProperty("spotlight", bool(on))
+        style = self.style()
+        if style is not None:
+            style.unpolish(self)
+            style.polish(self)
+        self.update()
 
 
 def section(title: str, subtitle: str = "") -> QWidget:
@@ -208,6 +222,31 @@ def icon_px(widget: QWidget, base: int = 16) -> int:
     return icon_size(widget, base)
 
 
+def _role_button(text: str, role: str, tooltip: str = "") -> QPushButton:
+    button = QPushButton(text)
+    button.setObjectName(role)
+    if tooltip:
+        button.setToolTip(tooltip)
+        button.setStatusTip(tooltip)
+    button.setFocusPolicy(Qt.StrongFocus)
+    return button
+
+
+def primary_button(text: str, tooltip: str = "") -> QPushButton:
+    """页面的唯一主操作。主题里对应 ``QPushButton#primaryButton``。"""
+    return _role_button(text, "primaryButton", tooltip)
+
+
+def danger_button(text: str, tooltip: str = "") -> QPushButton:
+    """高风险操作（写存档、取消任务等）。主题里对应 ``QPushButton#dangerButton``。"""
+    return _role_button(text, "dangerButton", tooltip)
+
+
+def ghost_button(text: str, tooltip: str = "") -> QPushButton:
+    """次要/工具栏操作，不抢主操作的视觉权重。"""
+    return _role_button(text, "ghostButton", tooltip)
+
+
 def focus_first_input(widget: QWidget | None) -> QWidget | None:
     """聚焦页面里第一个可用的过滤/搜索控件。
 
@@ -237,7 +276,7 @@ def focus_first_input(widget: QWidget | None) -> QWidget | None:
 
 
 __all__ = [
-    "Card", "ElidedLabel", "elide_label", "fit_label", "focus_first_input",
-    "grid", "hbox", "icon_from_png", "icon_px", "muted", "placeholder_icon",
-    "section", "vbox",
+    "Card", "ElidedLabel", "danger_button", "elide_label", "fit_label",
+    "focus_first_input", "ghost_button", "grid", "hbox", "icon_from_png",
+    "icon_px", "muted", "placeholder_icon", "primary_button", "section", "vbox",
 ]

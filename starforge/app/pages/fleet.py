@@ -35,6 +35,7 @@ from ..dialogs.class_editor import ClassEditorDialog
 from ..dialogs.save_edit import SaveEditDialog
 from ..dialogs.save_extras import SaveExtrasDialog
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.fleet_companion import FleetCompanionPanel
 from ..widgets.fleet_flow import FleetFlowBar
 from ..widgets.game_push import GamePushButton
 from ..widgets.page import PageSplitter, page_layout
@@ -42,7 +43,7 @@ from ..widgets.page_header import PageHeader
 from ..widgets.pets_view import PetsView
 from ..widgets.ship_card import install_card_delegate
 from ..widgets.ship_viewer import ShipViewer
-from ..widgets.ui import Card, icon_from_png, muted
+from ..widgets.ui import Card, danger_button, ghost_button, icon_from_png, muted
 from ..widgets.worker import run as run_worker
 
 STAT_LABELS = {"damage": "伤害", "shield": "护盾", "hyperdrive": "超空间驱动",
@@ -51,6 +52,38 @@ FRIGATE_HEADERS = ("名称", "类型", "等级", "伤害", "探索", "采矿", "
                    "燃料消耗", "速度", "远征次数", "状态", "种子")
 MULTITOOL_HEADERS = ("名称", "等级", "型号", "槽位", "种子", "当前使用")
 FREIGHTER_HEADERS = ("字段", "值")
+EMPTY_WRITE_PREVIEW = "写回预览：选中一艘有槽位的飞船后，在这里查看 before / after。"
+
+
+class _FitPixmapLabel(QLabel):
+    """按可用宽度缩放预览图，且不把图片原始宽度当成最小宽度。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._source = QPixmap()
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+
+    def setPixmap(self, pix: QPixmap) -> None:
+        self._source = QPixmap(pix) if pix is not None and not pix.isNull() else QPixmap()
+        self._apply()
+
+    def _apply(self) -> None:
+        if self._source.isNull():
+            QLabel.setPixmap(self, QPixmap())
+            return
+        width = max(160, self.width() - 8)
+        pix = self._source
+        if pix.width() > width:
+            pix = pix.scaledToWidth(width, Qt.SmoothTransformation)
+        QLabel.setPixmap(self, pix)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply()
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
 
 
 def _text(value, fallback: str = "—") -> str:
@@ -58,6 +91,51 @@ def _text(value, fallback: str = "—") -> str:
         return fallback
     text = str(value).strip()
     return text or fallback
+
+
+def _stat_text(values: dict | None) -> str:
+    data = values or {}
+    bits = [f"{STAT_LABELS.get(key, key)} {value}"
+            for key, value in data.items() if value is not None]
+    return " · ".join(bits) or "无属性数据"
+
+
+def _write_snapshot(data: dict | None) -> tuple[str, str]:
+    """存档摘要 / writer.apply_class 的 before/after →（等级, 属性摘要）。"""
+    data = data or {}
+    ship_class = _text(data.get("class") or data.get("ship_class"), "未知")
+    stats = data.get("stats")
+    if isinstance(stats, list):
+        from ...data.shipref import stats_summary
+
+        stats = stats_summary(data)
+    return ship_class, _stat_text(stats if isinstance(stats, dict) else None)
+
+
+def write_preview_lines(ship: dict | None, result: dict | None = None) -> list[str]:
+    """写回/改级的 before/after 预览（纯文本，便于测试同一口径）。"""
+    before_class, before_stats = _write_snapshot(ship)
+    lines = ["写回预览（先自动备份；可写入副本，原档不动）",
+             f"写回前：{before_class} 级 · {before_stats}"]
+    after = (result or {}).get("after") if isinstance(result, dict) else None
+    if isinstance(after, dict):
+        after_class, after_stats = _write_snapshot(after)
+        lines.append(f"写回后：{after_class} 级 · {after_stats}")
+    else:
+        lines.append("写回后：在「船级/属性…」对话框里确认 before → after")
+    return lines
+
+
+def primary_action(ship: dict | None, can_write: bool, can_push: bool,
+                   busy: bool = False) -> str:
+    """详情区唯一主操作的上下文选择：写回存档 / 送进游戏 / 无。"""
+    if busy or not isinstance(ship, dict) or not ship:
+        return "none"
+    if can_write:
+        return "write"
+    if can_push:
+        return "push"
+    return "none"
 
 
 def frigate_rows(items: list[dict] | None) -> list[list[str]]:
@@ -130,6 +208,7 @@ class FleetPage(QWidget):
         self._watched_path = ""
         self._watch_ignore_until = 0.0
         self._ships: list[dict] = []
+        self._write_result: dict | None = None
         self._extras: dict = {}
         self._extras_loaded = False
         self._extras_loading = False
@@ -169,16 +248,27 @@ class FleetPage(QWidget):
         outer = PageSplitter("fleet-v2")
         root.addWidget(outer, 1)
 
-        left = Card("存档", "自动发现或手动选择")
+        # 「存档」工作区入口只回答两件事：当前是哪个存档、怎么换一个文件。
+        # 目录扫描/批量文件管理留在设置页「存档目录与文件」，这里不重复。
+        left = Card("存档", "当前存档与切换文件")
         left.setMinimumWidth(210)
         v = left.v
+        self.save_current = muted("当前存档：未选择")
+        v.addWidget(self.save_current)
         self.path = QLineEdit()
         self.path.setPlaceholderText("save.hg")
+        self.path.setReadOnly(True)
+        self.path.setToolTip("当前存档的完整路径；点「浏览…」切换文件")
+        # 主题字体（尤其 1.25 DPI / 中文回退字体）下按 sizeHint 补足高度，
+        # 避免 QLineEdit 被压 2px 后文字底边被裁。
+        self.path.ensurePolished()
+        self.path.setMinimumHeight(max(36, self.path.minimumSizeHint().height()))
         v.addWidget(self.path)
         row = QHBoxLayout()
-        browse = QPushButton("浏览…")
-        browse.clicked.connect(self._browse)
-        row.addWidget(browse)
+        self.browse_btn = QPushButton("浏览…")
+        self.browse_btn.setToolTip("选择另一个 save.hg 并读取（不改存档内容）")
+        self.browse_btn.clicked.connect(self._browse)
+        row.addWidget(self.browse_btn)
         row.addStretch(1)
         v.addLayout(row)
         self.info = muted("选择存档后读取")
@@ -280,7 +370,9 @@ class FleetPage(QWidget):
         sv.addWidget(self.empty_state, 1)
         self.tabs.addTab(ship_tab, "飞船")
 
-        self.pets = PetsView(self.svc)
+        # 同伴详情统一放到右侧详情区（来源、符文、动物联查与动作），
+        # 列表行内不再堆按钮，保持一屏一个主操作。
+        self.pets = PetsView(self.svc, inline_detail=False)
         self.tabs.addTab(self.pets, "同伴")
 
         self.frigates_table = self._extra_table(FRIGATE_HEADERS)
@@ -317,7 +409,7 @@ class FleetPage(QWidget):
         self.viewer = ShipViewer()
         self.viewer.setMinimumHeight(240)
         pv.addWidget(self.viewer, 1)
-        self.fallback = QLabel()
+        self.fallback = _FitPixmapLabel()
         self.fallback.setAlignment(Qt.AlignCenter)
         self.fallback.setWordWrap(True)
         self.fallback.setMinimumHeight(240)
@@ -331,20 +423,37 @@ class FleetPage(QWidget):
         self.pets_note.hide()
         pv.addWidget(self.pets_note, 1)
         preview.setMinimumHeight(240)
+        self.preview_pane = preview
         rv.addWidget(preview, 1)
+
+        # 同伴选中后，右栏整体切换为来源行星 + 符文 + 动物联查，动作也只有
+        # 「复制符文 / 传送到来源星球」，不再和飞船动作混在同一屏。
+        self.companion = FleetCompanionPanel(self.svc)
+        self.companion.bind_pets(self.pets)
+        self.companion.hide()
+        rv.addWidget(self.companion, 1)
+        self.pets.selectionChanged.connect(self._companion_selected)
 
         self.detail = muted("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
         rv.addWidget(self.detail)
+        self.write_preview = muted(EMPTY_WRITE_PREVIEW)
+        rv.addWidget(self.write_preview)
+        self.action_note = muted(
+            "选中飞船后，详情区只显示一个主操作；写回存档会改等级/属性并自动备份，"
+            "送进游戏只写模板种子、不动存档。")
+        rv.addWidget(self.action_note)
         buttons = FleetFlowBar()
-        self.copy_btn = QPushButton("复制种子")
+        self.copy_btn = ghost_button("复制种子", "复制选中飞船的种子")
         self.copy_btn.clicked.connect(self._copy_seed)
         buttons.addWidget(self.copy_btn)
-        self.edit_btn = QPushButton("船级/属性…")
-        self.edit_btn.setEnabled(False)
-        self.edit_btn.setToolTip("修改选中飞船的等级与属性；先备份，可写入副本")
-        self.edit_btn.clicked.connect(self._open_class_editor)
-        buttons.addWidget(self.edit_btn)
+        self.write_btn = danger_button(
+            "写回存档…", "修改选中飞船的等级/属性并写回存档；先自动备份，可写入副本")
+        self.write_btn.setEnabled(False)
+        self.write_btn.clicked.connect(self._open_class_editor)
+        self.edit_btn = self.write_btn              # 兼容旧调用名
+        buttons.addWidget(self.write_btn)
         self.push_btn = GamePushButton(self.svc, self)
+        self.push_btn.setObjectName("ghostButton")
         buttons.addWidget(self.push_btn)
         rv.addWidget(buttons)
         split.addWidget(mid)
@@ -375,13 +484,16 @@ class FleetPage(QWidget):
             p = res.get("path") or ""
             if p:
                 self.path.setText(p)
+                self.path.setCursorPosition(0)
                 self._load()
             else:
+                self.save_current.setText("当前存档：未选择")
                 self.info.setText("没有自动找到存档；请点「浏览…」选择 save.hg")
                 self._show_ship_empty("没有存档", "没有自动找到存档；请点「浏览…」选择 save.hg。")
 
         def fail(msg: str) -> None:
             text = "未自动找到存档；请点「浏览…」选择 save.hg。"
+            self.save_current.setText("当前存档：未选择")
             self.info.setText(text)
             self.info.setToolTip(msg)
             self._show_ship_empty("没有存档", text)
@@ -395,6 +507,7 @@ class FleetPage(QWidget):
         p, _ = QFileDialog.getOpenFileName(self, "选择存档", start, "存档 (*.hg);;所有文件 (*)")
         if p:
             self.path.setText(p)
+            self.path.setCursorPosition(0)
             self._load()
 
     def open_backups(self) -> None:
@@ -475,34 +588,39 @@ class FleetPage(QWidget):
         return self.tabs.widget(index) in {
             self.frigates_page, self.multitools_page, self.freighter_page}
 
+    def _set_ship_actions_visible(self, visible: bool) -> None:
+        for widget in (self.copy_btn, self.write_btn, self.push_btn,
+                       self.write_preview, self.action_note):
+            widget.setVisible(visible)
+
     def _tab_changed(self, index: int) -> None:
         widget = self.tabs.widget(index)
         if widget is self.pets:
-            self.detail_card.set_title("同伴")
+            self.detail_card.set_title("同伴详情")
             self.title.setText("同伴")
-            self.copy_btn.hide()
-            self.edit_btn.hide()
-            self.push_btn.hide()
-            self.pets_note.setText(
-                "同伴：可从存档 UA 解出来源星球的 12 位符文并复制；"
-                "3D 预览仍需要生物生成器。")
+            self._set_ship_actions_visible(False)
+            self.detail.hide()
             self.viewer.hide()
             self.fallback.hide()
-            self.pets_note.show()
-            self.detail.setText(
-                "同伴目前只读：描述符、种子、群系、来源星球与符文；传送需二次确认。")
+            self.preview_pane.hide()
+            self.pets_note.hide()
+            self.companion.show()
+            self.companion.set_path(self._loaded_path)
             if self._loaded_path:
                 self.pets.set_save_path(self._loaded_path)
                 self.pets.ensure_loaded()
+            selected = self.pets.selected_creature()
+            self.companion.set_creature(selected or {})
             return
+        self.companion.hide()
         if self._is_extras_tab(index):
-            self.detail_card.set_title(self.tabs.tabText(index))
+            self.detail_card.set_title(f"{self.tabs.tabText(index)}详情")
             self.title.setText(self.tabs.tabText(index))
-            self.copy_btn.hide()
-            self.edit_btn.hide()
-            self.push_btn.hide()
+            self._set_ship_actions_visible(False)
+            self.detail.show()
             self.pets_note.setText("这里只读展示存档中的船队扩展数据；没有 API 的写回不会伪造。")
             self.pets_note.show()
+            self.preview_pane.show()
             self.viewer.hide()
             self.fallback.hide()
             if self._loaded_path:
@@ -513,15 +631,26 @@ class FleetPage(QWidget):
             return
         self.detail_card.set_title("飞船详情")
         self.title.setText("飞船详情")
-        self.copy_btn.show()
-        self.edit_btn.show()
-        self.push_btn.show()
+        self._set_ship_actions_visible(True)
+        self.detail.show()
         self.pets_note.hide()
+        self.preview_pane.show()
         self.fallback.hide()
         self.viewer.show()
         self.detail.setText("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
         if self.list.selectedItems():
             self._select()
+
+    def _companion_selected(self, creature: dict) -> None:
+        data = creature if isinstance(creature, dict) else {}
+        self.companion.set_creature(data)
+        if self.tabs.currentWidget() is not self.pets:
+            return
+        if data:
+            name = _text(data.get("name") or data.get("creature"), "同伴")
+            self.title.setText(f"同伴  {name}")
+        else:
+            self.title.setText("同伴")
 
     def _status(self, text: str) -> None:
         window = self.window()
@@ -535,17 +664,20 @@ class FleetPage(QWidget):
         self.info.setText(text)
 
     def _load(self, notice: str = "") -> None:
+        keep_seed = self._selected_seed()
         self._loading = True
         self._thumb_timer.stop()
         self._thumb_queue.clear()
         self.load_btn.setEnabled(False)
         self.error_banner.clear()
+        self.save_current.setText("当前存档：正在读取…")
         self.info.setText("正在读取存档…")
         self.result_info.setText("正在读取存档…")
         self.list.clear()
         self.list.hide()
         self.empty_state.hide()
         self.pets.clear()
+        self.companion.set_creature({})
         self._clear_extras()
         self._ships = []
         self._loaded_path = ""
@@ -564,13 +696,23 @@ class FleetPage(QWidget):
                 f"{len(self._ships)} 艘  ·  {save_name}" if save_name
                 else f"{len(self._ships)} 艘")
             self.result_info.setToolTip(self._loaded_path or "尚未读取存档")
+            self.save_current.setText(
+                f"当前存档：{save_name}" if save_name else "当前存档：未读取")
+            self.save_current.setToolTip(self._loaded_path or "尚未读取存档")
             warns = res.get("warnings") or []
             self.info.setText(f"{len(self._ships)} 艘" + (f"  ·  {len(warns)} 条警告" if warns else ""))
             self._rebuild_ship_list()
+            if keep_seed:
+                for row in range(self.list.count()):
+                    item = self.list.item(row)
+                    if str((item.data(Qt.UserRole) or {}).get("seed") or "") == keep_seed:
+                        self.list.setCurrentItem(item)
+                        break
             if self.list.count() and not self.list.selectedItems():
                 self.list.setCurrentRow(0)
             self.load_btn.setEnabled(True)
             self._watch_save(self._loaded_path)
+            self.companion.set_path(self._loaded_path)
             self.pets.set_save_path(self._loaded_path, invalidate=True)
             self._clear_extras()
             if self._is_extras_tab(self.tabs.currentIndex()):
@@ -584,12 +726,16 @@ class FleetPage(QWidget):
             self._loading = False
             self.loading_overlay.stop()
             text = f"读取存档失败：{msg}"
+            self.save_current.setText("当前存档：未读取")
+            self.save_current.setToolTip("")
             self.info.setText(text)
             self.result_info.setText("读取失败")
             self._ships = []
             self._loaded_path = ""
             self.list.clear()
             self.pets.clear()
+            self.companion.set_creature({})
+            self.companion.set_path("")
             self._clear_extras()
             self.load_btn.setEnabled(True)
             self.error_banner.show_error(text)
@@ -706,9 +852,14 @@ class FleetPage(QWidget):
         self._update_actions()
         items = self.list.selectedItems()
         if not items:
+            self.write_preview.setText(EMPTY_WRITE_PREVIEW)
             return
         s = items[0].data(Qt.UserRole) or {}
         self.title.setText(f"{s.get('type_label') or s.get('type')}  {s.get('seed')}")
+        result = self._write_result
+        if not (isinstance(result, dict) and result.get("slot") == s.get("slot")):
+            result = None
+        self.write_preview.setText("\n".join(write_preview_lines(s, result)))
 
         # 固定模型（护卫舰/货船/部分拦截机等）没有程序化外观：不进入 3D 管线，
         # 否则 model3d 会去找 gamedata/<type>，在日志里刷 BadRequest/FileNotFoundError。
@@ -781,15 +932,53 @@ class FleetPage(QWidget):
         run_worker(self.svc.preview_mesh, done, fail,
                    s.get("type"), s.get("seed"), s.get("parts"))
 
+    @staticmethod
+    def _set_role(button: QPushButton, role: str) -> None:
+        if button.objectName() == role:
+            return
+        button.setObjectName(role)
+        style = button.style()
+        if style is not None:
+            style.unpolish(button)
+            style.polish(button)
+        button.update()
+
     def _update_actions(self) -> None:
         items = self.list.selectedItems()
         ship = items[0].data(Qt.UserRole) if items else None
-        self.save_edit_btn.setEnabled(bool(self._loaded_path) and not self._is_busy())
-        self.extras_btn.setEnabled(bool(self._loaded_path) and not self._is_busy())
+        busy = self._is_busy()
+        self.save_edit_btn.setEnabled(bool(self._loaded_path) and not busy)
+        self.extras_btn.setEnabled(bool(self._loaded_path) and not busy)
         self.export_btn.setEnabled(bool(self._ships) and not self._exporting)
-        self.edit_btn.setEnabled(bool(ship) and ship.get("slot") is not None
-                                 and bool(self._loaded_path))
+        can_write = (bool(ship) and ship.get("slot") is not None
+                     and bool(self._loaded_path) and not busy)
+        self.write_btn.setEnabled(can_write)
+        if isinstance(ship, dict) and ship and ship.get("slot") is None:
+            self.write_btn.setToolTip("这艘飞船没有可写入的槽位，不能写回存档")
+        else:
+            self.write_btn.setToolTip(
+                "修改选中飞船的等级/属性并写回存档；先自动备份，可写入副本")
         self.push_btn.set_ship(ship)
+        can_push = self.push_btn.isEnabled() and not busy
+
+        primary = primary_action(ship, can_write, can_push, busy)
+        if primary == "write":
+            self._set_role(self.write_btn, "dangerButton")
+            self._set_role(self.push_btn, "ghostButton")
+            note = ("主操作：写回存档（改等级/属性；先备份，可写副本）。"
+                    "次操作「送进游戏」只写模板种子，不动存档。")
+        elif primary == "push":
+            self._set_role(self.write_btn, "ghostButton")
+            self._set_role(self.push_btn, "primaryButton")
+            note = ("主操作：送进游戏（只写模板种子，不动存档）。"
+                    "这艘船没有可写槽位，写回存档不可用。")
+        else:
+            self._set_role(self.write_btn, "dangerButton")
+            self._set_role(self.push_btn, "ghostButton")
+            note = ("选中一艘有槽位的飞船可写回存档；"
+                    "有模板槽的船型才可送进游戏。写回会先备份，送进游戏不动存档。")
+        self.action_note.setText(note)
+        self.action_note.setToolTip(note)
 
     def _export_all(self) -> None:
         if not self._ships:
@@ -859,9 +1048,12 @@ class FleetPage(QWidget):
             return
         self._watch_ignore_until = time.monotonic() + 2.0
         res = dlg.result or {}
+        self._write_result = dict(res)
         target = str(res.get("path") or "")
         if res.get("copy") and target:
             self.path.setText(target)
+        # 写回后立刻在详情区给出真实的 before → after，而不是只弹一次提示。
+        self.write_preview.setText("\n".join(write_preview_lines(ship, res)))
         summary = f"船级/属性写入成功 · 槽位 {res.get('slot', ship.get('slot'))}"
         self.info.setText(summary)
         notify.success(summary)

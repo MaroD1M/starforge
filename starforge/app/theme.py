@@ -26,12 +26,24 @@ FONT_TITLE = 18          # 页面标题
 FONT_BRAND = 15          # 品牌名
 FONT_POINT = 10          # QApplication 默认字体（pt，随 DPI 缩放）
 
-RAIL_WIDTH = 196         # 左侧导航宽度（按最长导航文本留出余量）
+RAIL_WIDTH = 196         # 左侧工作区导航宽度：1180×760 下仍给内容留足宽度
 COMMAND_BAR_MARGIN = (SPACE_L, SPACE_S, SPACE_L, SPACE_S)
+CONTEXT_BAR_MARGIN = (SPACE_L, SPACE_XS, SPACE_L, SPACE_XS)
 PAGE_MARGIN = (SPACE_M, SPACE_M, SPACE_M, SPACE_M)
 PAGE_GAP = SPACE_S
 SCROLL_MARGIN = (SPACE_M, SPACE_M, SPACE_M, SPACE_L)
 DOCK_BUTTON_HEIGHT = 26
+
+# 卡片 / 表单 / 主次操作统一 token：页面与全局组件只引用这里。
+CARD_PADDING = SPACE_M
+CARD_SPACING = SPACE_S
+CARD_RADIUS = RADIUS_L
+CONTROL_RADIUS = RADIUS_S
+CONTROL_HEIGHT = 30
+STATUS_CHIP_RADIUS = 10
+NAV_ITEM_HEIGHT = 32
+NAV_SUB_HEIGHT = 28
+CONTEXT_BAR_HEIGHT = 40
 
 
 def scale(widget, value: float) -> int:
@@ -124,12 +136,19 @@ QPushButton:hover { background: #1a2231; border-color: #3a4a66; }
 QPushButton:disabled {
   color: #5f6a7d; background: #10141c; border-color: #1e2432;
 }
-QPushButton#primary {
+QPushButton#primary, QPushButton#primaryButton {
   background: #2f6fd0; border-color: #3f80e0; color: #f2f7ff; font-weight: 600;
 }
-QPushButton#primary:hover { background: #3a7ce0; }
-QPushButton#primary:disabled {
+QPushButton#primary:hover, QPushButton#primaryButton:hover { background: #3a7ce0; }
+QPushButton#primary:disabled, QPushButton#primaryButton:disabled {
   background: #1a1f29; border-color: #28303f; color: #5f6a7d;
+}
+QPushButton#dangerButton {
+  background: #2a1514; border: 1px solid #6b2f28; color: #ffc9c0; font-weight: 600;
+}
+QPushButton#dangerButton:hover { background: #3a1b18; border-color: #a5483c; }
+QPushButton#dangerButton:disabled {
+  background: #171112; border-color: #2c2223; color: #6b5a58;
 }
 QTreeWidget, QListWidget, QTableWidget, QTableView {
   background: #0c1119; border: 1px solid #1e2432; border-radius: 8px;
@@ -202,12 +221,108 @@ QLabel#sectionHint {{ color: #8b95a7; font-size: {FONT_CAPTION}px; }}
 QPushButton#dockButton {{
   padding: 3px 10px; font-size: {FONT_SMALL}px; border-radius: {RADIUS_S - 1}px;
 }}
+QPushButton#dangerButton[dock="true"] {{
+  padding: 3px 10px; font-size: {FONT_SMALL}px; border-radius: {RADIUS_S - 1}px;
+}}
 QScrollArea {{ background: transparent; border: 0; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QAbstractScrollArea::corner {{ background: transparent; }}
 QToolTip {{ padding: {SPACE_XS}px {SPACE_S}px; }}
 QTabBar::tab {{ min-height: 18px; }}
 QListWidget::item, QTreeWidget::item {{ padding: 3px 5px; }}
+
+/* ---------- 工作区二级导航（全局壳层） ---------- */
+QFrame#workspaceNav {{ background: transparent; }}
+QPushButton#workspaceButton {{
+  text-align: left; padding: 9px 12px; border: 1px solid transparent;
+  border-radius: {RADIUS_M}px; background: transparent; color: #9fb0c4;
+  font-size: {FONT_SECTION}px; font-weight: 700;
+  min-height: {NAV_ITEM_HEIGHT}px;
+}}
+QPushButton#workspaceButton:hover {{ background: #111826; color: #e6ecf5; }}
+QPushButton#workspaceButton:checked {{
+  background: #13202e; border-color: #2d5260; color: #eafcff;
+}}
+QWidget#subNav {{ background: transparent; }}
+QPushButton#subNavButton {{
+  text-align: left; padding: 5px 10px 5px 18px; border: 0;
+  border-left: 2px solid transparent; border-radius: 0;
+  background: transparent; color: #8fa2b8; font-size: {FONT_SMALL}px;
+  min-height: {NAV_SUB_HEIGHT}px;
+}}
+QPushButton#subNavButton:hover {{ color: #e6ecf5; background: #101927; }}
+QPushButton#subNavButton:checked {{
+  color: #eafcff; background: #10202c; border-left: 2px solid #5ad7ff;
+  font-weight: 600;
+}}
+QPushButton#workspaceButton:focus, QPushButton#subNavButton:focus {{
+  border: 2px solid #5ad7ff;
+}}
+QLabel#workspaceClaim {{
+  color: #9fb0c4; font-size: {FONT_SMALL}px;
+}}
+QFrame#contextBar {{
+  background: #0b1119; border-bottom: 1px solid #1e2432;
+}}
+QLabel#nextStepLabel {{ color: #6f879b; font-size: {FONT_CAPTION}px; }}
+QPushButton#nextStepButton {{
+  padding: 4px 10px; font-size: {FONT_SMALL}px;
+  border-radius: {RADIUS_S}px; color: #cfe0ff; border-color: #2d4a6a;
+  background: #101a28;
+}}
+QPushButton#nextStepButton:hover {{ background: #16263a; border-color: #3f8fa3; }}
+QPushButton#emptyAction {{
+  border-color: #2d5260; color: #cfe0ff; background: #101a28;
+}}
+QPushButton#emptyAction:hover {{ background: #16263a; border-color: #3f8fa3; }}
+
+/* ---------- 顶部状态条：四个可点击 chip ---------- */
+QPushButton#statusChip {{
+  padding: 3px 10px; border-radius: {STATUS_CHIP_RADIUS}px;
+  border: 1px solid #28303f; background: #0f141d; color: #8b95a7;
+  font-size: {FONT_CAPTION}px; min-height: 20px;
+}}
+QPushButton#statusChip:hover {{ color: #e6ecf5; border-color: #3f8fa3; }}
+QPushButton#statusChip[state="ok"] {{
+  border-color: #1d4a38; color: #a8e8c9; background: #0e1c17;
+}}
+QPushButton#statusChip[state="warn"] {{
+  border-color: #4a3a1c; color: #f0cd9a; background: #1c1710;
+}}
+QPushButton#statusChip[state="bad"] {{
+  border-color: #4d2a22; color: #f3b6a7; background: #1d1210;
+}}
+QPushButton#statusChip:focus {{ border: 2px solid #5ad7ff; }}
+
+/* ---------- 上手向导 ---------- */
+QDialog#onboardingDialog {{ background: #0a0c11; }}
+QLabel#onboardingTitle {{ font-size: {FONT_TITLE}px; font-weight: 700; color: #e6ecf5; }}
+QLabel#onboardingHint {{ color: #8b95a7; font-size: {FONT_SMALL}px; }}
+QLabel#onboardingStep {{
+  color: #6f879b; font-size: {FONT_SMALL}px; padding: 7px 8px;
+  border-left: 2px solid transparent;
+}}
+QLabel#onboardingStep[state="active"] {{
+  color: #eafcff; border-left: 2px solid #5ad7ff; background: #101c28;
+  font-weight: 600;
+}}
+QLabel#onboardingStep[state="done"] {{ color: #a8e8c9; border-left-color: #1d4a38; }}
+QLabel#onboardingStatus {{ color: #cfe0ff; font-size: {FONT_BODY}px; }}
+QLabel#onboardingStatus[state="bad"] {{ color: #f0cd9a; }}
+QLabel#onboardingStatus[state="ok"] {{ color: #a8e8c9; }}
+
+/* 卡片被“下一步”定位时短暂高亮，帮助用户找到落点。 */
+QFrame#card[spotlight="true"] {{
+  border: 1px solid #5ad7ff;
+}}
+
+/* token 落地：卡片/表单/按钮共用同一套圆角，后续页面只引用 token。 */
+QFrame#card {{ border-radius: {CARD_RADIUS}px; }}
+QGroupBox {{ border-radius: {RADIUS_M}px; }}
+QPushButton {{ border-radius: {CONTROL_RADIUS}px; }}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {{
+  border-radius: {CONTROL_RADIUS}px;
+}}
 """
 
 
@@ -254,6 +369,23 @@ QPushButton#navButton:checked {
   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #12303a, stop:1 #1c2930);
   border-color: #3f8fa3; color: #dff8ff;
 }
+QPushButton#workspaceButton:hover { background: #0d1a2b; color: #d7f0ff; }
+QPushButton#workspaceButton:checked {
+  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #12303a, stop:1 #1c2930);
+  border-color: #3f8fa3; color: #dff8ff;
+}
+QPushButton#subNavButton:hover { background: #0d1a2b; color: #d7f0ff; }
+QPushButton#subNavButton:checked {
+  background: #10202c; border-left: 2px solid #5ad7ff; color: #dff8ff;
+}
+QFrame#contextBar {
+  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #080d17, stop:1 #0b1422);
+  border-bottom: 1px solid #24384a;
+}
+QPushButton#statusChip {
+  background: #08111d; border-color: #2a3f52; color: #9fb2c7;
+}
+QPushButton#statusChip:hover { border-color: #3f8fa3; color: #eafcff; }
 QLabel#muted { color: #93a4b8; }
 QLabel#navSection {
   color: #6f879b; font-size: 10.5px; font-weight: 600;
@@ -266,16 +398,20 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus,
 QPlainTextEdit:focus { border-color: #5ad7ff; }
 QPushButton { background: #0d1624; border: 1px solid #2a3f52; }
 QPushButton:hover { background: #132234; border-color: #3f8fa3; }
-QPushButton#primary {
+QPushButton#primary, QPushButton#primaryButton {
   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #d9902f, stop:1 #b96f1c);
-  border-color: #f0b45c; color: #171006;
+  border-color: #f0b45c; color: #171006; font-weight: 700;
 }
-QPushButton#primary:hover {
+QPushButton#primary:hover, QPushButton#primaryButton:hover {
   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e8a23d, stop:1 #ca7d24);
 }
-QPushButton#primary:disabled {
+QPushButton#primary:disabled, QPushButton#primaryButton:disabled {
   background: #1a1f29; border-color: #2a3546; color: #5f6a7d;
 }
+QPushButton#dangerButton {
+  background: #2a1514; border: 1px solid #8a3d32; color: #ffd4cc;
+}
+QPushButton#dangerButton:hover { background: #3a1b18; border-color: #c45444; }
 QTreeWidget, QListWidget, QTableWidget, QTableView {
   background: #08111d; border: 1px solid #24384a;
   alternate-background-color: #0c1624; gridline-color: #1b2d3d;

@@ -12,6 +12,10 @@
 对外：
   digits_for(text)      -> "1112F19BDCE5"（int/0x… 按位段重排；12 位串按原样规范化）
   glyphs_for_ua(ua)     -> 同上（显式 UA 入口）
+  ua_from_parts(...)    -> UA（planet 1..6；未知返回 None）
+  coords_from_ua(ua)    -> "XXXX:YYYY:ZZZZ:SSSS"
+  ua_from_coords(...)   -> UA
+  glyphs_from_coords(...) / coords_from_glyphs(...) -> 坐标 ↔ 12 位符文
   icon_png(digit)    -> bytes|None（游戏原图，需解码器；结果缓存到磁盘）
   panel_png(glyphs)  -> bytes（12 联符文图，原图或位图字体）
 """
@@ -24,6 +28,13 @@ from functools import lru_cache
 
 import numpy as np
 
+from .address import (  # 纯数学层；这里再导出，兼容地址工作台的旧入口
+    coords_from_glyphs,
+    coords_from_ua,
+    glyphs_from_coords,
+    ua_from_coords,
+    ua_from_parts,
+)
 from .core import log, paths
 
 log = log.get("glyphs")
@@ -257,3 +268,23 @@ def panel_payload(glyphs: str) -> dict:
             "icons": [f"/api/glyphs/{d}.png" for d in digits],
             "strip": f"/api/glyphs/{digits}.png",
             "copy_text": digits, "source": "game" if icon_png(digits[0]) else "font"}
+
+
+__all__ = [
+    "GAP",
+    "HEX",
+    "TILE",
+    "coords_from_glyphs",
+    "coords_from_ua",
+    "digits_for",
+    "glyphs_for_ua",
+    "glyphs_from_coords",
+    "icon_png",
+    "icon_rgb",
+    "panel_payload",
+    "panel_png",
+    "png_bytes",
+    "ua_from_coords",
+    "ua_from_parts",
+    "unpack_ua",
+]

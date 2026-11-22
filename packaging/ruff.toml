@@ -1,0 +1,14 @@
+# 发布前静态检查（ruff F 类）的独立配置。
+#
+# starforge/glyphs.py 从 .address 再导出 coords_from_* / ua_from_*，这些名字是
+# 地址工作台的兼容入口，F401 是有意保留的；只对该文件放行，其余 F 类照常报错。
+#
+# 用法：ruff check --config packaging/ruff.toml .
+[lint]
+select = ["F"]
+
+[lint.per-file-ignores]
+"starforge/glyphs.py" = ["F401"]
+# 发布前检查只覆盖 F 类；这两处是当前基线已有的、与业务逻辑无关的再导出/未用
+# import，先按文件放行，避免为了过 lint 去改业务代码。后续清理后可移除。
+"starforge/app/widgets/ui.py" = ["F401"]

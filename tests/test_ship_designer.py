@@ -5,6 +5,18 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+
+@pytest.fixture(scope="module")
+def qapp():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
 from starforge.app.pages.ship_designer import (  # noqa: E402
     design_document,
     design_payload,
@@ -17,6 +29,7 @@ from starforge.app.pages.ship_designer import (  # noqa: E402
     selection_from_parts,
     selection_rows,
     single_choice,
+    write_block_reason,
     write_design_file,
 )
 
@@ -124,3 +137,97 @@ def test_design_file_roundtrip(tmp_path):
     assert loaded["want"] == ["_PIT_B"]
     assert loaded["found_seeds"] == ["0x0000000000001234"]
     assert normalize_design_seed("0xZZ") == ""
+
+
+def test_write_block_reason_explains_before_user_clicks(qapp):
+    assert write_block_reason([], [EXAMPLE_SEED]) == "先选择部件"
+    assert "种子" in write_block_reason(["_PIT_A"], ["bad"])
+    assert write_block_reason(["_PIT_A"], [EXAMPLE_SEED]) == ""
+    # 输入框暂时是示例种子，但结果列表里已有有效种子：与真实写入逻辑一致。
+    assert write_block_reason(["_PIT_A"], ["bad", "0x1"]) == ""
+
+
+def _designer_with_groups(qapp):
+    from starforge.app.pages.ship_designer import ShipDesignerPage
+
+    page = ShipDesignerPage()
+    page._groups = list(GROUPS)
+    page._populate_tree()
+    page._update_summary()
+    return page
+
+
+def test_designer_primary_is_write_and_reason_sits_next_to_it(qapp):
+    page = _designer_with_groups(qapp)
+    try:
+        assert page.write_design_btn.text() == "写入存档"
+        assert not page.write_design_btn.isEnabled()
+        assert page.write_reason.text() == "先选择部件"
+        assert not page.write_reason.isHidden()
+
+        page._selection = {"_PIT_": "_PIT_A"}
+        page.seed_edit.setText("bad")
+        page._update_summary()
+        assert not page.write_design_btn.isEnabled()
+        assert "种子" in page.write_reason.text()
+
+        page.seed_edit.setText(EXAMPLE_SEED)
+        page._update_summary()
+        assert page.write_design_btn.isEnabled()
+        assert page.write_reason.isHidden()
+    finally:
+        page.close()
+
+
+def test_designer_parts_tree_has_search_and_selected_available_groups(qapp):
+    from PySide6.QtCore import Qt
+
+    page = _designer_with_groups(qapp)
+    try:
+        assert page.part_filter.placeholderText()
+        roots = [page.tree.topLevelItem(i).text(0)
+                 for i in range(page.tree.topLevelItemCount())]
+        assert roots[0].startswith("已选（")
+        assert roots[1].startswith("可选（")
+
+        available = page.tree.topLevelItem(1)
+        leaf = available.child(0).child(0)
+        leaf.setCheckState(0, Qt.Checked)
+        assert page._selection == {"_PIT_": "_PIT_A"}
+        assert page.tree.topLevelItem(0).text(0) == "已选（1）"
+        assert page.tree.topLevelItem(1).text(0) == "可选（3）"
+
+        page.part_filter.setText("翼")
+        hidden = []
+        for i in range(page.tree.topLevelItemCount()):
+            top = page.tree.topLevelItem(i)
+            for j in range(top.childCount()):
+                node = top.child(j)
+                leaves = ([node.child(k) for k in range(node.childCount())]
+                          if node.childCount() else [node])
+                hidden.extend(item.isHidden() for item in leaves)
+        assert any(hidden)
+    finally:
+        page.close()
+
+
+def test_designer_summary_collapsible_and_files_menu_is_secondary(qapp):
+    from PySide6.QtGui import QAction
+
+    page = _designer_with_groups(qapp)
+    try:
+        assert page.summary.isHidden()
+        page.summary_toggle.setChecked(True)
+        assert not page.summary.isHidden()
+        assert "▾" in page.summary_toggle.text()
+        page.summary_toggle.setChecked(False)
+        assert page.summary.isHidden()
+
+        # 保存 / 载入不再各占一个常驻按钮，而是同一个次级菜单里的两个动作。
+        assert isinstance(page.save_design_btn, QAction)
+        assert isinstance(page.load_design_btn, QAction)
+        assert [action.text() for action in page.files_menu.actions()] == [
+            "保存设计…", "载入设计…"]
+        assert page.files_btn.menu() is page.files_menu
+    finally:
+        page.close()

@@ -1,7 +1,10 @@
-"""飞船设计器：船型/部件树 → 原生 3D 预览 → 已选摘要与种子搜索。
+"""飞船设计器：部件树 → 原生 3D 预览 → 写入存档（唯一主操作）。
 
-数据只走 ``Services``：部件树用 ``catalog_ship``，3D 用 ``preview_mesh``，
-失败时退回 ``preview_png``。本页不直接写存档（后端尚未验证）。
+UI 约定：
+  · primary 固定是「写入存档」；校验不通过时在旁边直接写原因，按钮同时禁用；
+  · 「保存设计 / 载入设计」收进一个次级「设计文件」菜单，不再和主操作抢位置；
+  · 左侧部件树带搜索框，并按「已选 / 可选」分组；右侧已选摘要可折叠；
+  · 搜索种子、复制种子都降为次级；每个能力只有一个入口。
 """
 from __future__ import annotations
 
@@ -9,18 +12,18 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QPixmap
+from PySide6.QtGui import QAction, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
-    QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QTreeWidget,
@@ -32,7 +35,7 @@ from ...services import get_services
 from .. import notify
 from ..dialogs.design_write import DesignWriteDialog
 from ..dialogs.part_preview import PartPreviewDialog
-from ..widgets.lab_ui import WrapLabel, fixed_height, stretch_button
+from ..widgets.lab_ui import WrapLabel, fixed_height
 from ..widgets.page import PageSplitter, page_layout, scroll_panel
 from ..widgets.page_header import PageHeader
 from ..widgets.ship_viewer import ShipViewer
@@ -134,6 +137,24 @@ def result_summary(row: dict | None) -> str:
     data = normalize_result(row)
     label = data["type_label"] or "未知船型"
     return f"{label}  {data['seed']}".strip()
+
+
+def write_block_reason(parts: list[str] | None, seeds: list[str] | None) -> str:
+    """写入存档前的本地校验；返回空串表示可以写入。
+
+    与 ``_current_design`` 的取种子顺序一致：结果列表里的有效种子也算，
+    所以用户只要选中一个搜索结果，即使输入框里还是示例种子也能写入。
+    """
+    if not [part for part in parts or [] if str(part).strip()]:
+        return "先选择部件"
+    valid = []
+    for seed in seeds or []:
+        clean = normalize_design_seed(seed)
+        if clean and clean not in valid:
+            valid.append(clean)
+    if not valid:
+        return "先搜索并选中一个种子"
+    return ""
 
 
 # ---------------------------------------------------------------- 设计文件（本地 JSON）
@@ -258,6 +279,7 @@ class ShipDesignerPage(QWidget):
         self._updating_tree = False
         self._search_job = None
         self._pending_design: dict | None = None
+        self._summary_open = False
         self._icon_queue: list[tuple[QTreeWidgetItem, str, str]] = []
         self._icon_timer = QTimer(self)
         self._icon_timer.setSingleShot(True)
@@ -282,9 +304,8 @@ class ShipDesignerPage(QWidget):
     def _build_ui(self) -> None:
         root = page_layout(self)
         self.header = PageHeader(
-            "飞船设计器",
-            "逐个选择部件即时查看 3D 组合，再用这套部件搜索可用种子。")
-        # 换行副标题会把 PageHeader 的 sizeHint 撑高，允许收缩到实际单行高度。
+            "设计器",
+            "选部件、看 3D，最后写入存档；保存/载入收在「设计文件」菜单。")
         self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         root.addWidget(self.header)
         split = PageSplitter("ship_designer")
@@ -303,11 +324,12 @@ class ShipDesignerPage(QWidget):
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
         split.setStretchFactor(2, 0)
-        split.set_default_sizes([290, 540, 380])
+        split.set_default_sizes([300, 500, 390])
         split.restore()
+        self._sync_write_state()
 
     def _build_parts(self) -> QWidget:
-        wrap = Card("船型与部件", "每组单选一个部件")
+        wrap = Card("船型与部件", "搜索后点部件；已选与可选分开显示")
         v = wrap.v
 
         v.addWidget(QLabel("船型"))
@@ -317,25 +339,20 @@ class ShipDesignerPage(QWidget):
         self.ship.currentIndexChanged.connect(self._load_parts)
         v.addWidget(self.ship)
 
-        row = QHBoxLayout()
-        self.parts_status = WrapLabel("选择船型后加载部件表")
-        self.parts_status.setObjectName("muted")
-        row.addWidget(self.parts_status, 1)
-        clear = fixed_height(QPushButton("清空"))
-        clear.setToolTip("清空所有组的选择")
-        clear.clicked.connect(self._clear_parts)
-        row.addWidget(clear)
-        v.addLayout(row)
+        self.part_filter = QLineEdit()
+        self.part_filter.setPlaceholderText("搜索部件名或内部 ID…")
+        self.part_filter.setClearButtonEnabled(True)
+        self.part_filter.textChanged.connect(self._filter_tree)
+        v.addWidget(self.part_filter)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["部件"])
+        self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(1)
-        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.tree.setIconSize(QSize(40, 40))
-        self.tree.setStyleSheet("QTreeWidget::item { height: 38px; }")
+        self.tree.setIconSize(QSize(32, 32))
+        self.tree.setStyleSheet("QTreeWidget::item { height: 32px; }")
         self.tree.setMouseTracking(True)
         self.tree.setUniformRowHeights(True)
-        self.tree.setMinimumHeight(240)
+        self.tree.setMinimumHeight(176)
         self.tree.itemChanged.connect(self._on_tree_changed)
         self.tree.itemClicked.connect(self._show_part_detail)
         self.tree.currentItemChanged.connect(self._on_detail_current)
@@ -346,49 +363,46 @@ class ShipDesignerPage(QWidget):
         self.part_detail.setStyleSheet(
             "background:#08111d;border:1px solid #24384a;border-radius:8px;padding:8px;")
         v.addWidget(self.part_detail)
+
         detail_row = QHBoxLayout()
-        detail_row.addStretch(1)
+        self.parts_status = WrapLabel("选择船型后加载部件表")
+        self.parts_status.setObjectName("muted")
+        detail_row.addWidget(self.parts_status, 1)
         self.part_3d_btn = fixed_height(QPushButton("3D 预览"))
         self.part_3d_btn.setToolTip("在独立小窗中 3D 预览当前部件")
         self.part_3d_btn.clicked.connect(self._open_part_preview)
         detail_row.addWidget(self.part_3d_btn)
         v.addLayout(detail_row)
-
-        self.parts_count = WrapLabel("尚未加载部件表")
-        self.parts_count.setObjectName("muted")
-        v.addWidget(self.parts_count)
         return wrap
 
     def _build_preview(self) -> QWidget:
-        wrap = Card("3D 预览", "拖动旋转 · 滚轮缩放 · 双击复位")
+        wrap = Card("3D 预览")
         v = wrap.v
 
         self.viewer = ShipViewer()
-        self.viewer.setMinimumHeight(320)
+        self.viewer.setMinimumHeight(300)
         v.addWidget(self.viewer, 1)
 
         self.fallback = QLabel()
         self.fallback.setAlignment(Qt.AlignCenter)
         self.fallback.setWordWrap(True)
-        self.fallback.setMinimumHeight(320)
+        self.fallback.setMinimumHeight(300)
         self.fallback.hide()
         v.addWidget(self.fallback, 1)
 
-        # 3 列 2 行：窄栏下按钮不会互相挤压或被裁切。
-        views = QGridLayout()
-        views.setHorizontalSpacing(6)
-        views.setVerticalSpacing(6)
-        for index, (text, mode) in enumerate((("等轴", "iso"), ("俯视", "top"),
-                                              ("侧视", "side"), ("正视", "front"))):
-            button = stretch_button(QPushButton(text))
-            button.clicked.connect(lambda _=False, m=mode: self.viewer.set_view(m))
-            views.addWidget(button, index // 3, index % 3)
-        spin = stretch_button(QPushButton("自转"))
-        spin.setCheckable(True)
-        spin.toggled.connect(self.viewer.set_spin)
-        views.addWidget(spin, 1, 1)
-        for column in range(3):
-            views.setColumnStretch(column, 1)
+        views = QHBoxLayout()
+        views.setSpacing(6)
+        views.addWidget(QLabel("视角"))
+        self.view_combo = QComboBox()
+        for text, mode in (("等轴", "iso"), ("俯视", "top"),
+                           ("侧视", "side"), ("正视", "front")):
+            self.view_combo.addItem(text, mode)
+        self.view_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.view_combo.currentIndexChanged.connect(self._change_view)
+        views.addWidget(self.view_combo, 1)
+        self.spin = QCheckBox("自转")
+        self.spin.toggled.connect(self.viewer.set_spin)
+        views.addWidget(self.spin)
         v.addLayout(views)
 
         self.preview_detail = WrapLabel("选择部件后将生成 3D 预览。")
@@ -397,145 +411,199 @@ class ShipDesignerPage(QWidget):
         return wrap
 
     def _build_actions(self) -> QWidget:
-        wrap = Card("已选部件", "单选 · 摘要")
+        wrap = Card("写入存档")
         v = wrap.v
 
+        # 主操作置顶：无论下方摘要/结果列表怎么长，primary 始终在首屏可见。
+        write_row = QHBoxLayout()
+        write_row.setSpacing(8)
+        self.write_design_btn = fixed_height(QPushButton("写入存档"))
+        self.write_design_btn.setObjectName("primary")
+        self.write_design_btn.setMinimumWidth(118)
+        self.write_design_btn.setToolTip(
+            "把当前种子写入新船槽或替换现有槽；先备份，可写入副本")
+        self.write_design_btn.clicked.connect(self._write_design)
+        write_row.addWidget(self.write_design_btn, 0)
+        self.write_reason = WrapLabel("")
+        self.write_reason.setObjectName("warn")
+        self.write_reason.setStyleSheet("color:#f2b45c;")
+        write_row.addWidget(self.write_reason, 1)
+        v.addLayout(write_row)
+
+        self.summary_toggle = QPushButton("已选摘要 ▸")
+        self.summary_toggle.setFlat(True)
+        self.summary_toggle.setCursor(Qt.PointingHandCursor)
+        self.summary_toggle.setCheckable(True)
+        self.summary_toggle.setToolTip("展开或收起已选部件摘要")
+        self.summary_toggle.setStyleSheet(
+            "QPushButton { border:none; background:transparent; color:#8b95a7;"
+            " text-align:left; padding:0 2px; }"
+            "QPushButton:hover { color:#e6ecf5; }")
+        self.summary_toggle.toggled.connect(self._toggle_summary)
+        v.addWidget(self.summary_toggle)
+
         self.summary = QListWidget()
-        self.summary.setMinimumHeight(96)
-        self.summary.setMaximumHeight(150)    # 上限，不是固定高度：条目少时自然收缩
+        self.summary.setMinimumHeight(72)
+        self.summary.setMaximumHeight(132)
+        self.summary.setVisible(False)
         v.addWidget(self.summary)
+
         self.summary_count = WrapLabel("尚未选择部件（空选也可以预览默认外形）")
         self.summary_count.setObjectName("muted")
         v.addWidget(self.summary_count)
 
-        v.addWidget(QLabel("预览种子"))
+        v.addWidget(QLabel("预览 / 写入种子"))
         seed_row = QHBoxLayout()
         seed_row.setSpacing(6)
         self.seed_edit = QLineEdit(EXAMPLE_SEED)
         self.seed_edit.setPlaceholderText("例如 0x992C8A47F60A6B10")
         self.seed_edit.setMinimumWidth(80)
+        self.seed_edit.textChanged.connect(self._sync_write_state)
         self.seed_edit.editingFinished.connect(self._refresh_preview)
         seed_row.addWidget(self.seed_edit, 1)
-        copy = fixed_height(QPushButton("复制种子"))
-        copy.clicked.connect(self._copy_seed)
-        seed_row.addWidget(copy)
+        self.copy_btn = fixed_height(QPushButton("复制"))
+        self.copy_btn.setToolTip("复制当前种子")
+        self.copy_btn.clicked.connect(self._copy_seed)
+        seed_row.addWidget(self.copy_btn)
         v.addLayout(seed_row)
 
-        self.search_btn = fixed_height(QPushButton("用这些部件搜索种子"))
-        self.search_btn.setObjectName("primary")
+        self.search_btn = fixed_height(QPushButton("搜索种子"))
+        self.search_btn.setToolTip("用当前部件组合搜索可用种子")
         self.search_btn.clicked.connect(self._start_search)
         v.addWidget(self.search_btn)
 
-        self.search_status = WrapLabel("至少选择一个部件后即可搜索。")
+        self.search_status = WrapLabel("点「搜索种子」用当前部件找种子。")
         self.search_status.setObjectName("muted")
         v.addWidget(self.search_status)
 
         v.addWidget(QLabel("搜索结果"))
         self.results = QListWidget()
-        self.results.setMinimumHeight(140)
+        self.results.setMinimumHeight(128)
         self.results.itemSelectionChanged.connect(self._select_result)
         v.addWidget(self.results, 1)
 
-        files = QHBoxLayout()
-        files.setSpacing(6)
-        self.save_design_btn = stretch_button(QPushButton("保存设计…"))
-        self.save_design_btn.setToolTip("把当前船型与部件保存为本地 .nmsdesign.json；不写存档")
-        self.save_design_btn.clicked.connect(self._save_design)
-        files.addWidget(self.save_design_btn, 1)
-        self.load_design_btn = stretch_button(QPushButton("载入设计…"))
-        self.load_design_btn.setToolTip("从本地 .nmsdesign.json 恢复部件与种子；不写存档")
-        self.load_design_btn.clicked.connect(self._load_design)
-        files.addWidget(self.load_design_btn, 1)
-        v.addLayout(files)
-
-        self.write_design_btn = fixed_height(QPushButton("写入存档…"))
-        self.write_design_btn.setToolTip("把当前种子写入新船槽或替换现有槽；先备份，可写入副本")
-        self.write_design_btn.clicked.connect(self._write_design)
-        v.addWidget(self.write_design_btn)
-        note = WrapLabel("设计文件只保存在本地；写入存档会走备份、二次确认、读回校验与回滚。")
-        note.setObjectName("muted")
-        v.addWidget(note)
+        self.files_btn = fixed_height(QPushButton("设计文件 ▾"))
+        self.files_btn.setObjectName("ghostButton")
+        self.files_btn.setToolTip("保存或载入本地 .nmsdesign.json；不写存档")
+        self.files_menu = QMenu(self.files_btn)
+        self.save_design_btn = QAction("保存设计…", self)
+        self.save_design_btn.triggered.connect(self._save_design)
+        self.files_menu.addAction(self.save_design_btn)
+        self.load_design_btn = QAction("载入设计…", self)
+        self.load_design_btn.triggered.connect(self._load_design)
+        self.files_menu.addAction(self.load_design_btn)
+        self.files_btn.setMenu(self.files_menu)
+        v.addWidget(self.files_btn)
         return wrap
 
-    # ------------------------------------------------------------ 数据
+    # ------------------------------------------------------------ 树分组
 
-    def ensure_loaded(self) -> None:
-        if self._loaded:
-            return
-        self._loaded = True
-        self._load_parts()
+    def _tree_group(self, title: str) -> QTreeWidgetItem:
+        top = QTreeWidgetItem([title, ""])
+        top.setFlags(top.flags() & ~Qt.ItemIsSelectable)
+        return top
 
-    def _load_parts(self, *_args) -> None:
-        ship = self.ship.currentData()
-        self._catalog_token += 1
-        token = self._catalog_token
-        self._groups = []
-        self._selection = {}
-        self.tree.clear()
-        self.parts_status.setText("读取部件表…")
-        self.parts_count.setText("")
-        self._update_summary()
-        self._schedule_preview()
-
-        def done(res: dict) -> None:
-            if token != self._catalog_token:
-                return
-            self._groups = list(res.get("groups") or [])
-            self._populate_tree()
-            source = self._source_label(res.get("source"))
-            self.parts_status.setText(f"部件表已加载 · {source}")
-            total = sum(len(g.get("options") or []) for g in self._groups)
-            self.parts_count.setText(f"{len(self._groups)} 个组 / {total} 个部件")
-            self._update_summary()
-            self._schedule_preview()
-            if self._pending_design is not None:
-                pending, self._pending_design = self._pending_design, None
-                self._apply_design(pending, quiet=True)
-
-        def fail(msg: str) -> None:
-            if token != self._catalog_token:
-                return
-            self._groups = []
-            self._selection = {}
-            self.tree.clear()
-            self.parts_status.setText(f"读不到部件表：{msg}")
-            self.parts_count.setText("错误态：可切换船型重试，或检查游戏目录")
-            self._update_summary()
-            self._show_placeholder(f"部件表不可用：{msg}")
-
-        run_worker(self.svc.catalog_ship, done, fail, ship)
+    def _make_part_item(self, part: str, gid: str, label: str) -> QTreeWidgetItem:
+        child = QTreeWidgetItem([label, gid])
+        child.setData(0, Qt.UserRole, part)
+        child.setData(0, Qt.UserRole + 1, gid)
+        child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
+        child.setIcon(0, placeholder_icon(part))
+        child.setToolTip(0, f"{part}\n组：{gid}")
+        return child
 
     def _populate_tree(self) -> None:
         self._updating_tree = True
         self._icon_queue.clear()
         total = 0
+        chosen_count = 0
         try:
             self.tree.clear()
+            selected_root = self._tree_group("已选")
+            available_root = self._tree_group("可选")
             for group in self._groups:
-                gid, label, _options = _group_options(group)
-                top = QTreeWidgetItem([label, ""])
-                top.setData(0, Qt.UserRole, gid)
-                top.setFlags(top.flags() & ~Qt.ItemIsSelectable)
-                top.setToolTip(0, gid)
-                for opt in group.get("options") or []:
-                    part = str(opt.get("part") or "")
-                    child = QTreeWidgetItem([str(opt.get("label") or part), gid])
-                    child.setData(0, Qt.UserRole, part)
-                    child.setData(0, Qt.UserRole + 1, gid)
-                    child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
-                    child.setCheckState(0, Qt.Unchecked)
-                    child.setIcon(0, placeholder_icon(part))
-                    child.setToolTip(0, f"{part}\n组：{gid}")
-                    if total < 24:
-                        self._icon_queue.append((child, self.ship.currentData(), part))
-                    total += 1
-                    top.addChild(child)
-                self.tree.addTopLevelItem(top)
-                top.setExpanded(True)
+                gid, label, options = _group_options(group)
+                selected = str(self._selection.get(gid) or "")
+                if selected and selected in options:
+                    chosen_count += 1
+                    item = self._make_part_item(selected, gid,
+                                                f"{label}：{options[selected]}")
+                    item.setCheckState(0, Qt.Checked)
+                    selected_root.addChild(item)
+                remaining = [(part, part_label) for part, part_label in options.items()
+                             if part != selected]
+                if remaining:
+                    group_node = QTreeWidgetItem([label, ""])
+                    group_node.setFlags(group_node.flags() & ~Qt.ItemIsSelectable)
+                    group_node.setToolTip(0, gid)
+                    for part, part_label in remaining:
+                        child = self._make_part_item(part, gid, part_label)
+                        child.setCheckState(0, Qt.Unchecked)
+                        group_node.addChild(child)
+                        if total < 24:
+                            self._icon_queue.append((child, self.ship.currentData(), part))
+                        total += 1
+                    available_root.addChild(group_node)
+                    group_node.setExpanded(True)
+            selected_root.setText(0, f"已选（{chosen_count}）")
+            available_root.setText(0, f"可选（{total}）")
+            self.tree.addTopLevelItem(selected_root)
+            self.tree.addTopLevelItem(available_root)
+            selected_root.setExpanded(True)
+            available_root.setExpanded(True)
         finally:
             self._updating_tree = False
+        self._filter_tree(self.part_filter.text())
         if self._icon_queue:
             self._icon_timer.start(30)
+
+    def _iter_child_items(self):
+        for index in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(index)
+            for child_index in range(top.childCount()):
+                node = top.child(child_index)
+                if node.childCount():
+                    for leaf_index in range(node.childCount()):
+                        yield node.child(leaf_index)
+                else:
+                    yield node
+
+    def _filter_tree(self, text: str) -> None:
+        needle = str(text or "").strip().upper()
+        for index in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(index)
+            any_visible = False
+            for node_index in range(top.childCount()):
+                node = top.child(node_index)
+                if node.childCount():
+                    group_visible = False
+                    group_match = needle and needle in node.text(0).upper()
+                    for leaf_index in range(node.childCount()):
+                        leaf = node.child(leaf_index)
+                        part = str(leaf.data(0, Qt.UserRole) or "").upper()
+                        show = not needle or group_match or needle in leaf.text(0).upper() \
+                            or needle in part
+                        leaf.setHidden(not show)
+                        group_visible = group_visible or show
+                    node.setHidden(not group_visible)
+                    if group_visible and needle:
+                        node.setExpanded(True)
+                    any_visible = any_visible or group_visible
+                else:
+                    part = str(node.data(0, Qt.UserRole) or "").upper()
+                    show = not needle or needle in node.text(0).upper() or needle in part
+                    node.setHidden(not show)
+                    any_visible = any_visible or show
+            top.setHidden(not any_visible)
+            if needle:
+                top.setExpanded(True)
+
+    def _focus_part(self, part: str) -> None:
+        for item in self._iter_child_items():
+            if str(item.data(0, Qt.UserRole) or "") == part:
+                self.tree.setCurrentItem(item)
+                self.tree.scrollToItem(item)
+                return
 
     def _next_icon(self) -> None:
         if not self._icon_queue:
@@ -543,20 +611,18 @@ class ShipDesignerPage(QWidget):
         item, ship, part = self._icon_queue.pop(0)
 
         def done(data: bytes | None) -> None:
-            if data:
-                try:
+            try:
+                if data:
                     item.setIcon(0, icon_from_png(data, 40))
-                except Exception:                          # noqa: BLE001
-                    pass
+            except RuntimeError:
+                pass
             if self._icon_queue:
                 self._icon_timer.start(20)
 
         run_worker(self.svc.part_icon, done, lambda _m: None, ship, part, 48)
-        if self._icon_queue:
-            self._icon_timer.start(20)
 
     def _on_detail_current(self, item: QTreeWidgetItem | None, *_args) -> None:
-        if item is None:
+        if item is None or item.childCount():
             return
         self._detail_item = item
         self._detail_timer.start()
@@ -568,7 +634,7 @@ class ShipDesignerPage(QWidget):
 
     def _open_part_preview(self) -> None:
         item = self.tree.currentItem() or self._detail_item
-        if item is None:
+        if item is None or item.childCount():
             notify.warn("先选择一个部件")
             return
         part = str(item.data(0, Qt.UserRole) or "")
@@ -578,6 +644,8 @@ class ShipDesignerPage(QWidget):
         PartPreviewDialog(str(self.ship.currentData() or ""), part, self).exec()
 
     def _show_part_detail(self, item: QTreeWidgetItem, _column: int) -> None:
+        if item.childCount():
+            return
         part = item.data(0, Qt.UserRole)
         if not part:
             return
@@ -599,62 +667,90 @@ class ShipDesignerPage(QWidget):
                    lambda m: self.part_detail.setText(f"{part} 预览失败：{m}"),
                    self.ship.currentData(), part, 96)
 
+    # ------------------------------------------------------------ 数据
+
+    def ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        self._load_parts()
+
+    def _load_parts(self, *_args) -> None:
+        ship = self.ship.currentData()
+        self._catalog_token += 1
+        token = self._catalog_token
+        self._groups = []
+        self._selection = {}
+        self.tree.clear()
+        self.parts_status.setText("读取部件表…")
+        self._update_summary()
+        self._schedule_preview()
+
+        def done(res: dict) -> None:
+            if token != self._catalog_token:
+                return
+            self._groups = list(res.get("groups") or [])
+            self._populate_tree()
+            source = self._source_label(res.get("source"))
+            total = sum(len(g.get("options") or []) for g in self._groups)
+            self.parts_status.setText(
+                f"{len(self._groups)} 组 / {total} 个部件 · {source}")
+            self._update_summary()
+            self._schedule_preview()
+            if self._pending_design is not None:
+                pending, self._pending_design = self._pending_design, None
+                self._apply_design(pending, quiet=True)
+
+        def fail(msg: str) -> None:
+            if token != self._catalog_token:
+                return
+            self._groups = []
+            self._selection = {}
+            self.tree.clear()
+            self.parts_status.setText(f"读不到部件表：{msg}")
+            self._update_summary()
+            self._show_placeholder(f"部件表不可用：{msg}")
+
+        run_worker(self.svc.catalog_ship, done, fail, ship)
+
     @staticmethod
     def _source_label(source: str | None) -> str:
         return {"game": "游戏资源", "gagarin": "Gagarin 数据表",
                 "none": "无数据"}.get(source or "", "未知来源")
 
     def _on_tree_changed(self, item: QTreeWidgetItem, column: int) -> None:
-        if self._updating_tree or column != 0:
+        if self._updating_tree or column != 0 or item.childCount():
             return
         gid = item.data(0, Qt.UserRole + 1)
         part = item.data(0, Qt.UserRole)
         if not gid or not part:
             return
-        self._updating_tree = True
-        try:
-            if item.checkState(0) == Qt.Checked:
-                parent = item.parent()
-                if parent is not None:
-                    for index in range(parent.childCount()):
-                        sibling = parent.child(index)
-                        if sibling is not item and sibling.checkState(0) == Qt.Checked:
-                            sibling.setCheckState(0, Qt.Unchecked)
-                self._selection = single_choice(self._selection, gid, part)
-            elif self._selection.get(gid) == part:
-                self._selection = single_choice(self._selection, gid, None)
-        finally:
-            self._updating_tree = False
+        selected = item.checkState(0) == Qt.Checked
+        if selected:
+            self._selection = single_choice(self._selection, gid, part)
+        elif self._selection.get(gid) == part:
+            self._selection = single_choice(self._selection, gid, None)
+        self._populate_tree()
         self._update_summary()
         self._schedule_preview()
+        if selected:
+            QTimer.singleShot(0, lambda p=str(part): self._focus_part(p))
+
+    def _toggle_summary(self, on: bool) -> None:
+        self._summary_open = bool(on)
+        self.summary.setVisible(self._summary_open)
+        self.summary_toggle.setText("已选摘要 ▾" if self._summary_open else "已选摘要 ▸")
 
     def _clear_parts(self) -> None:
-        self._updating_tree = True
-        try:
-            for index in range(self.tree.topLevelItemCount()):
-                top = self.tree.topLevelItem(index)
-                for child_index in range(top.childCount()):
-                    top.child(child_index).setCheckState(0, Qt.Unchecked)
-        finally:
-            self._updating_tree = False
         self._selection = {}
+        self._populate_tree()
         self._update_summary()
         self._schedule_preview()
 
     def _apply_design(self, document: dict, quiet: bool = False) -> None:
-        wanted = {p.upper() for p in document.get("want") or []}
         selection = selection_from_parts(document.get("want"), self._groups)
-        self._updating_tree = True
-        try:
-            for index in range(self.tree.topLevelItemCount()):
-                top = self.tree.topLevelItem(index)
-                for child_index in range(top.childCount()):
-                    child = top.child(child_index)
-                    part = str(child.data(0, Qt.UserRole) or "").upper()
-                    child.setCheckState(0, Qt.Checked if part in wanted else Qt.Unchecked)
-        finally:
-            self._updating_tree = False
         self._selection = selection
+        self._populate_tree()
         seeds = document.get("found_seeds") or []
         if seeds:
             self.seed_edit.setText(seeds[0])
@@ -667,7 +763,6 @@ class ShipDesignerPage(QWidget):
 
     def _save_design(self) -> None:
         if not selected_parts(self._selection, self._groups):
-            notify.warn("请先至少选择一个部件，再保存设计")
             self.search_status.setText("空设计不能保存：请先选择部件")
             return
         ship = str(self.ship.currentData() or "")
@@ -676,16 +771,10 @@ class ShipDesignerPage(QWidget):
                                         text=f"{label} 设计")
         if not ok:
             return
-        seeds = []
-        for index in range(self.results.count()):
-            row = self.results.item(index).data(Qt.UserRole) or {}
-            seed = normalize_design_seed(row.get("seed"))
-            if seed and seed not in seeds:
-                seeds.append(seed)
         try:
-            document = design_payload(name, ship, self._selection, self._groups, seeds)
+            document = design_payload(name, ship, self._selection, self._groups,
+                                      self._seed_candidates())
         except ValueError as e:
-            notify.warn(str(e))
             self.search_status.setText(str(e))
             return
         start = str(Path.home() / f"{_slug(document['name'])}{DESIGN_SUFFIX}")
@@ -698,10 +787,8 @@ class ShipDesignerPage(QWidget):
         try:
             write_design_file(path, document)
         except OSError as e:
-            notify.error(f"保存设计失败：{e}")
             self.search_status.setText(f"保存设计失败：{e}")
             return
-        notify.success(f"设计已保存：{Path(path).name}")
         self.search_status.setText(f"设计已保存到 {path}（未写存档）")
 
     def _load_design(self) -> None:
@@ -714,7 +801,6 @@ class ShipDesignerPage(QWidget):
         try:
             data = json.loads(Path(path).read_text("utf-8"))
         except (OSError, ValueError) as e:
-            notify.error(f"无法读取设计文件：{e}")
             self.search_status.setText(f"无法读取设计文件：{e}")
             return
         ship = str((data or {}).get("ship") or "") if isinstance(data, dict) else ""
@@ -731,13 +817,11 @@ class ShipDesignerPage(QWidget):
                 return
             document = design_document(data, self._groups)
         except ValueError as e:
-            notify.warn(str(e))
             self.search_status.setText(str(e))
             return
         self._apply_design(document)
-        notify.success(f"设计已载入：{document['name']}")
 
-    def _current_design(self) -> dict:
+    def _seed_candidates(self) -> list[str]:
         seeds = []
         for index in range(self.results.count()):
             row = self.results.item(index).data(Qt.UserRole) or {}
@@ -747,6 +831,10 @@ class ShipDesignerPage(QWidget):
         current = normalize_design_seed(self.seed_edit.text())
         if current and current not in seeds:
             seeds.insert(0, current)
+        return seeds
+
+    def _current_design(self) -> dict:
+        seeds = self._seed_candidates()
         try:
             return design_payload(f"{self.ship.currentText()} 设计",
                                   str(self.ship.currentData() or ""),
@@ -756,13 +844,29 @@ class ShipDesignerPage(QWidget):
                     "ship": str(self.ship.currentData() or ""),
                     "want": [], "found_seeds": seeds}
 
+    def _sync_write_state(self, *_args) -> None:
+        reason = write_block_reason(selected_parts(self._selection, self._groups),
+                                    self._seed_candidates())
+        self.write_design_btn.setEnabled(not reason and self._search_job is None)
+        self.write_reason.setText(reason)
+        self.write_reason.setVisible(bool(reason))
+        if reason:
+            self.write_design_btn.setToolTip(f"暂不能写入：{reason}")
+        else:
+            self.write_design_btn.setToolTip(
+                "把当前种子写入新船槽或替换现有槽；先备份，可写入副本")
+
     def _write_design(self) -> None:
+        reason = write_block_reason(selected_parts(self._selection, self._groups),
+                                    self._seed_candidates())
+        if reason:
+            self.search_status.setText(f"暂不能写入：{reason}")
+            return
         document = self._current_design()
         seeds = document.get("found_seeds") or []
         seed = normalize_design_seed(seeds[0]) if seeds else ""
         if not seed:
             self.search_status.setText("没有可用种子：请先搜索并选中一个结果")
-            notify.warn("没有可用种子，请先搜索并选中一个结果")
             return
         document["found_seeds"] = [seed] + [s for s in document.get("found_seeds") or []
                                             if s != seed]
@@ -771,7 +875,6 @@ class ShipDesignerPage(QWidget):
             result = dialog.result or {}
             self.search_status.setText(
                 f"写入成功 · {result.get('what') or ('槽位 ' + str(result.get('slot')))}")
-            notify.success("设计已写入存档，并通过读回校验")
 
     def _update_summary(self) -> None:
         rows = selection_rows(self._selection, self._groups)
@@ -782,10 +885,11 @@ class ShipDesignerPage(QWidget):
             self.summary.addItem(item)
         count = len(rows)
         if count:
-            self.summary_count.setText(f"已选 {count} 个组")
+            self.summary_count.setText(f"已选 {count} 个组；点部件可换或取消")
         else:
             self.summary_count.setText("尚未选择部件（空选也可以预览默认外形）")
         self.search_btn.setEnabled(bool(rows) and self._search_job is None)
+        self._sync_write_state()
 
     # ------------------------------------------------------------ 预览
 
@@ -795,6 +899,10 @@ class ShipDesignerPage(QWidget):
     def _current_params(self) -> dict:
         return preview_params(self.ship.currentData(), self.seed_edit.text(),
                               self._groups, self._selection)
+
+    def _change_view(self) -> None:
+        mode = str(self.view_combo.currentData() or "iso")
+        self.viewer.set_view(mode)
 
     def _refresh_preview(self) -> None:
         self._preview_timer.stop()
@@ -885,6 +993,7 @@ class ShipDesignerPage(QWidget):
         self.results.clear()
         self.search_status.setText("搜索中…")
         self.search_btn.setEnabled(False)
+        self._sync_write_state()
         payload = {"ship": ship, "want": parts, "avoid": [], "limit": 12,
                    "max_seeds": 20_000_000, "time_limit": 20.0, "workers": 1}
         try:
@@ -892,6 +1001,7 @@ class ShipDesignerPage(QWidget):
         except Exception as e:                              # noqa: BLE001
             self._search_job = None
             self.search_btn.setEnabled(True)
+            self._sync_write_state()
             self.search_status.setText(f"无法开始搜索：{type(e).__name__}: {e}")
             return
         self._search_timer.start()
@@ -911,6 +1021,7 @@ class ShipDesignerPage(QWidget):
         self._search_timer.stop()
         self._search_job = None
         self.search_btn.setEnabled(bool(selected_parts(self._selection, self._groups)))
+        self._sync_write_state()
         if job.error:
             self.search_status.setText(f"搜索失败：{job.error}")
             return
@@ -923,6 +1034,7 @@ class ShipDesignerPage(QWidget):
             self.results.addItem(item)
         if rows:
             self.search_status.setText(f"命中 {len(rows)} 个（已测 {tested:,}）")
+            self._sync_write_state()
         else:
             self.search_status.setText("没有命中：条件可能太严")
 
@@ -937,4 +1049,5 @@ class ShipDesignerPage(QWidget):
             return
         self.seed_edit.setText(data["seed"])
         self.search_status.setText(f"已选用种子 {data['seed']}，3D 预览已更新")
+        self._sync_write_state()
         self._refresh_preview()

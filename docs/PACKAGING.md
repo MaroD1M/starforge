@@ -1,5 +1,10 @@
 # 包体削减与体积报告
 
+> **2026-11-22 更新**：v0.16 起发布资产改为 **Inno Setup LZMA2 安装包**，新的
+> PyInstaller 排除清单、实测体积与 70 MiB / 55 MiB 预算见
+> [SIZE-BUDGET.md](SIZE-BUDGET.md)。本文的“131 MB”和“110 MiB zip 预算”是 v0.14
+> 的历史口径，保留用于追溯。
+
 本文记录 `v0.14.x` 的 Windows 绿色包（`starforge-*-win64.zip`）为什么大、这次砍了什么、怎么验证，以及下一阶段 60–80 MB 需要哪些产品取舍。
 
 > 本次只改打包配置与报告脚本，没有改业务代码；没有在 Linux 上执行 Windows 打包。

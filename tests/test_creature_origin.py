@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from starforge import creature
+from starforge.app.widgets import fleet_companion as companion_mod
 from starforge.app.widgets import pets_view as pets_mod
 
 # 已知 UA：system=0x104, y=-15, z=-1603, x=-795, galaxy=0, planet=0
@@ -134,10 +135,19 @@ def qapp():
 class FakeServices:
     """只实现 PetsView 用到的服务；记录 warp 调用，绝不创建 AgentClient。"""
 
-    def __init__(self, result: dict | None = None, error: Exception | None = None):
+    def __init__(self, result: dict | None = None, error: Exception | None = None,
+                 planet_result: dict | None = None,
+                 planet_error: Exception | None = None):
         self.result = result if result is not None else {"ok": True, "confirmed": True}
         self.error = error
+        self.planet_result = planet_result if planet_result is not None else {
+            "ok": True, "count": 2, "fauna": [
+                {"name": "动物甲", "creature_seed": "0xA1", "discoverer": "旅行者"},
+                {"name": "动物乙", "creature_seed": "0xB2", "discoverer": ""},
+            ], "reason": None}
+        self.planet_error = planet_error
         self.warp_calls: list[dict] = []
+        self.planet_calls: list[dict] = []
 
     def warp_portal(self, glyphs: str, galaxy: int | None = None,
                     stage: str = "prepare_warp") -> dict:
@@ -145,6 +155,12 @@ class FakeServices:
         if self.error is not None:
             raise self.error
         return dict(self.result)
+
+    def companion_planet(self, companion, path: str | None = None) -> dict:
+        self.planet_calls.append({"companion": companion, "path": path})
+        if self.planet_error is not None:
+            raise self.planet_error
+        return dict(self.planet_result)
 
 
 def _sync_worker(fn, on_done=None, on_error=None, *args, **kwargs):
@@ -290,3 +306,102 @@ def test_warp_never_uses_real_agent_client(qapp, monkeypatch):
     view._warp_selected()
 
     assert svc.warp_calls and svc.warp_calls[0]["glyphs"] == GLYPHS_PLANET_3
+
+
+# ---------------------------------------------------------------- 船队右栏联查
+
+def _make_panel(monkeypatch, svc: FakeServices, pet: dict):
+    """同步 worker + 真实 PetsView 绑定，验证右栏详情与列表动作共用一套逻辑。"""
+    monkeypatch.setattr(companion_mod, "run_worker", _sync_worker)
+    view = _make_view(monkeypatch, svc, pet)
+    panel = companion_mod.FleetCompanionPanel(svc)
+    panel.bind_pets(view)
+    panel.set_path("/tmp/save.hg")
+    panel.set_creature(pet)
+    return panel, view
+
+
+def test_panel_shows_origin_glyphs_and_fauna(qapp, monkeypatch):
+    pet = creature.companion_entry(_fake_pet())
+    svc = FakeServices()
+    panel, view = _make_panel(monkeypatch, svc, pet)
+
+    assert panel.source_label.text() == "来源行星：Euclid · 行星 #3"
+    assert panel.glyph_label.text() == f"符文：{GLYPHS_PLANET_3}"
+    facts = panel.detail_label.text()
+    assert not any(line.startswith(("来源：", "符文："))
+                   for line in facts.splitlines())
+    assert f"UA：0x{UA_PLANET_3:X}" in facts
+    assert panel.fauna_state == "ok"
+    text = panel.fauna_label.text()
+    assert "该行星动物（前 2/2 条）" in text
+    assert "动物甲" in text and "动物乙" in text
+    assert view.warp_btn.isEnabled() is True
+    assert svc.planet_calls and svc.planet_calls[0]["path"] == "/tmp/save.hg"
+
+    # 复制/传送动作由右栏按钮触发，但复用列表视图的确认与风险文案。
+    panel.copy_btn.click()
+    assert GLYPHS_PLANET_3 in panel.status_label.text()
+
+
+def test_panel_fauna_empty_state(qapp, monkeypatch):
+    svc = FakeServices(planet_result={
+        "ok": True, "count": 0, "fauna": [],
+        "reason": "没有找到该行星的动物发现记录"})
+    panel, _ = _make_panel(monkeypatch, svc, creature.companion_entry(_fake_pet()))
+
+    assert panel.fauna_state == "empty"
+    assert "暂无动物记录" in panel.fauna_label.text()
+    assert panel.retry_btn.isHidden() is False
+
+
+def test_panel_fauna_error_state(qapp, monkeypatch):
+    svc = FakeServices(planet_result={
+        "ok": False, "count": 0, "fauna": [], "reason": "读取存档失败：坏文件"})
+    panel, _ = _make_panel(monkeypatch, svc, creature.companion_entry(_fake_pet()))
+
+    assert panel.fauna_state == "error"
+    assert "联查失败" in panel.fauna_label.text()
+    assert "坏文件" in panel.fauna_label.text()
+    assert panel.retry_btn.isHidden() is False
+
+
+def test_panel_fauna_loading_state_is_visible(qapp, monkeypatch):
+    svc = FakeServices()
+    pet = creature.companion_entry(_fake_pet())
+    view = _make_view(monkeypatch, svc, pet)
+    monkeypatch.setattr(companion_mod, "run_worker", lambda *a, **k: None)
+    panel = companion_mod.FleetCompanionPanel(svc)
+    panel.bind_pets(view)
+    panel.set_creature(pet)
+
+    assert panel.fauna_state == "loading"
+    assert "正在联查" in panel.fauna_label.text()
+    assert panel.retry_btn.isHidden() is True
+
+
+def test_panel_warp_uses_confirm_and_risk_copy(qapp, monkeypatch):
+    captured = _capture_notify(monkeypatch)
+    confirmed = _accept_confirm(monkeypatch)
+    svc = FakeServices({"ok": True, "confirmed": True})
+    panel, _ = _make_panel(monkeypatch, svc, creature.companion_entry(_fake_pet()))
+
+    panel.warp_btn.click()
+
+    assert svc.warp_calls == [
+        {"glyphs": GLYPHS_PLANET_3, "galaxy": 0, "stage": "prepare_warp"}]
+    assert "调用游戏内传送门机制，失败可用「还原」回滚" in confirmed[0]["text"]
+    assert "已传送到来源星球" in panel.status_label.text()
+    assert captured["success"][-1].startswith("已传送到来源星球")
+
+
+def test_panel_without_glyphs_disables_actions_and_skips_lookup(qapp, monkeypatch):
+    svc = FakeServices()
+    pet = creature.companion_entry(_fake_pet(UA=f"0x{UA_PLANET_0:X}"))
+    panel, _ = _make_panel(monkeypatch, svc, pet)
+
+    assert "行星未知" in panel.source_label.text()
+    assert panel.copy_btn.isEnabled() is False
+    assert panel.warp_btn.isEnabled() is False
+    assert panel.fauna_state == "empty"
+    assert svc.planet_calls == []

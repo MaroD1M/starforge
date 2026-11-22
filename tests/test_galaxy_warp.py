@@ -116,7 +116,7 @@ def test_button_disabled_with_hint_when_row_has_no_address(qapp, monkeypatch):
                       {"index": 1, "system_name": "无地址星系",
                        "coords": "04E4:0070:01BC:0104"})
     assert page.warp_btn.isEnabled() is False
-    assert "没有可用的门地址" in page.warp_hint.text()
+    assert "没有可用的门地址" in page.status.text()
 
 
 def test_button_enabled_for_row_with_ua(qapp, monkeypatch):
@@ -124,7 +124,7 @@ def test_button_enabled_for_row_with_ua(qapp, monkeypatch):
     page = _make_page(monkeypatch, FakeServices(), {
         "ua": f"0x{UA:X}", "index": 3, "system_name": "EOCS-1", "galaxy": 0})
     assert page.warp_btn.isEnabled() is True
-    assert GLYPHS_PLANET_3 in page.warp_hint.text()
+    assert GLYPHS_PLANET_3 in page.warp_btn.toolTip()
 
 
 # ---------------------------------------------------------------- 三种返回文案

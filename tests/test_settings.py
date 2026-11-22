@@ -26,6 +26,44 @@ def test_settings_fields_persist_across_reload():
     assert snap["workers"] == 3
 
 
+def test_settings_groups_are_folded_and_path_summary_elides(qapp):
+    """四组默认折叠；顶部只有一个 primary；长路径用省略号 + tooltip。"""
+    from starforge.app.pages.settings import SettingsPage
+    from starforge.app.widgets.settings_flow import FoldSection
+
+    page = SettingsPage()
+    try:
+        groups = page.findChildren(FoldSection)
+        assert [g.title_label.text() for g in groups] == [
+            "路径与自动检测", "安全与性能", "版本与代理", "诊断"]
+        assert all(not g.is_expanded() for g in groups)
+        assert page.run_health_btn.objectName() == "primary"
+
+        long_game = "D:\\SteamLibrary\\steamapps\\common\\No Man's Sky"
+        long_saves = ("C:\\Users\\Administrator\\AppData\\Roaming\\HelloGames\\NMS\\"
+                      "st_76561198000000000")
+        page.game.setText(long_game)
+        page.saves.setText(long_saves)
+        page.gamedata.setText("")
+        page._sync_paths_summary()
+        assert long_game in page.resolved_summary.toolTip()
+        assert long_saves in page.resolved_summary.toolTip()
+
+        page.gamedata.setText("D:\\NMS\\GAMEDATA")
+        page._save()
+        from starforge.core import settings as settings_mod
+
+        settings_mod._CURRENT = None
+        assert settings_mod.current().gamedata_dir == "D:\\NMS\\GAMEDATA"
+
+        page.paths_group.set_expanded(True)
+        assert page.paths_group.is_expanded() is True
+        assert page.paths_group.body.isHidden() is False
+    finally:
+        page.close()
+        page.deleteLater()
+
+
 def test_settings_page_controls_save_immediately(qapp):
     from starforge.app.pages.settings import SettingsPage
     from starforge.core import settings as settings_mod

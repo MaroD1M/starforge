@@ -6,6 +6,7 @@
   · 扫描用可注入的 `provider`，所以这些断言不依赖 unicorn。
 """
 import json
+import os
 
 import pytest
 
@@ -150,3 +151,91 @@ def test_csv_export_respects_filters(client, monkeypatch, tmp_path):
     st.close()
     text = client.get("/api/galaxy/export.csv?biome=Frozen").data.decode()
     assert "0x70" in text and "0x71" not in text
+
+
+# ---------------------------------------------------------------- 星图页交互重排
+
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+pytest.importorskip("PySide6")
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+class _PageServices:
+    def glyph_strip_png(self, glyphs: str) -> bytes:
+        return b""
+
+
+def _make_page(monkeypatch):
+    from starforge.app.pages import galaxy as page_mod
+
+    monkeypatch.setattr(page_mod, "get_services", lambda: _PageServices())
+    return page_mod.GalaxyPage()
+
+
+def test_primary_action_follows_current_tab(qapp, monkeypatch):
+    page = _make_page(monkeypatch)
+    try:
+        assert page.primary_btn.text() == "扫描"
+        page.tabs.setCurrentWidget(page.scan_page)
+        assert page.primary_btn.text() == "扫描"
+        page.tabs.setCurrentWidget(page.index_page)
+        assert page.primary_btn.text() == "查询"
+        page.tabs.setCurrentWidget(page.discovered_page)
+        assert page.primary_btn.text() == "传送到此星球"
+        page.tabs.setCurrentWidget(page.address_page)
+        assert page.primary_btn.text() == "转换地址"
+    finally:
+        page.close()
+
+
+def test_secondary_actions_are_in_more_menu(qapp, monkeypatch):
+    page = _make_page(monkeypatch)
+    try:
+        labels = [action.text() for action in page.more_btn.menu().actions()
+                  if action.text()]
+        assert "刷新当前星系" in labels
+        assert "导出 CSV" in labels
+        assert "浮窗显示选中符文" in labels
+        assert "清空当前筛选" in labels
+        assert page.header.actions.count() == 3      # primary + 取消扫描 + 更多
+        assert not hasattr(page, "refresh_btn")
+        assert not hasattr(page, "export_btn")
+    finally:
+        page.close()
+
+
+def test_double_click_opens_detail_dialog(qapp, monkeypatch):
+    from starforge.app.pages import galaxy as page_mod
+
+    page = _make_page(monkeypatch)
+    seen: list[dict] = []
+
+    class FakeDialog:
+        def __init__(self, title, body, *, glyphs=None, parent=None):
+            seen.append({"title": title, "body": body, "glyphs": glyphs})
+
+        def show(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(page_mod, "GalaxyDetailDialog", FakeDialog)
+    try:
+        page._fill_scan_rows([{
+            "ua": "0x11200F19BDCE5", "index": 3, "system_name": "EOCS-1",
+            "coords": "04E4:0070:01BC:0112", "glyphs": "3112F19BDCE5"}])
+        page._on_table_double_click(page.scan_table, 0)
+        assert seen and seen[-1]["glyphs"] == "3112F19BDCE5"
+        assert "04E4:0070:01BC:0112" in seen[-1]["title"]
+    finally:
+        page.close()
+

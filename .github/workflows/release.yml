@@ -1,4 +1,4 @@
-# 只做一件事：打 tag 时构建 Windows 绿色包并发布 Release。
+# 只做一件事：打 tag 时构建 Windows 安装包并发布 Release。
 # 平时零消耗（不打 tag 不跑），不产生失败记录，也不上传任何构建产物到仓库本身。
 name: release
 
@@ -16,13 +16,14 @@ env:
   # 默认裁掉 Qt 的软件 OpenGL（opengl32sw.dll，未压缩约 20 MB）。无 GPU/远程桌面下
   # 3D 预览会退回服务端 PNG；需要保留“安全模式”软件渲染时改成 "1"。
   STARFORGE_KEEP_SOFTWARE_OPENGL: "0"
-  # 最终 zip 的硬预算（MiB）；先保证从 131 MB 降下来，实测稳定后再收紧到 100/90。
-  STARFORGE_SIZE_BUDGET_MIB: "110"
+  # 最终安装包的硬预算（MiB）。v0.16 目标 ≤70 MiB；用 Inno Setup LZMA2
+  # solid 压缩，用户只下载这一个 exe，不需要任何额外依赖或组件。
+  STARFORGE_SIZE_BUDGET_MIB: "70"
 
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -41,8 +42,16 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install -r requirements.txt pyinstaller pytest ruff
           pip install .
+
+      - name: 发布前静态检查（pytest + ruff F 类）
+        shell: pwsh
+        run: |
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { throw "pytest 失败" }
+          python -m ruff check --select F --config packaging/ruff.toml .
+          if ($LASTEXITCODE -ne 0) { throw "ruff F 类检查失败" }
 
       - name: 自检（不依赖游戏文件）
         shell: pwsh
@@ -79,46 +88,22 @@ jobs:
           python scripts/size_report.py build/agent-runtime --top 15 --by package --compare $before
           if ($LASTEXITCODE -ne 0) { throw "agent runtime 裁剪后体积报告失败" }
 
-      - name: 打包（starforge-cli.exe：控制台 CLI + 原生 GUI；入口 packaging/entry.py）
+      - name: 打包（starforge-cli.exe：控制台 CLI + 原生 GUI；packaging/starforge.spec）
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --name starforge-cli --onedir `
-            --paths . --paths build/vendor --icon assets/starforge.ico `
-            --collect-submodules nms_save --collect-submodules nms_procgen `
-            --add-data "build/vendor/data;data" `
-            --add-data "build/vendor/THIRD_PARTY_SHIPWRIGHT_LICENSE.txt;." `
-            --collect-all hgpaktool --collect-all numpy --collect-all flask `
-            --collect-all texture2ddecoder `
-            --collect-all unicorn --collect-all pefile --hidden-import pkg_resources `
-            --collect-submodules starforge `
-            --add-data "starforge/agent;starforge/agent" `
-            --add-data "starforge/live/builds;starforge/live/builds" `
-            --add-data "assets;assets" `
-            --exclude-module numpy.f2py --exclude-module numpy.distutils `
-            --exclude-module pymhf --exclude-module nmspy `
-            --exclude-module starforge.agent.starforge_agent `
-            --exclude-module tkinter --exclude-module _tkinter `
-            --exclude-module webview --exclude-module pythonnet --exclude-module clr_loader `
-            --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick `
-            --exclude-module PySide6.QtQuick3D --exclude-module PySide6.QtWebEngineCore `
-            --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.QtWebEngineQuick `
-            --exclude-module PySide6.QtMultimedia --exclude-module PySide6.QtCharts `
-            --exclude-module PySide6.QtDataVisualization --exclude-module PySide6.QtBluetooth `
-            --exclude-module PySide6.QtNfc --exclude-module PySide6.QtSerialPort `
-            --exclude-module PySide6.QtSql --exclude-module PySide6.QtTest `
-            --exclude-module PySide6.QtHelp --exclude-module PySide6.QtDesigner `
-            --exclude-module PySide6.QtUiTools --exclude-module PySide6.QtScxml `
-            --exclude-module PySide6.QtStateMachine --exclude-module PySide6.QtSvg `
-            packaging/entry.py
+          # spec 内 name="starforge-cli"（等价于历史命令 --name starforge-cli）；
+          # 历史命令：pyinstaller --noconfirm --clean --name starforge-cli --onedir ... packaging/entry.py
+          python packaging/pyinstaller_build.py --noconfirm --clean packaging/starforge.spec
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败（exit $LASTEXITCODE）" }
+          if (-not (Test-Path "dist/starforge/starforge-cli.exe")) { throw "没有生成 starforge-cli.exe" }
 
       - name: 构建无控制台启动器（starforge.exe）
         shell: pwsh
         run: |
-          if (Test-Path "dist/starforge") { Remove-Item -Recurse -Force "dist/starforge" }
-          Move-Item "dist/starforge-cli" "dist/starforge"
+          # 历史命令：pyinstaller --noconfirm --clean --onefile --windowed --name starforge ...
           $icon = (Resolve-Path "assets/starforge.ico").Path
-          pyinstaller --noconfirm --clean --onefile --windowed --name starforge `
-            --distpath "dist/launcher" --workpath "build/launcher" `
+          python packaging/pyinstaller_build.py --noconfirm --clean --onefile --windowed --name starforge `
+            --noupx --distpath "dist/launcher" --workpath "build/launcher" `
             --specpath "build/launcher" --icon $icon `
             packaging/launcher.py
           if ($LASTEXITCODE -ne 0) { throw "无控制台启动器构建失败（exit $LASTEXITCODE）" }
@@ -138,79 +123,10 @@ jobs:
       - name: 裁剪包内安全冗余（Qt 翻译/插件、unicorn 静态库、numpy 测试）
         shell: pwsh
         run: |
-          $internal = "dist/starforge/_internal"
-          if (-not (Test-Path $internal)) { throw "没有找到 $internal" }
-          function Remove-Path($p) {
-            if (Test-Path $p) { Remove-Item -Recurse -Force $p -ErrorAction SilentlyContinue }
-          }
-
-          # unicorn：运行时只需要 unicorn/ Python 包 + lib/unicorn.dll；
-          # lib/unicorn.lib 是 49.9 MB 的链接期静态库，include/ 是 C 头文件。
-          Remove-Path "$internal/unicorn/include"
-          Get-ChildItem "$internal/unicorn/lib" -Filter "*.lib" -File -ErrorAction SilentlyContinue |
-            Remove-Item -Force
-
-          # Qt：界面文案在 Python/QSS 里，未安装 QTranslator，qt/qtbase 翻译不会被加载。
-          Remove-Path "$internal/PySide6/translations"
-          Remove-Path "$internal/PySide6/qml"
-
-          # Qt 插件：只保留 Windows 平台插件、ICO 解码、原生样式和 offscreen（CI 无桌面时用）。
-          foreach ($d in @("designer", "qmltooling", "sqldrivers", "tls",
-                           "networkinformation", "networkaccess", "vectorimageformats",
-                           "platforminputcontexts", "generic")) {
-            Remove-Path "$internal/PySide6/plugins/$d"
-          }
-          $img = "$internal/PySide6/plugins/imageformats"
-          if (Test-Path $img) {
-            Get-ChildItem $img -Filter "*.dll" -File |
-              Where-Object { $_.Name -ne "qico.dll" } | Remove-Item -Force
-          }
-          $platforms = "$internal/PySide6/plugins/platforms"
-          if (Test-Path $platforms) {
-            Get-ChildItem $platforms -Filter "*.dll" -File |
-              Where-Object { $_.Name -notin @("qwindows.dll", "qoffscreen.dll") } |
-              Remove-Item -Force
-          }
-
-          # 已 exclude 的 Qt 模块仍可能被插件依赖带回；DLL 不在就一并清掉。
-          $qtJunk = @(
-            "Qt6Svg.dll", "Qt6Network.dll", "Qt6Qml.dll", "Qt6QmlModels.dll",
-            "Qt6QmlCompiler.dll", "Qt6Quick.dll", "Qt6Quick3D.dll",
-            "Qt6QuickControls2.dll", "Qt6QuickTemplates2.dll", "Qt6Designer.dll",
-            "Qt6DesignerComponents.dll", "Qt6Help.dll", "Qt6Sql.dll", "Qt6Test.dll",
-            "Qt6Multimedia.dll", "Qt6Charts.dll", "Qt6DataVisualization.dll",
-            "Qt6Bluetooth.dll", "Qt6Nfc.dll", "Qt6SerialPort.dll", "Qt6UiTools.dll",
-            "Qt6Scxml.dll", "Qt6StateMachine.dll", "Qt6WebEngineCore.dll",
-            "Qt6WebEngineWidgets.dll", "Qt6WebEngineQuick.dll", "pyside6qml.abi3.dll"
-          )
-          foreach ($name in $qtJunk) {
-            Get-ChildItem $internal -Recurse -Filter $name -File -ErrorAction SilentlyContinue |
-              Remove-Item -Force
-          }
-
-          # 软件 OpenGL 兜底（安全模式/无显卡驱动时用）；默认关闭以换取体积。
-          if ($env:STARFORGE_KEEP_SOFTWARE_OPENGL -ne "1") {
-            Remove-Path "$internal/PySide6/opengl32sw.dll"
-            Remove-Path "$internal/opengl32sw.dll"
-            Write-Host "已移除 opengl32sw.dll（安全模式 3D 将退回服务端 PNG）"
-          }
-
-          # numpy：--collect-all 会带 tests/f2py/头文件/静态库/类型存根，运行时都不需要。
-          Remove-Path "$internal/numpy/f2py"
-          Remove-Path "$internal/numpy/distutils"
-          Remove-Path "$internal/numpy/_core/include"
-          Get-ChildItem "$internal/numpy" -Recurse -Directory -Filter "tests" -ErrorAction SilentlyContinue |
-            Remove-Item -Recurse -Force
-          Get-ChildItem "$internal/numpy" -Recurse -File -Include "*.pyi", "*.lib", "*.a" -ErrorAction SilentlyContinue |
-            Remove-Item -Force
-
-          # PyInstaller 一般不会再带这些；保险起见统一清掉。
-          Get-ChildItem $internal -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
-            Remove-Item -Recurse -Force
-          Get-ChildItem $internal -Recurse -File -Include "*.pyc", "*.pyo", "*.pdb" -ErrorAction SilentlyContinue |
-            Remove-Item -Force
-
-          Write-Host "裁剪完成：$internal"
+          $pruneArgs = @("packaging/prune_bundle.py", "dist/starforge/_internal")
+          if ($env:STARFORGE_KEEP_SOFTWARE_OPENGL -eq "1") { $pruneArgs += "--keep-software-opengl" }
+          python @pruneArgs
+          if ($LASTEXITCODE -ne 0) { throw "裁剪 _internal 失败" }
 
       - name: 体积报告（裁剪后的 _internal，对比裁剪前）
         shell: pwsh
@@ -310,30 +226,94 @@ jobs:
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           }
 
-      - name: 压缩产物（GUI + CLI + agent 运行时）
+      - name: 组装发布目录（GUI + CLI + agent 运行时）
         shell: pwsh
         run: |
-          if (Test-Path "build/agent-runtime") {
-            Copy-Item -Recurse -Force "build/agent-runtime" "dist/starforge/agent-runtime"
+          if (-not (Test-Path "build/agent-runtime/python.exe")) {
+            throw "缺少 build/agent-runtime（agent 运行时必须内置，不能让用户额外下载）"
           }
+          if (Test-Path "dist/starforge/agent-runtime") {
+            Remove-Item -Recurse -Force "dist/starforge/agent-runtime"
+          }
+          Copy-Item -Recurse -Force "build/agent-runtime" "dist/starforge/agent-runtime"
           Set-Content -Path "dist/starforge/starforge-safe.bat" -Encoding ascii -Value '@echo off','"%~dp0starforge.exe" app --safe','pause'
-          Compress-Archive -Path dist/starforge/* -DestinationPath "dist/starforge-${{ github.ref_name }}-win64.zip"
 
-      - name: 体积报告与预算（最终 zip）
+      - name: 构建 Inno Setup 安装包（LZMA2 solid）
         shell: pwsh
         run: |
-          $zip = "dist/starforge-${{ github.ref_name }}-win64.zip"
-          python scripts/size_report.py $zip --top 25 --by category --fail-over $env:STARFORGE_SIZE_BUDGET_MIB
-          if ($LASTEXITCODE -ne 0) { throw "包体超过预算 $env:STARFORGE_SIZE_BUDGET_MIB MiB" }
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host "未找到 Inno Setup，尝试用 Chocolatey 安装（仅 CI 工具，不进入发布包）"
+            choco install innosetup --no-progress -y
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "找不到 ISCC.exe（Inno Setup 6）" }
+
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          if ($version -match '^(\d+\.\d+\.\d+)') {
+            $version = $Matches[1]
+          } else {
+            $version = (python -c "import starforge; print(starforge.__version__)").Trim()
+          }
+          Write-Host "Inno Setup 版本：$version"
+          & $iscc "/DAppVersion=$version" "installer/starforge.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败（exit $LASTEXITCODE）" }
+          $setup = Get-ChildItem "dist/starforge-*-win64-setup.exe" |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $setup) { throw "没有生成安装包" }
+          Write-Host "安装包：$($setup.FullName) ($([math]::Round($setup.Length/1MB,1)) MiB)"
+
+      - name: 体积报告与预算（最终安装包 + 解压体积构成）
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "dist/starforge-*-win64-setup.exe" |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          python scripts/size_report.py $setup.FullName --fail-over $env:STARFORGE_SIZE_BUDGET_MIB
+          if ($LASTEXITCODE -ne 0) { throw "安装包超过预算 $env:STARFORGE_SIZE_BUDGET_MIB MiB" }
+          python scripts/size_report.py dist/starforge --top 20 --by category
+
+      - name: 安装包冒烟（静默安装到干净目录 + doctor/webcheck）
+        shell: pwsh
+        env:
+          STARFORGE_HOME: ${{ runner.temp }}/sfhome-installed
+        run: |
+          $setup = Get-ChildItem "dist/starforge-*-win64-setup.exe" |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $dir = Join-Path $env:RUNNER_TEMP "sf-installed"
+          if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+          $p = Start-Process -FilePath $setup.FullName `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=`"$dir`"" `
+            -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "静默安装失败（exit $($p.ExitCode)）" }
+          $exe = Join-Path $dir "starforge-cli.exe"
+          if (-not (Test-Path $exe)) { throw "安装目录缺少 starforge-cli.exe" }
+          if (-not (Test-Path (Join-Path $dir "agent-runtime/python.exe"))) {
+            throw "安装目录缺少内置 agent 运行时"
+          }
+          $out = & $exe doctor 2>&1 | Out-String
+          $out | Out-Host
+          if ($out -match '"unicorn":\s*\{\s*"ok": false') { throw "安装后的 unicorn 不可用" }
+          foreach ($dep in @("numpy", "flask", "lz4", "hgpaktool", "texture2ddecoder", "pefile")) {
+            if ($out -notmatch ('"' + $dep + '": "ok"')) { throw "安装后依赖不可用：$dep" }
+          }
+          & $exe webcheck
+          if ($LASTEXITCODE -ne 0) { throw "安装后 webcheck 失败（exit $LASTEXITCODE）" }
+          Write-Host "安装包冒烟通过（零额外下载）"
 
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/starforge-${{ github.ref_name }}-win64.zip
+          files: dist/starforge-*-win64-setup.exe
           generate_release_notes: true
           body: |
-            自动构建产物（Windows x64，绿色解压即用）。
+            自动构建产物（Windows x64，安装即用，不需要额外下载任何依赖或组件）。
 
-            - 依赖本地游戏目录与 NMS-Shipwright 数据层，首次启动请按引导选择路径
+            - 已内置 PySide6、numpy、unicorn、NMS-Shipwright 数据层和 agent 的独立 Python 运行时
+            - 依赖本地游戏目录；首次启动请按引导选择路径
             - 默认只读；写入功能需在设置里显式开启
             - 非官方项目，请先备份存档

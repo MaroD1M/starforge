@@ -402,6 +402,110 @@ class Services:
             out["warnings"] = base.get("warnings") or []
         return _ok(**out)
 
+    # ------------------------------------------------------------ 发现索引 / 同伴联查
+
+    def discoveries_index(self, path: str | None = None) -> dict:
+        """把当前存档的行星发现记录落进本地 SQLite 索引（只读存档、只写缓存）。"""
+        from .. import discoveries_index as index_mod
+
+        res = index_mod.index_save(path)
+        if res.get("ok"):
+            detail = f"{res.get('count', 0)} 颗"
+            if res.get("cached"):
+                detail += f" · 复用（{res.get('reason') or 'cache'}）"
+            elif res.get("rebuilt"):
+                detail += " · 已重建"
+            if res.get("skipped"):
+                detail += f" · 跳过 {res['skipped']} 条坏记录"
+            _record("scan", "建立发现索引", detail, "discoveries")
+        else:
+            _record("scan", "建立发现索引失败", res.get("error") or "", "discoveries", False)
+        return _ok(**res)
+
+    def discoveries_query(self, **kw: Any) -> dict:
+        """查询本地发现索引；筛选参数与 ``discoveries.filter_discovered`` 一致。"""
+        from .. import discoveries_index as index_mod
+
+        try:
+            rows = index_mod.query(**kw)
+        except ValueError as e:
+            _record("scan", "查询发现索引失败", str(e), "discoveries", False)
+            raise BadRequest(str(e)) from e
+        _record("scan", "查询发现索引", f"{len(rows)} 颗 · 条件 {len(kw)} 项", "discoveries")
+        return _ok(count=len(rows), planets=rows)
+
+    def companion_planet(self, companion: Any, path: str | None = None) -> dict:
+        """同伴 → 来源行星 → 该行星的动物发现记录。
+
+        ``companion`` 接受 ``creature.companions()`` 的条目（含 ``ua`` / ``origin``），
+        也接受裸 UA。UA 缺失、行星位为 0 或不在 1..6 时返回空结果并给出原因；
+        行星可定位但没有动物记录时同样返回空列表 + ``reason``。
+        """
+        from .. import address
+        from .. import discoveries_index as index_mod
+        from .. import discoveries, glyphs as glyph_mod
+
+        source: Any = companion
+        if isinstance(source, dict) and isinstance(source.get("companion"), dict):
+            source = source["companion"]
+        info: dict[str, Any] = {}
+        origin: dict = {}
+        if isinstance(source, dict):
+            info = {k: source.get(k) for k in ("index", "name", "creature", "species_key")}
+            raw_ua = source.get("ua")
+            if isinstance(source.get("origin"), dict):
+                origin = source["origin"]
+                if raw_ua in (None, 0, "0", ""):
+                    raw_ua = origin.get("ua")
+        elif isinstance(source, (int, str)) and not isinstance(source, bool):
+            raw_ua = source
+        else:
+            return {"ok": False, "count": 0, "fauna": [], "companion": None,
+                    "reason": "同伴数据不合法：需要带 ua/origin 的字典或地址"}
+
+        ua = discoveries.normalize_ua(raw_ua)
+        if ua is None and origin:
+            planet = origin.get("planet")
+            try:
+                planet = int(planet)
+            except (TypeError, ValueError):
+                planet = 0
+            if 1 <= planet <= 6:
+                ua = address.ua_from_parts(
+                    origin.get("galaxy"), origin.get("system"),
+                    origin.get("voxel_x"), origin.get("voxel_y"),
+                    origin.get("voxel_z"), planet)
+        if ua is None:
+            return {"ok": False, "count": 0, "fauna": [], "companion": info,
+                    "reason": "同伴没有可用的来源行星地址（UA 缺失或为 0）"}
+
+        planet_index = (ua >> discoveries.PLANET_SHIFT) & 0xF
+        if not 1 <= planet_index <= 6:
+            return {"ok": False, "count": 0, "fauna": [], "companion": info,
+                    "reason": "同伴来源地址的行星位为 0 或不在 1..6，无法定位具体行星"}
+        system_ua = ua & ~discoveries.PLANET_MASK
+        res = index_mod.planet_fauna(system_ua, planet_index, path)
+        out = dict(res)
+        out["companion"] = info or None
+        out["glyphs"] = glyph_mod.glyphs_for_ua(ua, planet_index)
+        out["coords"] = address.coords_from_ua(system_ua)
+        out["found"] = bool(res.get("count"))
+        _record("scan", "同伴来源联查" if res.get("ok") else "同伴来源联查失败",
+                f"同伴 {info.get('name') or info.get('creature') or '?'} · "
+                f"{out.get('count', 0)} 条动物记录", "discoveries", bool(res.get("ok")))
+        return _ok(**out)
+
+    def planet_fauna(self, system_ua: Any, planet_index: Any,
+                     path: str | None = None) -> dict:
+        """只读查询某颗行星的动物发现记录；没有记录时返回空列表与原因。"""
+        from .. import discoveries_index as index_mod
+
+        res = index_mod.planet_fauna(system_ua, planet_index, path)
+        _record("scan", "行星动物联查" if res.get("ok") else "行星动物联查失败",
+                f"{res.get('count', 0)} 条 · {res.get('reason') or ''}".strip(),
+                "discoveries", bool(res.get("ok")))
+        return _ok(**res)
+
     def apply_seed(self, path: str, slot: int, source: dict, confirm: bool = False,
                    copy: bool = False) -> dict:
         from ..data.shipref import coerce

@@ -158,3 +158,126 @@ def test_live_push_sanitizes_u64_for_qt_signals(monkeypatch):
     for key in ("seed", "before", "after", "address"):
         assert isinstance(res[key], str) and res[key].startswith("0x"), (key, res[key])
     assert res["score"] == 1.0
+
+# ---------------------------------------------------------------- 发现索引 / 同伴联查
+
+
+def _synthetic_ua(*, planet: int = 1, system: int = 0x100) -> int:
+    from starforge import address
+
+    return address.ua_from_parts(0, system, 0, 0, 0, planet)
+
+
+def _synthetic_discovery_tree() -> dict:
+    """手写发现树：2 颗行星 + 1 条动物记录，不含真实存档内容。"""
+    return {
+        "DiscoveryManagerData": {
+            "DiscoveryData-v1": {
+                "Store": {
+                    "Record": [
+                        {"DD": {"DT": "Planet", "UA": _synthetic_ua(planet=1),
+                                "VP": [0x11, 0]}, "DM": {"CN": "Synthetic Alpha"}},
+                        {"DD": {"DT": "Planet", "UA": _synthetic_ua(planet=2),
+                                "VP": [0x22, 4]}},
+                        {"DD": {"DT": "Animal", "UA": _synthetic_ua(planet=1),
+                                "VP": [0xAA, 0xBB, 0xCC, 0xDD]}},
+                    ]
+                },
+                "Available": [],
+            }
+        }
+    }
+
+
+def test_services_discoveries_index_and_query(tmp_path, monkeypatch):
+    import pytest
+
+    from starforge import discoveries
+    from starforge.core.errors import BadRequest
+
+    tree = _synthetic_discovery_tree()
+    planets = discoveries.planets_from_tree(tree)["planets"]
+    save = tmp_path / "save.hg"
+    save.write_bytes(b"synthetic services save")
+
+    monkeypatch.setattr(discoveries, "discovered_planets", lambda path=None: {
+        "ok": True, "path": str(save), "count": len(planets),
+        "planets": planets, "records": len(planets), "duplicates": 0,
+        "warnings": [],
+    })
+
+    svc = get_services()
+    first = svc.discoveries_index(str(save))
+    assert first["ok"] is True
+    assert first["rebuilt"] is True and first["cached"] is False
+    assert first["count"] == 2
+
+    second = svc.discoveries_index(str(save))
+    assert second["ok"] is True
+    assert second["cached"] is True and second["rebuilt"] is False
+
+    got = svc.discoveries_query(order="biome")
+    assert got["ok"] is True and got["count"] == 2
+    lushes = svc.discoveries_query(biome="Lush", order="biome")
+    assert lushes["count"] == 1
+    assert lushes["planets"][0]["name"] == "Synthetic Alpha"
+
+    with pytest.raises(BadRequest):
+        svc.discoveries_query(order="unsupported")
+
+
+def test_services_companion_planet_and_planet_fauna(tmp_path, monkeypatch):
+    from starforge import address, discoveries
+
+    tree = _synthetic_discovery_tree()
+    save = tmp_path / "save.hg"
+    save.write_bytes(b"synthetic companion save")
+    monkeypatch.setattr(discoveries, "_open_tree", lambda path=None: (save, tree))
+
+    svc = get_services()
+    companion = {
+        "index": 3,
+        "name": "Synthetic Companion",
+        "creature": "Synthetic_Creature",
+        "species_key": "Synthetic_Creature|0x1",
+        "ua": _synthetic_ua(planet=1),
+        "origin": None,
+    }
+    res = svc.companion_planet(companion)
+    assert res["ok"] is True
+    assert res["found"] is True
+    assert res["count"] == 1
+    assert res["planet_index"] == 1
+    assert res["planet_ua"] == f"0x{_synthetic_ua(planet=1):X}"
+    assert res["system_ua"] == f"0x{(0x100 << 40):X}"
+    assert res["glyphs"] == "110000000000"
+    assert res["coords"] == "07FF:007F:07FF:0100"
+    assert res["fauna"][0]["creature_seed"] == "0xAA"
+    assert res["companion"]["name"] == "Synthetic Companion"
+
+    # 行星可定位、但没有动物记录：ok=True + 空列表 + 原因。
+    empty = svc.companion_planet({"ua": _synthetic_ua(planet=2)})
+    assert empty["ok"] is True and empty["found"] is False
+    assert empty["fauna"] == [] and "没有找到" in empty["reason"]
+
+    # 行星位为 0 / 地址缺失：ok=False + 明确原因，不猜默认行星。
+    unknown = svc.companion_planet({"ua": address.ua_from_parts(0, 0x100, 0, 0, 0, 1)
+                                    & ~discoveries.PLANET_MASK})
+    assert unknown["ok"] is False and "行星位" in unknown["reason"]
+    assert svc.companion_planet({"name": "no address"})["ok"] is False
+    assert svc.companion_planet(None)["ok"] is False
+
+    # 也接受 origin（creature.companions 的条目形状）。
+    by_origin = svc.companion_planet({"origin": {
+        "galaxy": 0, "system": 0x100, "planet": 1,
+        "voxel_x": 0, "voxel_y": 0, "voxel_z": 0,
+    }})
+    assert by_origin["ok"] is True and by_origin["count"] == 1
+
+    fauna = svc.planet_fauna(0x100 << 40, 1)
+    assert fauna["ok"] is True and fauna["count"] == 1
+    fauna_empty = svc.planet_fauna(0x100 << 40, 3)
+    assert fauna_empty["ok"] is True and fauna_empty["count"] == 0
+    assert "没有找到" in fauna_empty["reason"]
+    assert svc.planet_fauna(0x100 << 40, 0)["ok"] is False
+    assert svc.planet_fauna("bad", 1)["ok"] is False

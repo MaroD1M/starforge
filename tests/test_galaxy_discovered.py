@@ -1,7 +1,8 @@
-"""星图「已发现」页签：加载/筛选/传送/CSV 全部打桩。
+"""星图「已发现」页签：索引加载/查询/筛选/传送/CSV 全部打桩。
 
-这些用例只验证界面编排：过滤逻辑必须由 `Services.discovered_filter`
-完成，页面不自己筛；传送复用现有「传送到此星球」确认流程。
+这些用例只验证界面编排：首次/刷新时先建索引，筛选变化只查索引；
+``max_distance`` 由服务层 ``discovered_filter`` 再筛一次。传送复用现有
+「传送到此星球」确认流程，入口是顶部唯一的主按钮。
 """
 from __future__ import annotations
 
@@ -37,17 +38,50 @@ class FakeServices:
     """只实现页面用到的服务；绝不创建 AgentClient / 真实存档读取。"""
 
     def __init__(self, discovered: dict | None = None,
+                 query_result: dict | None = None,
+                 query_error: Exception | None = None,
+                 index_result: dict | None = None,
                  filter_result: dict | None = None,
-                 filter_error: Exception | None = None):
+                 filter_error: Exception | None = None,
+                 fallback_result: dict | None = None):
         self.discovered = discovered if discovered is not None else _payload([])
+        self.query_result = query_result
+        self.query_error = query_error
+        self.index_result = index_result
         self.filter_result = filter_result
         self.filter_error = filter_error
-        self.discovered_calls = 0
+        self.fallback_result = fallback_result
+        self.index_calls = 0
+        self.query_calls: list[dict] = []
         self.filter_calls: list[dict] = []
         self.warp_calls: list[dict] = []
 
+    def discoveries_index(self, path: str | None = None) -> dict:
+        self.index_calls += 1
+        if self.index_result is not None:
+            return dict(self.index_result)
+        rows = self.discovered.get("planets") or []
+        return {"ok": True, "count": len(rows), "rebuilt": True, "cached": False,
+                "skipped": 0, "path": "/synthetic/save.hg"}
+
+    def discoveries_query(self, **kw) -> dict:
+        self.query_calls.append(dict(kw))
+        if self.query_error is not None:
+            raise self.query_error
+        if self.query_result is not None:
+            return dict(self.query_result)
+        rows = list(self.discovered.get("planets") or [])
+        if kw.get("biome"):
+            rows = [row for row in rows if row.get("biome") == kw["biome"]]
+        if kw.get("infested") is not None:
+            rows = [row for row in rows if bool(row.get("infested")) == bool(kw["infested"])]
+        if kw.get("named") is not None:
+            rows = [row for row in rows if bool(row.get("named")) == bool(kw["named"])]
+        return {"ok": True, "count": len(rows), "planets": rows}
+
     def discovered_planets(self, path: str | None = None) -> dict:
-        self.discovered_calls += 1
+        if self.fallback_result is not None:
+            return dict(self.fallback_result)
         return dict(self.discovered)
 
     def discovered_filter(self, planets: list[dict] | None = None, **kw) -> dict:
@@ -57,6 +91,11 @@ class FakeServices:
         if self.filter_result is not None:
             return dict(self.filter_result)
         rows = list(planets or [])
+        if kw.get("max_distance") is not None:
+            limit = float(kw["max_distance"])
+            rows = [row for row in rows
+                    if row.get("distance_ly") is not None
+                    and float(row["distance_ly"]) <= limit]
         return {"ok": True, "count": len(rows), "planets": rows}
 
     def warp_portal(self, glyphs: str, galaxy: int | None = None,
@@ -104,15 +143,15 @@ def _accept_confirm(monkeypatch) -> list[dict]:
 
 def _row(*, index: int | None = 3, name: str | None = None,
          biome: str | None = "Lush", infested: bool | None = False,
-         discoverer: str | None = "Synthetic Discoverer",
+         discoverer: str | None = None,
          discovered_at: int | None = 1_700_000_000,
-         source: str = "save", pending: bool = False,
+         source: str | None = None, pending: bool = False,
          glyphs: str | None = GLYPHS_P3, distance_ly=None,
          system_ua: str | None = SYSTEM_UA_TEXT) -> dict:
     ua = None
     if index is not None and system_ua is not None:
         ua = f"0x{SYSTEM_UA | (index << 52):X}"
-    return {
+    row = {
         "ua": ua,
         "planet_ua": ua,
         "system_ua": system_ua,
@@ -131,8 +170,10 @@ def _row(*, index: int | None = 3, name: str | None = None,
         "coords": SYSTEM_COORDS if system_ua else None,
         "source": source,
         "pending": pending,
-        **({"distance_ly": distance_ly} if distance_ly is not None else {}),
     }
+    if distance_ly is not None:
+        row["distance_ly"] = distance_ly
+    return row
 
 
 def _payload(rows: list[dict], **overrides) -> dict:
@@ -145,13 +186,7 @@ def _payload(rows: list[dict], **overrides) -> dict:
         "planets": rows,
         "warnings": [],
         "version": 4746,
-        "stats": {
-            "biomes": {},
-            "infested": sum(1 for row in rows if row.get("infested")),
-            "named": sum(1 for row in rows if row.get("name")),
-            "pending": sum(1 for row in rows if row.get("pending")),
-            "unknown_biome": sum(1 for row in rows if not row.get("biome")),
-        },
+        "stats": {},
     }
     out.update(overrides)
     return out
@@ -161,6 +196,7 @@ def _make_page(monkeypatch, svc: FakeServices):
     monkeypatch.setattr(page_mod, "get_services", lambda: svc)
     monkeypatch.setattr(page_mod, "run_worker", _sync_worker)
     page = page_mod.GalaxyPage()
+    page.tabs.setCurrentWidget(page.discovered_page)
     return page
 
 
@@ -198,7 +234,13 @@ def test_discovered_tab_is_next_to_scan_and_index(qapp, monkeypatch):
     assert labels.index("已发现") > labels.index("银河索引")
 
 
-def test_load_fills_table_stats_and_detail(qapp, monkeypatch):
+def test_primary_is_teleport_on_discovered_tab(qapp, monkeypatch):
+    page = _make_page(monkeypatch, FakeServices())
+    assert page.primary_btn.text() == "传送到此星球"
+    assert page.warp_btn.isHidden() is True
+
+
+def test_load_builds_index_then_queries_it(qapp, monkeypatch):
     rows = [
         _row(index=3, name="Synthetic Planet", infested=True),
         _row(index=1, biome="Frozen", glyphs="110000000000", distance_ly=1234.0),
@@ -207,23 +249,36 @@ def test_load_fills_table_stats_and_detail(qapp, monkeypatch):
     page = _make_page(monkeypatch, svc)
     captured = _load(page, monkeypatch, svc)
 
-    assert svc.discovered_calls == 1
+    assert svc.index_calls == 1
+    assert svc.query_calls
     assert page.disc_table.rowCount() == 2
-    assert page.disc_export_btn.isEnabled() is True
+    assert page.export_action.isEnabled() is True
     assert page.disc_empty.isHidden() is True
     assert "已发现：2 颗" in page.disc_stats.text()
-    assert "当前显示 2 颗" in page.disc_stats.text()
-    assert "已命名 1 颗" in page.disc_stats.text()
-    assert "虫蚀 1 颗" in page.disc_stats.text()
+    assert "显示 2 颗" in page.disc_stats.text()
     assert captured["error"] == []
 
     _select_row(page, 3)
     detail = page.detail.text()
     assert "Synthetic Planet" in detail
-    assert "发现者：Synthetic Discoverer" in detail
-    assert "来源：存档" in detail
+    assert "发现者：—" in detail
+    assert "来源：索引" in detail
     assert "符文：310000000000" in detail
     assert SYSTEM_COORDS in detail
+
+
+def test_query_is_scoped_to_the_indexed_save(qapp, monkeypatch):
+    rows = [_row(index=3)]
+    svc = FakeServices(_payload(rows), index_result={
+        "ok": True, "count": 1, "rebuilt": True, "cached": False,
+        "save_id": "synthetic-save"})
+    page = _make_page(monkeypatch, svc)
+    _load(page, monkeypatch, svc)
+
+    assert svc.query_calls[-1]["save_id"] == "synthetic-save"
+    svc.query_calls.clear()
+    page.disc_biome.setCurrentIndex(_combo_index(page.disc_biome, "Lush"))
+    assert svc.query_calls[-1]["save_id"] == "synthetic-save"
 
 
 def test_empty_payload_shows_readable_empty_state(qapp, monkeypatch):
@@ -235,20 +290,22 @@ def test_empty_payload_shows_readable_empty_state(qapp, monkeypatch):
     assert page.disc_empty.isHidden() is False
     assert "没有已发现的星球" in page.disc_empty.title_label.text()
     assert "Planet" in page.disc_empty.description_label.text()
-    assert page.disc_export_btn.isEnabled() is False
+    assert page.export_action.isEnabled() is False
     assert "0 颗" in page.disc_stats.text()
     assert captured["error"] == []
 
 
 def test_failed_read_shows_explanation_without_error_popup(qapp, monkeypatch):
-    svc = FakeServices({
-        "ok": False,
-        "count": 0,
-        "records": 0,
-        "duplicates": 0,
-        "planets": [],
-        "warnings": ["读取存档失败：FileNotFoundError: 没有找到存档"],
-    })
+    svc = FakeServices(
+        _payload([]),
+        index_result={"ok": False, "error": "索引数据库不可写"},
+        fallback_result={
+            "ok": False,
+            "count": 0,
+            "planets": [],
+            "warnings": ["读取存档失败：FileNotFoundError: 没有找到存档"],
+        },
+    )
     page = _make_page(monkeypatch, svc)
     captured = _load(page, monkeypatch, svc)
 
@@ -260,9 +317,30 @@ def test_failed_read_shows_explanation_without_error_popup(qapp, monkeypatch):
     assert captured["error"] == []
 
 
+def test_index_failure_falls_back_to_direct_read(qapp, monkeypatch):
+    rows = [_row(index=3)]
+    svc = FakeServices(
+        _payload(rows),
+        index_result={"ok": False, "error": "索引数据库不可写"},
+    )
+    page = _make_page(monkeypatch, svc)
+    captured = _load(page, monkeypatch, svc)
+
+    assert page.disc_table.rowCount() == 1
+    assert svc.filter_calls, "回退读取必须由服务层筛选"
+    assert "直接读取" in page.disc_stats.text()
+    assert "索引不可用" in page.disc_stats.toolTip()
+    assert captured["error"] == []
+
+    before = len(svc.filter_calls)
+    page.disc_biome.setCurrentIndex(_combo_index(page.disc_biome, "Lush"))
+    assert len(svc.filter_calls) == before + 1
+    assert page.disc_stats.text().startswith("已发现：")
+
+
 def test_worker_exception_shows_failure_explanation(qapp, monkeypatch):
     class Boom(FakeServices):
-        def discovered_planets(self, path: str | None = None) -> dict:
+        def discoveries_index(self, path: str | None = None) -> dict:
             raise RuntimeError("synthetic read boom")
 
     svc = Boom()
@@ -295,61 +373,61 @@ def test_filter_is_delegated_with_expected_parameters(qapp, monkeypatch):
     assert page.disc_distance.isEnabled() is True
     assert page.disc_origin_hint.text() == f"距离中心：{SYSTEM_COORDS}"
 
-    call = svc.filter_calls[-1]
-    assert call["planets"] == rows
-    assert call["kwargs"] == {
+    assert svc.query_calls[-1] == {
         "biome": "Lush",
         "infested": True,
         "named": False,
         "near_ua": SYSTEM_UA_TEXT,
+        "order": "distance",
+        "limit": None,
+    }
+    assert svc.filter_calls[-1]["kwargs"] == {
+        "near_ua": SYSTEM_UA_TEXT,
         "max_distance": 500.0,
-        "sort": "auto",
         "limit": 500,
     }
 
 
 def test_filter_result_drives_table_and_empty_state(qapp, monkeypatch):
     rows = [_row(index=3), _row(index=1)]
-    svc = FakeServices(
-        _payload(rows),
-        filter_result={"ok": True, "count": 1, "planets": [rows[0]]},
-    )
+    svc = FakeServices(_payload(rows))
     page = _make_page(monkeypatch, svc)
     _load(page, monkeypatch, svc)
 
+    svc.query_result = {"ok": True, "count": 1, "planets": [rows[0]]}
     page.disc_biome.setCurrentIndex(_combo_index(page.disc_biome, "Lush"))
 
-    assert svc.filter_calls, "筛选变化必须调用服务层"
+    assert svc.query_calls, "筛选变化必须查询索引服务"
     assert page.disc_table.rowCount() == 1
-    assert "当前显示 1 颗" in page.disc_stats.text()
+    assert "显示 1 颗" in page.disc_stats.text()
 
-    svc.filter_result = {"ok": True, "count": 0, "planets": []}
+    svc.query_result = {"ok": True, "count": 0, "planets": []}
     page.disc_biome.setCurrentIndex(_combo_index(page.disc_biome, "Frozen"))
     assert page.disc_table.rowCount() == 0
     assert page.disc_empty.isHidden() is False
     assert "没有匹配的已发现星球" in page.disc_empty.title_label.text()
-    assert page.disc_export_btn.isEnabled() is False
+    assert page.export_action.isEnabled() is False
 
 
-def test_distance_without_center_does_not_call_filter(qapp, monkeypatch):
+def test_distance_without_center_does_not_query(qapp, monkeypatch):
     svc = FakeServices(_payload([_row(index=3)]))
     page = _make_page(monkeypatch, svc)
     _load(page, monkeypatch, svc)
-    before = len(svc.filter_calls)
+    before = len(svc.query_calls)
 
     page.disc_distance.setValue(250)
 
-    assert len(svc.filter_calls) == before
+    assert len(svc.query_calls) == before
     assert "以当前星系为中心" in page.disc_stats.text()
 
 
 def test_filter_failure_shows_readable_empty_state(qapp, monkeypatch):
     captured = _capture_notify(monkeypatch)
-    svc = FakeServices(_payload([_row(index=3)]),
-                       filter_error=RuntimeError("synthetic filter boom"))
+    svc = FakeServices(_payload([_row(index=3)]))
     page = _make_page(monkeypatch, svc)
     _load(page, monkeypatch, svc, captured)
 
+    svc.query_error = RuntimeError("synthetic filter boom")
     page.disc_biome.setCurrentIndex(_combo_index(page.disc_biome, "Lush"))
 
     assert page.disc_table.rowCount() == 0
@@ -371,9 +449,9 @@ def test_warp_enabled_for_discovered_planet_and_reuses_confirm(qapp, monkeypatch
     _load(page, monkeypatch, svc, captured)
     _select_row(page, 3)
 
-    assert page.disc_warp_btn.isEnabled() is True
-    assert GLYPHS_P3 in page.disc_warp_hint.text()
-    assert page.detail_warp_btn.isEnabled() is True
+    assert page.primary_btn.isEnabled() is True
+    assert GLYPHS_P3 in page.primary_btn.toolTip()
+    assert page.warp_btn.isHidden() is True
 
     page._warp_selected_planet()
 
@@ -382,7 +460,7 @@ def test_warp_enabled_for_discovered_planet_and_reuses_confirm(qapp, monkeypatch
     assert captured["success"][-1] == "已传送到 Synthetic System/行星 #3"
     assert "会调用游戏内传送门机制，落到目标星球；失败可用「还原」回滚" \
         in confirmed[0]["text"]
-    assert page.disc_warp_btn.isEnabled() is True
+    assert page.primary_btn.isEnabled() is True
 
 
 def test_warp_needs_planet_choice_when_index_missing(qapp, monkeypatch):
@@ -394,9 +472,9 @@ def test_warp_needs_planet_choice_when_index_missing(qapp, monkeypatch):
     _load(page, monkeypatch, svc, captured)
     _select_row(page, None)
 
-    assert page.disc_warp_btn.isEnabled() is True
+    assert page.primary_btn.isEnabled() is True
     assert page._warp_target and page._warp_target.get("needs_planet") is True
-    assert "系统级结果" in page.disc_warp_hint.text()
+    assert "系统级结果" in page.primary_btn.toolTip()
 
     monkeypatch.setattr(
         page_mod.QInputDialog, "getInt", staticmethod(lambda *a, **k: (4, True)))
@@ -415,9 +493,8 @@ def test_warp_disabled_when_no_address(qapp, monkeypatch):
     _load(page, monkeypatch, svc)
     _select_row(page, None)
 
-    assert page.disc_warp_btn.isEnabled() is False
-    assert page.detail_warp_btn.isEnabled() is False
-    assert "没有可用的门地址" in page.disc_warp_hint.text()
+    assert page.primary_btn.isEnabled() is False
+    assert "没有可用的门地址" in page.status.text()
 
 
 def test_warp_unconfirmed_and_build_unverified_messages_are_reused(qapp, monkeypatch):
@@ -467,8 +544,8 @@ def test_csv_export_contains_table_columns_glyphs_and_coords(qapp, monkeypatch, 
     assert lines[0]["行星序号"] == "3"
     assert lines[0]["符文"] == GLYPHS_P3
     assert lines[0]["坐标"] == SYSTEM_COORDS
-    assert lines[0]["发现者"] == "Synthetic Discoverer"
-    assert lines[0]["来源"] == "存档"
+    assert lines[0]["发现者"] == ""
+    assert lines[0]["来源"] == "索引"
     assert "距离" in lines[0] and lines[0]["距离"] == "1234.0"
 
     target = tmp_path / "discovered.csv"

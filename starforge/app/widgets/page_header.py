@@ -20,9 +20,12 @@ class PageHeader(QWidget):
         left.setSpacing(SPACE_XS)
         self.title = ElidedLabel(title)
         self.title.setObjectName("pageTitle")
+        self.title.setAccessibleName("页面标题")
         left.addWidget(self.title)
         self.subtitle = fit_label(QLabel(subtitle))
         self.subtitle.setObjectName("muted")
+        self.subtitle.setAccessibleName("页面说明")
+        self.subtitle.setToolTip(subtitle)
         self.subtitle.setVisible(bool(subtitle))
         left.addWidget(self.subtitle)
         h.addLayout(left, 1)
@@ -33,7 +36,9 @@ class PageHeader(QWidget):
 
     def set_title(self, title: str, subtitle: str = "") -> None:
         self.title.setText(title)
+        self.title.setToolTip(str(title or ""))
         self.subtitle.setText(subtitle)
+        self.subtitle.setToolTip(str(subtitle or ""))
         self.subtitle.setVisible(bool(subtitle))
 
     def add_action(self, widget: QWidget) -> QWidget:

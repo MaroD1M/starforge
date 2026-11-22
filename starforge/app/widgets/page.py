@@ -28,6 +28,23 @@ def page_layout(widget: QWidget, spacing: int = PAGE_SPACING) -> QVBoxLayout:
     return layout
 
 
+def reveal_widget(widget: QWidget, margin: int = 24) -> bool:
+    """把卡片滚到最近的滚动区可视范围内（用于“下一步”定位）。
+
+    只调整滚动位置，不改变页面结构；找不到滚动区时返回 ``False``。
+    """
+    parent = widget.parentWidget()
+    while parent is not None and not isinstance(parent, QScrollArea):
+        parent = parent.parentWidget()
+    if not isinstance(parent, QScrollArea):
+        return False
+    try:
+        parent.ensureWidgetVisible(widget, margin, margin)
+        return True
+    except RuntimeError:
+        return False
+
+
 def scroll_panel(widget: QWidget) -> QScrollArea:
     """把卡片/面板放进无边框滚动区，窗口较矮时不会把内部控件压扁。
 

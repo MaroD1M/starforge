@@ -39,6 +39,20 @@ def test_look_validates_tolerance(game_env):
         search.validate(_q(look={"primary": [0.5, 0.5, 0.5], "tol": 0}))
 
 
+def test_ui_look_payload_only_carried_when_toggle_is_on():
+    from starforge.app.pages.ship_lab import look_filter_payload
+
+    assert look_filter_payload(False, (0.95, 0.78, 0.10)) is None
+    assert look_filter_payload(True, (0.95, 0.78, 0.10), tolerance=0.18) == {
+        "primary": [0.95, 0.78, 0.10], "tol": 0.18}
+    # 副色只在勾选“副色”时进入条件，避免默认把搜索卡死。
+    assert look_filter_payload(
+        True, (0.95, 0.78, 0.10), secondary_enabled=True,
+        secondary=(0.1, 0.1, 0.12), tolerance=0.28) == {
+        "primary": [0.95, 0.78, 0.10],
+        "secondary": [0.1, 0.1, 0.12], "tol": 0.28}
+
+
 def test_only_look_without_parts_is_allowed(game_env):
     """只按涂装搜也必须成立（此前必须有部件）。"""
     q = search.validate(_q(look={"primary": [0.95, 0.78, 0.10], "tol": 0.25}))

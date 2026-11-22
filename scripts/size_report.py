@@ -7,13 +7,15 @@
     python scripts/size_report.py dist/starforge --top 30 --by package
     python scripts/size_report.py dist/starforge --by category
     python scripts/size_report.py dist/starforge-v0.14.4-win64.zip --top 30 --fail-over 110
+    python scripts/size_report.py dist/starforge-0.16.0-win64-setup.exe --fail-over 70
     python scripts/size_report.py dist/starforge --json > before.json
     python scripts/size_report.py dist/starforge --compare before.json
     python scripts/size_report.py --self-test
 
 设计目标：
   * 不依赖第三方库（release runner 只保证 Python + 项目依赖）；
-  * 目录和 zip 都支持；zip 直接读中央目录，不解压；
+  * 目录和 zip 都支持；zip 直接读中央目录，不解压；安装包（exe/7z 等）只
+    报告归档体积，用于 --fail-over 预算判断；
   * 支持按目录（dir）、包（package）、类别（category）聚合；
   * 可用 --compare 读取裁剪前的 JSON，报告裁剪前后差异；
   * 脚本只读，不修改 dist。
@@ -96,13 +98,15 @@ def group_key_package(name: str) -> str:
         if len(parts) >= 3 or not Path(parts[1]).suffix:
             return "_internal/" + parts[1]
         return "_internal (根文件)"
-    if parts[0] == "agent-runtime":
+    if parts[0] == "agent-runtime" or (
+        parts[0] == "Lib" and "site-packages" in parts
+    ):
         if "site-packages" in parts:
             idx = parts.index("site-packages")
             if len(parts) > idx + 1:
                 return "agent-runtime/" + parts[idx + 1]
             return "agent-runtime/site-packages"
-        if parts[1] == "Lib" and len(parts) > 2 and not Path(parts[-1]).suffix:
+        if parts[0] == "agent-runtime" and parts[1] == "Lib" and len(parts) > 2:
             return "agent-runtime/Lib/" + parts[2]
         return "agent-runtime"
     return parts[0]
@@ -110,27 +114,38 @@ def group_key_package(name: str) -> str:
 
 def _category_for_path(name: str) -> str:
     parts = _parts(name)
-    lowered = "/".join(parts).lower()
     suffix = Path(name).suffix.lower()
     if suffix in DEV_SUFFIXES or any(p.lower() in DEV_DIR_NAMES for p in parts[:-1]):
         return "开发/测试冗余"
-    if parts and parts[0] == "agent-runtime":
+    # scan_dir(dist/starforge/_internal) 的条目是相对 _internal 的；zip 和
+    # scan_dir(dist/starforge) 会带 _internal/ 前缀。两种形式按同一套规则分类。
+    rel = parts[1:] if parts and parts[0] == "_internal" else parts
+    lowered = "/".join(rel).lower()
+    if rel and (rel[0] == "agent-runtime" or "site-packages" in rel):
         return "agent runtime"
-    if parts and parts[0] == "_internal":
-        if "pyside6" in lowered or "qt6" in lowered or "/qt/" in lowered:
-            return "Qt/PySide6"
-        if lowered.startswith("_internal/numpy"):
-            return "numpy"
-        if lowered.startswith("_internal/unicorn"):
-            return "unicorn"
-        if suffix in BINARY_SUFFIXES:
-            return "原生库/可执行文件"
-        if suffix in DATA_SUFFIXES:
-            return "数据/资源"
-        return "其它 Python/模块"
-    if suffix in LAUNCHER_SUFFIXES:
+    if rel and (rel[0].lower() == "pyside6" or rel[0].lower().startswith("qt6")
+                or "/qt/" in f"/{lowered}/"):
+        return "Qt/PySide6"
+    if rel and rel[0].lower() == "numpy":
+        return "numpy"
+    if rel and rel[0].lower() == "numpy.libs":
+        return "numpy"
+    if rel and rel[0].lower() == "unicorn":
+        return "unicorn"
+    if rel and rel[0].lower() in {"starforge.exe", "starforge-cli.exe",
+                                  "starforge-safe.bat"}:
         return "启动器/脚本"
-    if parts and parts[0] in {"starforge", "starforge-safe.bat"}:
+    if suffix in BINARY_SUFFIXES:
+        return "原生库/可执行文件"
+    if suffix in DATA_SUFFIXES:
+        return "数据/资源"
+    if rel and rel[0].lower() in {"starforge", "assets", "data"}:
+        return "启动器/脚本"
+    if parts and parts[0] == "_internal":
+        return "其它 Python/模块"
+    if rel and suffix in LAUNCHER_SUFFIXES:
+        return "启动器/脚本"
+    if rel and rel[0].lower() in {"starforge", "starforge-safe.bat"}:
         return "启动器/脚本"
     return "其它"
 
@@ -246,6 +261,20 @@ def scan_zip(
     )
 
 
+def scan_file(
+    path: Path, *, top: int = 20, largest: int = 10, group_by: str = "dir"
+) -> dict:
+    """不透明归档（Inno Setup / 7z 安装包）：只报告归档体积。"""
+    return _report_from_entries(
+        str(path),
+        [],
+        archive_size=path.stat().st_size,
+        top=top,
+        largest=largest,
+        group_by=group_by,
+    )
+
+
 def compare_reports(baseline: dict, current: dict) -> dict:
     """计算 current 相对 baseline 的体积变化（用于 CI 裁剪前后对比）。"""
     base_groups = {g["name"]: g for g in baseline.get("groups_all")
@@ -313,8 +342,15 @@ def print_report(report: dict) -> None:
     print(f"文件数: {report['file_count']}")
     print(f"解压体积: {human(report['total_size'])}")
     if report["archive_size"] is not None:
-        print(f"zip 实际大小: {human(report['archive_size'])}")
-        print(f"zip 内条目压缩后合计: {human(report['total_compressed'])}")
+        size_label = "安装包/归档大小" if report["total_size"] == 0 else "zip 实际大小"
+        print(f"{size_label}: {human(report['archive_size'])}")
+        if report["total_compressed"]:
+            print(f"zip 内条目压缩后合计: {human(report['total_compressed'])}")
+
+    if report["file_count"] == 0:
+        # 不透明安装包（Inno/7z）只报归档体积，没有可排行的内部条目。
+        print()
+        return
 
     print(f"\n{label}排行（按解压体积）:")
     print(f"  {'#':>2}  {label:<46} {'体积':>10}  {'占比':>6}  {'文件':>6}")
@@ -411,6 +447,20 @@ def _self_test() -> int:
 
         zprep = scan_zip(zpath, group_by="package")
         assert "agent-runtime/dearpygui" in {g["name"] for g in zprep["groups_all"]}, zprep
+
+        # 直接统计 _internal（CI 的用法）时，类别不应全部落到“其它”。
+        irep = scan_dir(root / "_internal", group_by="category")
+        ikeys = {g["name"] for g in irep["groups_all"]}
+        assert "Qt/PySide6" in ikeys, ikeys
+        assert "numpy" in ikeys, ikeys
+        assert "unicorn" in ikeys, ikeys
+
+        # Inno/7z 安装包不是 zip：只报告归档体积，--fail-over 仍可用。
+        opaque = Path(td) / "starforge-setup.exe"
+        opaque.write_bytes(b"x" * 4321)
+        orep = scan_file(opaque)
+        assert orep["archive_size"] == 4321, orep
+        assert relevant_size(orep) == 4321, orep
     print("size_report self-test ok")
     return 0
 
@@ -448,8 +498,10 @@ def main(argv: list[str] | None = None) -> int:
         report = scan_zip(target, top=a.top, largest=a.largest, group_by=a.group_by)
     elif target.is_dir():
         report = scan_dir(target, top=a.top, largest=a.largest, group_by=a.group_by)
+    elif target.is_file():
+        report = scan_file(target, top=a.top, largest=a.largest, group_by=a.group_by)
     else:
-        print(f"不是目录也不是 zip：{target}", file=sys.stderr)
+        print(f"不是目录、zip 或文件：{target}", file=sys.stderr)
         return 2
 
     if a.compare:

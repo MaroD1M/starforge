@@ -6,7 +6,10 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from starforge.app.widgets.pets_view import (  # noqa: E402
+    FAUNA_PREVIEW_LIMIT,
     PET_TABLE_HEADERS,
+    fauna_preview_rows,
+    fauna_state_text,
     format_trust_traits,
     pet_rows,
     pet_seed,
@@ -69,3 +72,40 @@ def test_preview_note_never_claims_generated_3d():
     assert "生成器" in note
     assert "不伪造" in note
     assert pets_preview_note({"preview": "需要生物生成器"}) == "需要生物生成器"
+
+
+def _fauna(count: int) -> list[dict]:
+    return [{"name": f"动物{i}", "creature_seed": f"0x{i:X}",
+             "discoverer": "旅行者" if i == 1 else ""}
+            for i in range(1, count + 1)]
+
+
+def test_fauna_preview_only_first_n_rows():
+    rows = fauna_preview_rows(_fauna(9))
+    assert len(rows) == FAUNA_PREVIEW_LIMIT
+    assert rows[0] == "1. 动物1 · 种子 0x1 · 发现者 旅行者"
+    assert rows[1] == "2. 动物2 · 种子 0x2"
+    assert fauna_preview_rows(_fauna(2), limit=1) == [
+        "1. 动物1 · 种子 0x1 · 发现者 旅行者"]
+    assert fauna_preview_rows(None) == []
+    assert fauna_preview_rows([None, "坏数据", {}]) == ["1. (未命名) · 种子 —"]
+
+
+def test_fauna_state_three_states_are_readable():
+    kind, text = fauna_state_text({"ok": True, "count": 5, "fauna": _fauna(5)})
+    assert kind == "ok"
+    assert "前 3/5 条" in text
+    assert "动物1" in text and "动物4" not in text
+
+    kind, text = fauna_state_text(
+        {"ok": True, "count": 0, "fauna": [], "reason": "没有找到该行星的动物发现记录"})
+    assert kind == "empty"
+    assert "暂无动物记录" in text
+    assert "没有找到" in text
+
+    kind, text = fauna_state_text(
+        {"ok": False, "count": 0, "fauna": [], "reason": "读取存档失败：坏文件"})
+    assert kind == "error"
+    assert "联查失败" in text and "坏文件" in text
+
+    assert fauna_state_text(None)[0] == "error"

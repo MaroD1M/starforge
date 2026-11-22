@@ -297,3 +297,49 @@ def test_never_calls_real_agent_client(qapp, monkeypatch):
 
     assert svc.calls == ["multitool", "freighter", "pets"]
     assert page.live_assets.multitool_status.text().startswith("3 槽")
+
+
+# ---------------------------------------------------------------- 三步状态机
+
+
+def test_three_step_state_machine_highlights_only_next(qapp, monkeypatch):
+    import copy
+
+    svc = FakeServices({"multitool": MULTITOOL, "freighter": FREIGHTER, "pets": PETS})
+    page = _make_page(monkeypatch, svc)
+    page._detect_template_mod = lambda: 0
+
+    # 前两步完成 → 只有模板 Mod 是「进行中」
+    page._apply_state(copy.deepcopy(CAPABILITIES))
+    assert page.step1.property("state") == "done"
+    assert page.step2.property("state") == "done"
+    assert page.step3.property("state") == "current"
+    assert page.step3.action.text() == "安装 / 更新模板 Mod"
+
+    # 运行时缺失 → 第 1 步进行中，后两步等待但仍可点
+    blocked = copy.deepcopy(CAPABILITIES)
+    blocked["status"].update({
+        "runtime_ready": False, "pymhf_http_api": False,
+        "nmspy_version": "", "pymhf_version": "",
+        "reachable": False, "hello": {"in_game": False},
+        "runtime_error": "找不到 python.exe"})
+    blocked["capabilities"] = {}
+    page._apply_state(blocked)
+    assert page.step1.property("state") == "current"
+    assert page.step2.property("state") == "waiting"
+    assert page.step3.property("state") == "waiting"
+    assert page.step1.action.text() == "准备运行时"
+    assert "下一步" in page.status.text() and "运行时" in page.status.text()
+    assert page.step2.action.isEnabled() and page.step3.action.isEnabled()
+
+    # 运行时文件在、组件缺失 → 第 1 步标红并给「安装 / 修复组件」
+    page._apply_state({
+        "status": {"runtime_ready": True, "pymhf_http_api": False,
+                   "nmspy_version": "", "pymhf_version": "",
+                   "reachable": False, "hello": {}, "supported": True},
+        "capabilities": {},
+        "build": {"build_id": "1", "verified": False},
+        "multiplayer": False,
+    })
+    assert page.step1.property("state") == "error"
+    assert page.step1.action.text() == "安装 / 修复组件"

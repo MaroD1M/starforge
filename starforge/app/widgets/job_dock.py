@@ -159,11 +159,14 @@ class JobDock(QFrame):
         self.summary.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         head.addWidget(self.summary, 1)
 
+        # 取消进行中的任务会中断后台工作，属于风险动作：统一用 danger 样式。
         self.cancel_btn = QPushButton("取消进行中")
-        self.cancel_btn.setObjectName("dockButton")
+        self.cancel_btn.setObjectName("dangerButton")
+        self.cancel_btn.setProperty("dock", True)
         self.cancel_btn.setMinimumHeight(DOCK_BUTTON_HEIGHT)
         self.cancel_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.cancel_btn.setToolTip("取消当前选中的进行中任务")
+        self.cancel_btn.setAccessibleName("取消进行中的任务")
         self.cancel_btn.clicked.connect(self.cancel_selected)
         head.addWidget(self.cancel_btn)
 
@@ -172,6 +175,7 @@ class JobDock(QFrame):
         self.clear_btn.setMinimumHeight(DOCK_BUTTON_HEIGHT)
         self.clear_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.clear_btn.setToolTip("只从任务栏隐藏已结束任务，不删除服务端记录")
+        self.clear_btn.setAccessibleName("清空已完成任务")
         self.clear_btn.clicked.connect(self.clear_finished)
         head.addWidget(self.clear_btn)
 
@@ -179,6 +183,8 @@ class JobDock(QFrame):
         self.toggle.setObjectName("dockButton")
         self.toggle.setMinimumHeight(DOCK_BUTTON_HEIGHT)
         self.toggle.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.toggle.setAccessibleName("展开或收起任务栏")
+        self.toggle.setToolTip("展开或收起任务栏（Ctrl+Shift+T）")
         self.toggle.clicked.connect(self.toggle_body)
         head.addWidget(self.toggle)
         v.addLayout(head)
@@ -189,6 +195,8 @@ class JobDock(QFrame):
         self.list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.list.setTextElideMode(Qt.ElideRight)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.setAccessibleName("任务列表")
+        self.list.setToolTip("选择任务查看详情或取消进行中的任务")
         self.list.itemSelectionChanged.connect(self._update_actions)
         v.addWidget(self.list)
         self._update_actions()

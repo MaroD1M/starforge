@@ -13,11 +13,13 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -34,8 +36,13 @@ from ...discoveries import BIOMES as DISCOVERY_BIOMES
 from ...glyphs import glyphs_for_ua
 from ...services import get_services
 from .. import notify
-from ..dialogs.address import classify_address_input, normalize_glyphs, parse_seed
+from ..dialogs.address import (
+    PLANET_UNKNOWN,
+    convert_address,
+    parse_seed,
+)
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.galaxy_detail import GalaxyDetailDialog
 from ..widgets.galaxy_flow import (
     GalaxyFlowBar,
     GalaxyGlyphLabel,
@@ -44,7 +51,7 @@ from ..widgets.galaxy_flow import (
 )
 from ..widgets.page import PageSplitter, page_layout
 from ..widgets.page_header import PageHeader
-from ..widgets.ui import Card, muted
+from ..widgets.ui import Card, muted, primary_button
 from ..widgets.worker import run as run_worker
 
 BIOMES = [("", "不限"), ("Lush", "茂盛"), ("Toxic", "剧毒"), ("Scorched", "焦土"),
@@ -120,7 +127,9 @@ def _discovered_timestamp_text(value) -> str:
 
 def _discovered_source_text(row: dict) -> str:
     source = str(row.get("source") or "")
-    label = DISCOVERED_SOURCE_LABELS.get(source, source or "—")
+    if not source:
+        return "索引"
+    label = DISCOVERED_SOURCE_LABELS.get(source, source)
     return f"{label}（待上传）" if row.get("pending") and label != "待上传" else label
 
 
@@ -299,10 +308,13 @@ class GalaxyPage(QWidget):
         self._index_rows: list[dict] = []
         self._addr_glyphs: str | None = None
         self._addr_coords: str | None = None
+        self._addr_ua_text: str | None = None
+        self._addr_teleportable = False
         self._teleport_glyphs: str | None = None
         self._addr_busy = False
         self._warp_target: dict | None = None
         self._warp_row: dict | None = None
+        self._warp_tooltip = ""
         self._warp_busy = False
         self._panes: dict[int, GalaxyTablePane] = {}
         self._current_info: dict = {}
@@ -318,11 +330,11 @@ class GalaxyPage(QWidget):
         self._discovered_loaded = False
         self._discovered_loading = False
         self._discovered_filter_seq = 0
+        self._discovered_index_meta: dict = {}
+        self._index_busy = False
+        self._primary_mode = "scan"
         self._overlay = None
-        self._sub_current = "读取中…"
-        self._sub_scan = "未开始"
-        self._sub_index = "读取中…"
-        self._sub_address = "未查询"
+        self._detail_dialog = None
         self._timer = QTimer(self)
         self._timer.setInterval(300)
         self._timer.timeout.connect(self._poll_scan)
@@ -333,7 +345,7 @@ class GalaxyPage(QWidget):
 
         self.header = PageHeader(
             "星图",
-            "查看当前星系、行星与船池，扫描附近星系并写入银河索引。")
+            "查看当前星系、行星与船池；扫描、查询与传送都从顶部主操作开始。")
         # PageHeader 的 Minimum 垂直策略会把 sizeHint（完整副标题高度）
         # 当成最小高度；允许压缩后，矮窗口里主内容才有空间。
         self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -341,21 +353,34 @@ class GalaxyPage(QWidget):
         self.header.subtitle.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.header.subtitle.setToolTip(self.header.subtitle.text())
         root.addWidget(self.header)
-        self.refresh_btn = QPushButton("刷新")
-        self.refresh_btn.setToolTip("重新读取当前星系、行星与船池")
-        self.refresh_btn.clicked.connect(lambda: self._load_current(manual=True))
-        self.scan_btn = QPushButton("扫描")
-        self.scan_btn.setObjectName("primary")
-        self.scan_btn.setToolTip("扫描附近星系并写入银河索引")
-        self.scan_btn.clicked.connect(self._scan)
+
+        # 一屏一个主操作：文字与动作随标签页变化，不并排摆多个 primary。
+        self.primary_btn = primary_button("扫描", "扫描附近星系并写入银河索引")
+        self.primary_btn.clicked.connect(self._on_primary)
+        self.scan_btn = self.primary_btn          # 外壳「下一步」仍按这个名字聚焦
         self.scan_cancel_btn = QPushButton("取消扫描")
+        self.scan_cancel_btn.setObjectName("ghostButton")
         self.scan_cancel_btn.setToolTip("请求取消正在进行的扫描；当前系统完成后停止")
         self.scan_cancel_btn.clicked.connect(self._cancel_scan)
         self.scan_cancel_btn.setVisible(False)
-        self.export_btn = QPushButton("导出 CSV")
-        self.export_btn.setToolTip("按当前筛选条件导出银河索引表格文件")
-        self.export_btn.clicked.connect(self._export_csv)
-        for button in (self.refresh_btn, self.scan_btn, self.scan_cancel_btn, self.export_btn):
+        self.more_btn = QPushButton("更多")
+        self.more_btn.setObjectName("ghostButton")
+        self.more_btn.setToolTip("刷新、导出、浮动符文与清空筛选")
+        self.more_menu = QMenu(self)
+        self.refresh_action = self.more_menu.addAction(
+            "刷新当前星系", lambda: self._load_current(manual=True))
+        self.export_action = self.more_menu.addAction(
+            "导出 CSV", self._export_current_csv)
+        self.overlay_action = self.more_menu.addAction(
+            "浮窗显示选中符文", self._show_overlay)
+        self.clear_filters_action = self.more_menu.addAction(
+            "清空当前筛选", self._clear_current_filters)
+        self.more_menu.addSeparator()
+        self.seed_action = self.more_menu.addAction("种子反查…", self._seed_lookup)
+        self.export_action.setEnabled(False)
+        self.overlay_action.setEnabled(False)
+        self.more_btn.setMenu(self.more_menu)
+        for button in (self.primary_btn, self.scan_cancel_btn, self.more_btn):
             self.header.add_action(button)
 
         self.error_banner = ErrorBanner(parent=self)
@@ -364,15 +389,10 @@ class GalaxyPage(QWidget):
 
         hero = Card()
         hv = hero.v
-        line = QHBoxLayout()
         self.badge = QLabel("—")
         self.badge.setStyleSheet("font-size:16px;font-weight:700;")
         self.badge.setWordWrap(True)
-        line.addWidget(self.badge, 1)
-        self.copy_glyph = QPushButton("复制符文")
-        self.copy_glyph.clicked.connect(self._copy_glyph)
-        line.addWidget(self.copy_glyph)
-        hv.addLayout(line)
+        hv.addWidget(self.badge)
         self.hero_info = muted("进入页面后自动读取；没有存档时请先在设置页配置。")
         self.glyph = GalaxyGlyphLabel(max_height=40)
         # 信息与符文条并排，省下一整行高度给下面的筛选/结果区。
@@ -400,6 +420,14 @@ class GalaxyPage(QWidget):
         mv.setContentsMargins(12, 8, 12, 8)
         mv.setSpacing(6)
 
+        self.status = muted("就绪：可扫描附近星系，或先查看当前星系。")
+        self.addr_status = self.status          # 地址工作台复用同一条状态行
+
+        # 扫描条件只服务「行星 / 船池 / 扫描结果」，切到其它标签时整块收起。
+        self.scan_filter_box = QWidget()
+        sf = QVBoxLayout(self.scan_filter_box)
+        sf.setContentsMargins(0, 0, 0, 0)
+        sf.setSpacing(6)
         # 窄窗口下自动换行：每个标签和控件都保持自己的 sizeHint，
         # 不再被 QHBoxLayout 压到比中文文本还窄。
         self.scan_filter_flow = GalaxyFlowBar(h_spacing=6, v_spacing=6)
@@ -433,16 +461,18 @@ class GalaxyPage(QWidget):
         self.count.setValue(200)
         self.scan_filter_flow.addWidget(self._filter_field("扫描系统数", self.count))
         self.reset_filters_btn = QPushButton("重置条件")
+        self.reset_filters_btn.setObjectName("ghostButton")
         self.reset_filters_btn.clicked.connect(self._reset_scan_filters)
         self.scan_filter_flow.addWidget(self.reset_filters_btn)
-        mv.addWidget(self.scan_filter_flow)
+        sf.addWidget(self.scan_filter_flow)
 
         for widget in (self.biome, self.sent, self.race, self.interceptor, self.diss):
             widget.currentIndexChanged.connect(self._update_filter_summary)
         for widget in (self.min_planets, self.count):
             widget.valueChanged.connect(self._update_filter_summary)
         self.filter_summary = muted("筛选摘要：不限条件；扫描范围 200 个系统。")
-        mv.addWidget(self.filter_summary)
+        sf.addWidget(self.filter_summary)
+        mv.addWidget(self.scan_filter_box)
 
         self.tabs = QTabWidget()
         self.planets = GalaxyTable(0, 5)
@@ -451,8 +481,10 @@ class GalaxyPage(QWidget):
         self._configure_table(self.planets)
         self.planets.setSortingEnabled(True)
         self.planets.itemSelectionChanged.connect(self._select_planet)
+        self.planets.cellDoubleClicked.connect(
+            lambda row, _col: self._on_table_double_click(self.planets, row))
         self.planets_empty = EmptyState(
-            "当前星系没有行星", "没有读到行星数据；请确认存档/游戏目录，或点右上角刷新。",
+            "当前星系没有行星", "没有读到行星数据；请确认存档/游戏目录，或用「更多 → 刷新当前星系」。",
             icon="◇")
         self.planets_page = self._wrap_table(self.planets, self.planets_empty)
         self.tabs.addTab(self.planets_page, "行星")
@@ -461,7 +493,7 @@ class GalaxyPage(QWidget):
         self._configure_table(self.ships)
         self.ships.setSortingEnabled(True)
         self.ships_empty = EmptyState(
-            "当前星系没有船", "没有读到船池数据；请确认存档/游戏目录，或点右上角刷新。",
+            "当前星系没有船", "没有读到船池数据；请确认存档/游戏目录，或用「更多 → 刷新当前星系」。",
             icon="◇")
         self.ships_page = self._wrap_table(self.ships, self.ships_empty)
         self.tabs.addTab(self.ships_page, "本星系船池")
@@ -471,8 +503,10 @@ class GalaxyPage(QWidget):
         self._configure_table(self.scan_table)
         self.scan_table.setSortingEnabled(True)
         self.scan_table.itemSelectionChanged.connect(self._select_scan)
+        self.scan_table.cellDoubleClicked.connect(
+            lambda row, _col: self._on_table_double_click(self.scan_table, row))
         self.scan_empty = EmptyState(
-            "还没有扫描结果", "点右上角「扫描」按当前条件扫描附近星系；结果会写入银河索引。",
+            "还没有扫描结果", "点顶部「扫描」按当前条件扫描附近星系；结果会写入银河索引。",
             icon="◇")
         self.scan_page = self._build_scan_page()
         self.tabs.addTab(self.scan_page, "扫描结果")
@@ -511,36 +545,6 @@ class GalaxyPage(QWidget):
         self.index_filter_flow.addWidget(self._filter_field("拦截机", self.idx_interceptor))
         iv.addWidget(self.index_filter_flow)
 
-        # 银河索引也是系统级结果：传送入口和扫描结果页一致，都会先问行星。
-        self.index_action_flow = GalaxyFlowBar(h_spacing=6, v_spacing=6)
-        self.idx_query = QPushButton("查询")
-        self.idx_query.setObjectName("primary")
-        self.idx_query.clicked.connect(self._query_index)
-        self.index_action_flow.addWidget(self.idx_query)
-        self.idx_export = QPushButton("导出结果")
-        self.idx_export.clicked.connect(self._export_index_csv)
-        self.index_action_flow.addWidget(self.idx_export)
-        self.idx_copy = QPushButton("复制符文")
-        self.idx_copy.clicked.connect(self._copy_index_glyph)
-        self.index_action_flow.addWidget(self.idx_copy)
-        self.idx_stats_btn = QPushButton("刷新统计")
-        self.idx_stats_btn.clicked.connect(self._refresh_index_stats)
-        self.index_action_flow.addWidget(self.idx_stats_btn)
-        self.index_warp_btn = QPushButton("传送到此星球")
-        self.index_warp_btn.setToolTip("调用游戏内传送门机制，传送到银河索引中选中的星系/行星")
-        self.index_warp_btn.setEnabled(False)
-        self.index_warp_btn.clicked.connect(self._warp_selected_planet)
-        self.index_action_flow.addWidget(self.index_warp_btn)
-        iv.addWidget(self.index_action_flow)
-        self.index_warp_hint = muted("选择一条银河索引结果后可传送；系统级结果会先让你选行星。")
-        self.index_status = muted("就绪：按条件查询已扫描的银河索引。")
-        # 传送提示与查询状态共用一行：两者都很短，分开会多占一整行。
-        index_info = QHBoxLayout()
-        index_info.setSpacing(8)
-        index_info.addWidget(self.index_warp_hint, 1)
-        index_info.addWidget(self.index_status, 1)
-        iv.addLayout(index_info)
-
         self.index_stats = muted("索引统计：读取中…")
         self.index_table = GalaxyTable(0, 7)
         self.index_table.setHorizontalHeaderLabels(
@@ -550,8 +554,10 @@ class GalaxyPage(QWidget):
         self.index_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.index_table.setSortingEnabled(True)
         self.index_table.itemSelectionChanged.connect(self._select_index)
+        self.index_table.cellDoubleClicked.connect(
+            lambda row, _col: self._on_table_double_click(self.index_table, row))
         self.index_empty = EmptyState(
-            "还没有银河索引结果", "按条件点「查询」，或先扫描一片区域；索引会越扫越全。",
+            "还没有银河索引结果", "按条件点顶部「查询」，或先扫描一片区域；索引会越扫越全。",
             icon="◇")
         self.index_pane = self._table_pane(self.index_table, self.index_empty)
         iv.addWidget(self.index_pane, 1)
@@ -561,7 +567,6 @@ class GalaxyPage(QWidget):
         self.tabs.addTab(self._build_address_page(), "地址工作台")
         mv.addWidget(self.tabs, 1)
 
-        self.status = muted("就绪：可扫描附近星系，或先查看当前星系。")
         mv.addWidget(self.status)
         split.addWidget(mid)
 
@@ -570,34 +575,24 @@ class GalaxyPage(QWidget):
         self.detail_title = QLabel("选择行星")
         self.detail_title.setStyleSheet("font-size:15px;font-weight:700;")
         rv.addWidget(self.detail_title)
-        self.detail = muted("空态：点表格里的行星、扫描结果或银河索引查看详情。")
+        self.detail = muted(
+            "点表格里的行星、扫描结果、银河索引或已发现行星查看详情；双击打开详情窗。")
         rv.addWidget(self.detail)
         self.detail_glyph = GalaxyGlyphLabel(max_height=40)
         rv.addWidget(self.detail_glyph)
-        self.selection_hint = muted("未选择：选中一行后可复制地址、显示浮窗或填入传送。")
-        rv.addWidget(self.selection_hint)
         row = QHBoxLayout()
-        self.copy_selected_glyph_btn = QPushButton("复制 符文串")
+        self.copy_selected_glyph_btn = QPushButton("复制符文串")
         self.copy_selected_glyph_btn.clicked.connect(self._copy_selected_glyph)
         row.addWidget(self.copy_selected_glyph_btn)
         self.copy_selected_coords_btn = QPushButton("复制坐标")
         self.copy_selected_coords_btn.clicked.connect(self._copy_selected_coords)
         row.addWidget(self.copy_selected_coords_btn)
         rv.addLayout(row)
-        row2 = QHBoxLayout()
-        self.overlay_btn = QPushButton("浮窗显示符文")
-        self.overlay_btn.clicked.connect(self._show_overlay)
-        row2.addWidget(self.overlay_btn)
-        self.travel_btn = QPushButton("定位并填入传送")
-        self.travel_btn.clicked.connect(self._prepare_travel)
-        row2.addWidget(self.travel_btn)
-        rv.addLayout(row2)
-        # 常驻入口：无论当前在哪个标签页，选中行后都能直接传送。
-        self.detail_warp_btn = QPushButton("传送到此星球")
-        self.detail_warp_btn.setToolTip("调用游戏内传送门机制，传送到当前选中的星球")
-        self.detail_warp_btn.setEnabled(False)
-        self.detail_warp_btn.clicked.connect(self._warp_selected_planet)
-        rv.addWidget(self.detail_warp_btn)
+        self.warp_btn = QPushButton("传送到此星球")
+        self.warp_btn.setToolTip("调用游戏内传送门机制，传送到当前选中的星球")
+        self.warp_btn.setEnabled(False)
+        self.warp_btn.clicked.connect(self._warp_selected_planet)
+        rv.addWidget(self.warp_btn)
         rv.addStretch(1)
         right.setMinimumWidth(300)
         split.addWidget(right)
@@ -610,23 +605,14 @@ class GalaxyPage(QWidget):
         self._set_empty_state(self.ships, self.ships_empty, False)
         self._set_empty_state(self.scan_table, self.scan_empty, False)
         self._set_empty_state(self.index_table, self.index_empty, False)
-        self._update_subtitle()
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._sync_primary_action()
 
     def _build_scan_page(self) -> QWidget:
         page = QWidget()
         v = QVBoxLayout(page)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(6)
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        self.warp_btn = QPushButton("传送到此星球")
-        self.warp_btn.setToolTip("调用游戏内传送门机制，传送到选中的扫描结果行星")
-        self.warp_btn.setEnabled(False)
-        self.warp_btn.clicked.connect(self._warp_selected_planet)
-        row.addWidget(self.warp_btn)
-        self.warp_hint = muted("选择一条扫描结果后可传送到该星球。")
-        row.addWidget(self.warp_hint, 1)
-        v.addLayout(row)
         self.scan_pane = self._table_pane(self.scan_table, self.scan_empty)
         v.addWidget(self.scan_pane, 1)
         return page
@@ -669,6 +655,7 @@ class GalaxyPage(QWidget):
         self.disc_filter_flow.addWidget(self._filter_field("距离", self.disc_distance))
 
         self.disc_center_btn = QPushButton("以当前星系为中心")
+        self.disc_center_btn.setObjectName("ghostButton")
         self.disc_center_btn.setCheckable(True)
         self.disc_center_btn.setToolTip(
             "把当前星系设为距离中心；再次点击可清除中心并关闭距离筛选")
@@ -679,25 +666,6 @@ class GalaxyPage(QWidget):
         self.disc_filter_flow.addWidget(self.disc_origin_hint)
         v.addWidget(self.disc_filter_flow)
 
-        self.disc_action_flow = GalaxyFlowBar(h_spacing=6, v_spacing=6)
-        self.disc_refresh_btn = QPushButton("刷新")
-        self.disc_refresh_btn.setToolTip("重新读取当前存档里的已发现星球")
-        self.disc_refresh_btn.clicked.connect(lambda: self._load_discovered(manual=True))
-        self.disc_action_flow.addWidget(self.disc_refresh_btn)
-        self.disc_export_btn = QPushButton("导出 CSV")
-        self.disc_export_btn.setToolTip("按当前筛选/表格内容导出已发现星球（含符文与坐标）")
-        self.disc_export_btn.setEnabled(False)
-        self.disc_export_btn.clicked.connect(self._export_discovered_csv)
-        self.disc_action_flow.addWidget(self.disc_export_btn)
-        self.disc_warp_btn = QPushButton("传送到此星球")
-        self.disc_warp_btn.setToolTip("调用游戏内传送门机制，传送到选中的已发现星球")
-        self.disc_warp_btn.setEnabled(False)
-        self.disc_warp_btn.clicked.connect(self._warp_selected_planet)
-        self.disc_action_flow.addWidget(self.disc_warp_btn)
-        self.disc_warp_hint = muted("选择一条已发现行星后可传送到该星球。")
-        self.disc_action_flow.addWidget(self.disc_warp_hint)
-        v.addWidget(self.disc_action_flow)
-
         self.disc_stats = muted("已发现：读取中…")
         v.addWidget(self.disc_stats)
 
@@ -706,15 +674,17 @@ class GalaxyPage(QWidget):
         self._configure_table(self.disc_table)
         self.disc_table.setSortingEnabled(True)
         self.disc_table.itemSelectionChanged.connect(self._select_discovered)
+        self.disc_table.cellDoubleClicked.connect(
+            lambda row, _col: self._on_table_double_click(self.disc_table, row))
         self.disc_empty = EmptyState(
-            "正在读取已发现星球…", "正在读取当前存档的发现记录，请稍候。",
+            "正在读取已发现星球…", "正在建立/读取本地发现索引，请稍候。",
             icon="◇")
         self.disc_pane = self._table_pane(self.disc_table, self.disc_empty)
         v.addWidget(self.disc_pane, 1)
-        self._autosize_table(self.disc_table, (68, 140, 70, 48, 78, 74, 104))
+        self._autosize_table(self.disc_table, (64, 150, 66, 48, 126, 84, 110))
         self._set_empty_state(
             self.disc_table, self.disc_empty, False,
-            "正在读取已发现星球…", "正在读取当前存档的发现记录，请稍候。")
+            "正在读取已发现星球…", "正在建立/读取本地发现索引，请稍候。")
 
         self.disc_biome.currentIndexChanged.connect(self._apply_discovered_filters)
         self.disc_infested.currentIndexChanged.connect(self._apply_discovered_filters)
@@ -722,6 +692,198 @@ class GalaxyPage(QWidget):
         self.disc_distance.valueChanged.connect(self._apply_discovered_filters)
         self.discovered_page = page
         return page
+
+    # ---------------------------------------------------------------- 主操作
+
+    def _tab_key(self) -> str:
+        widget = self.tabs.currentWidget()
+        if widget is self.index_page:
+            return "index"
+        if widget is self.discovered_page:
+            return "discovered"
+        if widget is self.address_page:
+            return "address"
+        if widget is self.scan_page:
+            return "scan"
+        return "current"
+
+    def _on_tab_changed(self, _index: int) -> None:
+        for table in (self.planets, self.ships, self.scan_table,
+                      self.index_table, self.disc_table):
+            try:
+                table.clearSelection()
+            except RuntimeError:
+                continue
+        self._selection = {}
+        self._update_warp_action(None)
+        self.status.setText(self._ready_status())
+        self._sync_primary_action()
+
+    def _ready_status(self) -> str:
+        return {
+            "scan": "就绪：点顶部「扫描」按当前条件扫描附近星系。",
+            "index": "就绪：按条件查询已扫描的银河索引。",
+            "discovered": "就绪：选择一条已发现行星后可传送。",
+            "address": "就绪：输入符文 / 坐标 / UA，点顶部「转换地址」。",
+        }.get(self._primary_mode,
+               "就绪：查看当前星系；点顶部「扫描」找附近星系。")
+
+    def _sync_primary_action(self) -> None:
+        """按当前标签页决定唯一 primary 的语义与可用性。"""
+        mode = self._tab_key()
+        self._primary_mode = mode
+        scanning = bool(self._scan_job is not None
+                        and getattr(self._scan_job, "status", "") == "running")
+        scanning = scanning or self.scan_cancel_btn.isVisible()
+        has_target = self._warp_target is not None and not self._warp_busy
+
+        if mode == "index":
+            self.primary_btn.setText("查询中…" if self._index_busy else "查询")
+            self.primary_btn.setToolTip("按条件查询已扫描的银河索引")
+            self.primary_btn.setEnabled(not self._index_busy)
+        elif mode == "discovered":
+            self.primary_btn.setText("传送中…" if self._warp_busy else "传送到此星球")
+            if has_target and self._warp_tooltip:
+                self.primary_btn.setToolTip(self._warp_tooltip)
+            else:
+                self.primary_btn.setToolTip(
+                    "调用游戏内传送门机制，传送到选中的已发现星球"
+                    if has_target else "选择一条已发现行星后可传送")
+            self.primary_btn.setEnabled(has_target)
+        elif mode == "address":
+            self.primary_btn.setText("转换地址")
+            self.primary_btn.setToolTip(
+                "把输入解析成「符文 / 坐标 / UA」三形态；非法输入会说明原因")
+            self.primary_btn.setEnabled(not self._addr_busy)
+        else:
+            self.primary_btn.setText("扫描中…" if scanning else "扫描")
+            self.primary_btn.setToolTip("扫描附近星系并写入银河索引")
+            self.primary_btn.setEnabled(not scanning)
+
+        # 扫描条件只服务扫描相关标签；其它标签各自有自己的筛选条。
+        self.scan_filter_box.setVisible(mode in ("current", "scan"))
+        # 「已发现」的主操作就是传送，详情卡不再重复一个传送按钮。
+        self.warp_btn.setVisible(mode != "discovered")
+        if mode != "discovered":
+            self.warp_btn.setEnabled(has_target and not self._warp_busy)
+        self.refresh_action.setEnabled(mode != "address")
+        self.export_action.setEnabled(self._has_exportable_rows(mode))
+        self.overlay_action.setEnabled(bool(self._selected_glyphs()))
+        self.clear_filters_action.setEnabled(mode in ("current", "scan", "index", "discovered"))
+        self.seed_action.setEnabled(mode == "address")
+
+    def _on_primary(self) -> None:
+        mode = self._primary_mode
+        if mode == "index":
+            self._query_index()
+        elif mode == "discovered":
+            self._warp_selected_planet()
+        elif mode == "address":
+            self._address_submit()
+        else:
+            self._scan()
+
+    def _has_exportable_rows(self, mode: str) -> bool:
+        if mode == "index":
+            return bool(self._index_rows)
+        if mode == "discovered":
+            return bool(self._discovered_rows)
+        return bool(self._scan_rows or self.planets.rowCount() or self.ships.rowCount())
+
+    def _export_current_csv(self) -> None:
+        mode = self._tab_key()
+        if mode == "index":
+            self._export_index_csv()
+        elif mode == "discovered":
+            self._export_discovered_csv()
+        else:
+            self._export_csv()
+
+    def _clear_current_filters(self) -> None:
+        mode = self._tab_key()
+        if mode == "index":
+            for widget in (self.idx_biome, self.idx_sent, self.idx_race,
+                           self.idx_diss, self.idx_interceptor):
+                widget.setCurrentIndex(0)
+            self.idx_min.setValue(0)
+            self.status.setText("已清空银河索引筛选条件。")
+        elif mode == "discovered":
+            self.disc_center_btn.setChecked(False)
+            for widget in (self.disc_biome, self.disc_infested, self.disc_named):
+                widget.setCurrentIndex(0)
+            self.disc_distance.setValue(0)
+            self.status.setText("已清空已发现筛选条件。")
+        else:
+            self._reset_scan_filters()
+
+    def _on_table_double_click(self, table: QTableWidget, row: int) -> None:
+        """双击 = 查看详情；选中仍然只负责启用传送。"""
+        try:
+            table.selectRow(row)
+        except RuntimeError:
+            return
+        title = self.detail_title.text()
+        body = self.detail.text()
+        if not body:
+            return
+        self._show_detail_dialog(title, body, self._selected_glyphs())
+
+    def _show_detail_dialog(self, title: str, body: str,
+                            glyphs: str | None = None) -> None:
+        try:
+            if self._detail_dialog is not None:
+                self._detail_dialog.close()
+        except RuntimeError:
+            pass
+        try:
+            dialog = GalaxyDetailDialog(title, body, glyphs=glyphs, parent=self)
+            dialog.show()
+            self._detail_dialog = dialog
+        except Exception as e:                              # noqa: BLE001
+            self.status.setText(f"详情窗打开失败：{type(e).__name__}: {e}")
+            notify.error(f"详情窗打开失败：{type(e).__name__}: {e}")
+
+    def _seed_lookup(self) -> None:
+        """次要动作：0x… 种子反查，命中后把第一条候选填进地址工作台。"""
+        seed_text, ok = QInputDialog.getText(
+            self, "种子反查", "输入 0x… 十六进制种子（候选越多越慢）：")
+        if not ok:
+            return
+        try:
+            seed = parse_seed(seed_text)
+        except ValueError as e:
+            self.status.setText(f"种子校验失败：{e}")
+            notify.error(f"种子校验失败：{e}")
+            return
+        text = f"0x{seed:016X}"
+        self._addr_set_busy(True, f"正在反查种子 {text}…（候选越多越慢）")
+        notify.toast(f"正在反查种子 {text}…（候选越多越慢）")
+
+        def done(res: dict) -> None:
+            self._addr_set_busy(False)
+            hits = res.get("hits") or []
+            if not hits:
+                reason = res.get("reason") or "没有可信候选。"
+                self.status.setText(f"种子反查无结果：{reason}")
+                notify.warn(f"种子反查无结果：{reason}")
+                return
+            hit = hits[0]
+            glyphs = str(hit.get("glyphs") or "").strip().upper()
+            if not glyphs:
+                self.status.setText("种子反查命中，但候选没有可用的符文串。")
+                notify.warn("种子反查命中，但候选没有可用的符文串")
+                return
+            self.addr_input.setText(glyphs)
+            self._address_submit()
+            self.status.setText(
+                f"种子反查命中 {len(hits)} 个；已填入第一个候选 {glyphs}。")
+            notify.success(f"种子反查命中 {len(hits)} 个；已填入第一个候选")
+
+        def fail(msg: str) -> None:
+            self._addr_set_busy(False, f"种子反查失败：{msg}")
+            notify.error(f"种子反查失败：{msg}")
+
+        run_worker(self.svc.locate, done, fail, seed=text)
 
 
     def _table_pane(self, table: QTableWidget, empty: EmptyState) -> GalaxyTablePane:
@@ -797,13 +959,6 @@ class GalaxyPage(QWidget):
             table.hide()
             empty.show()
 
-    def _update_subtitle(self) -> None:
-        self.header.set_title(
-            "星图",
-            f"当前星系：{self._sub_current} · 扫描：{self._sub_scan}"
-            f" · 索引：{self._sub_index} · 地址：{self._sub_address}")
-        self.header.subtitle.setToolTip(self.header.subtitle.text())
-
     def sizeHint(self) -> QSize:                     # noqa: N802 - Qt 回调
         """避免把"表格内容期望高度"当成整页高度，让外层滚动区无谓滚动。
 
@@ -870,8 +1025,6 @@ class GalaxyPage(QWidget):
 
     def _load_current(self, manual: bool = False) -> None:
         self.status.setText("加载中：正在读取当前星系…")
-        self._sub_current = "读取中…"
-        self._update_subtitle()
         self.error_banner.clear()
         self.current_empty.hide()
         self.loading.start("正在读取当前星系…")
@@ -885,7 +1038,6 @@ class GalaxyPage(QWidget):
                 f"种族：{res.get('race_zh') or res.get('race') or '—'}  ·  "
                 f"行星：{res.get('planets', 0)}  ·  "
                 f"异常：{'是' if res.get('dissonant') else '否'}")
-            self._sub_current = f"{name} · {res.get('glyphs') or '—'}"
             self._set_glyph(self.glyph, res.get("glyphs"))
             pls = res.get("planet_list") or []
             self.planets.setSortingEnabled(False)
@@ -916,10 +1068,12 @@ class GalaxyPage(QWidget):
             self._autosize_table(self.ships, (150, 120, 160, 160))
             self._set_empty_state(
                 self.planets, self.planets_empty, bool(pls),
-                "当前星系没有行星", "没有读到行星数据；请确认存档/游戏目录，或点右上角刷新。")
+                "当前星系没有行星",
+                "没有读到行星数据；请确认存档/游戏目录，或用「更多 → 刷新当前星系」。")
             self._set_empty_state(
                 self.ships, self.ships_empty, bool(ships),
-                "当前星系没有船", "没有读到船池数据；请确认存档/游戏目录，或点右上角刷新。")
+                "当前星系没有船",
+                "没有读到船池数据；请确认存档/游戏目录，或用「更多 → 刷新当前星系」。")
             if pls or ships:
                 self.status.setText(f"当前星系：{len(pls)} 颗行星 / {len(ships)} 艘船")
                 self.current_empty.hide()
@@ -929,16 +1083,15 @@ class GalaxyPage(QWidget):
                 self.status.setText("当前星系为空：没有读取到行星或船池数据。")
                 self.current_empty.title_label.setText("当前星系没有结果")
                 self.current_empty.description_label.setText(
-                    "没有读到行星或船池数据；请确认存档/游戏目录，或点右上角刷新。")
+                    "没有读到行星或船池数据；请确认存档/游戏目录，再用「更多 → 刷新当前星系」。")
                 self.current_empty.description_label.show()
                 self.current_empty.show()
                 notify.warn("当前星系没有读取到行星或船池数据")
-            self._update_subtitle()
+            self._sync_primary_action()
 
         def fail(msg: str) -> None:
             self.loading.stop()
             self._current_info = {}
-            self._sub_current = "不可用"
             self.status.setText(f"当前星系不可用：{msg}")
             self.hero_info.setText("错误态：没有读到当前星系；请确认存档/游戏目录。")
             self.glyph.clear()
@@ -955,7 +1108,7 @@ class GalaxyPage(QWidget):
             self._set_empty_state(
                 self.ships, self.ships_empty, False, "没有当前星系的船池",
                 "当前星系不可用；请先确认存档/游戏目录。")
-            self._update_subtitle()
+            self._sync_primary_action()
             notify.error(f"当前星系加载失败：{msg}")
 
         run_worker(self.svc.system, done, fail)
@@ -987,9 +1140,6 @@ class GalaxyPage(QWidget):
         notify.success(f"{label}已复制到剪贴板")
         return True
 
-    def _copy_glyph(self) -> None:
-        self._copy_text(self._current_info.get("glyphs"), "符文串")
-
     # ---------------------------------------------------------------- 地址工作台
 
     def _build_address_page(self) -> QWidget:
@@ -999,286 +1149,187 @@ class GalaxyPage(QWidget):
         v.setSpacing(6)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("地址/种子"))
+        row.setSpacing(6)
+        row.addWidget(QLabel("地址"))
         self.addr_input = QLineEdit()
         self.addr_input.setPlaceholderText(
-            "12 位符文串，例如 1043FEE69929；或种子 0x0123456789ABCDEF")
+            "12 位符文（如 3112F19BDCE5）/ 坐标 04E4:0070:01BC:0112 / 0x… UA")
+        self.addr_input.setClearButtonEnabled(True)
+        self.addr_input.setToolTip(
+            "三种输入互转：12 位符文、X:Y:Z:SSSS 坐标、0x… UA；回车或点顶部主操作转换")
         self.addr_input.returnPressed.connect(self._address_submit)
         row.addWidget(self.addr_input, 1)
-        self.addr_lookup = QPushButton("解析 符文串")
-        self.addr_lookup.setObjectName("primary")
-        self.addr_lookup.clicked.connect(self._address_glyphs)
-        row.addWidget(self.addr_lookup)
-        self.addr_seed = QPushButton("种子反查")
-        self.addr_seed.clicked.connect(self._address_seed)
-        row.addWidget(self.addr_seed)
+        row.addWidget(QLabel("行星位"))
+        self.addr_planet = QComboBox()
+        self.addr_planet.addItem("未知（0）", 0)
+        for number in range(1, 7):
+            self.addr_planet.addItem(str(number), number)
+        self.addr_planet.setCurrentIndex(1)      # 坐标不含行星位时默认 1 号
+        self.addr_planet.setToolTip(
+            "坐标输入不含行星位时使用；符文/UA 自带行星位。未知（0）不可传送")
+        row.addWidget(self.addr_planet)
         v.addLayout(row)
 
-        self.addr_status = muted(
-            "空态：输入 12 位符文串或 0x… 种子；坐标文本暂不支持直接解析。")
-        v.addWidget(self.addr_status)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
+        grid.setColumnStretch(1, 1)
+        self.addr_glyphs_edit = self._addr_output_edit()
+        self.addr_glyphs_copy = self._addr_copy_button("复制符文")
+        self.addr_coords_edit = self._addr_output_edit()
+        self.addr_coords_copy = self._addr_copy_button("复制坐标")
+        self.addr_ua_edit = self._addr_output_edit()
+        self.addr_ua_copy = self._addr_copy_button("复制 UA")
+        for index, (label, edit, button) in enumerate((
+                ("符文", self.addr_glyphs_edit, self.addr_glyphs_copy),
+                ("坐标", self.addr_coords_edit, self.addr_coords_copy),
+                ("UA", self.addr_ua_edit, self.addr_ua_copy))):
+            grid.addWidget(QLabel(label), index, 0)
+            grid.addWidget(edit, index, 1)
+            grid.addWidget(button, index, 2)
+        v.addLayout(grid)
 
-        self.addr_summary = QLabel("尚未查询。")
-        self.addr_summary.setWordWrap(True)
-        self.addr_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        v.addWidget(self.addr_summary)
+        self.addr_note = muted("")
+        self.addr_note.setVisible(False)
+        v.addWidget(self.addr_note)
 
         self.addr_glyph = GalaxyGlyphLabel(max_height=40)
         v.addWidget(self.addr_glyph)
 
         actions = QHBoxLayout()
-        self.addr_copy = QPushButton("复制 符文串")
-        self.addr_copy.setEnabled(False)
-        self.addr_copy.clicked.connect(self._copy_addr_glyph)
-        actions.addWidget(self.addr_copy)
-        self.addr_fill = QPushButton("定位并填入传送")
+        actions.setSpacing(6)
+        self.addr_fill = QPushButton("填入游戏内传送输入")
+        self.addr_fill.setObjectName("ghostButton")
+        self.addr_fill.setToolTip("只把符文填进「联动 → 传送」的输入框，不直接执行传送")
         self.addr_fill.setEnabled(False)
         self.addr_fill.clicked.connect(self._fill_addr_teleport)
         actions.addWidget(self.addr_fill)
         actions.addStretch(1)
         v.addLayout(actions)
+        v.addStretch(1)
 
-        self.addr_seed_table = GalaxyTable(0, 5)
-        self.addr_seed_table.setHorizontalHeaderLabels(
-            ["匹配", "坐标", "符文串", "星系", "位置/船"])
-        self._configure_table(self.addr_seed_table)
-        self.addr_seed_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.addr_seed_table.itemSelectionChanged.connect(self._select_addr_seed)
-        self.addr_seed_empty = EmptyState(
-            "还没有种子反查结果",
-            "输入 0x… 十六进制种子并点「种子反查」；候选越多越慢。",
-            icon="◇")
-        self.addr_seed_pane = self._table_pane(self.addr_seed_table, self.addr_seed_empty)
-        v.addWidget(self.addr_seed_pane, 1)
-        self._set_empty_state(self.addr_seed_table, self.addr_seed_empty, False)
+        # 外壳的「符文」入口会聚焦 addr_lookup；这里指向页面唯一的主按钮。
+        self.addr_lookup = self.primary_btn
+        self.addr_copy = self.addr_glyphs_copy
+        self.addr_glyphs_copy.clicked.connect(self._copy_addr_glyphs)
+        self.addr_coords_copy.clicked.connect(self._copy_addr_coords)
+        self.addr_ua_copy.clicked.connect(self._copy_addr_ua)
+        self._addr_clear_glyph()
+        self.address_page = page
         return page
+
+    @staticmethod
+    def _addr_output_edit() -> QLineEdit:
+        edit = QLineEdit()
+        edit.setReadOnly(True)
+        edit.setPlaceholderText("—")
+        edit.setMinimumWidth(0)
+        edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        return edit
+
+    @staticmethod
+    def _addr_copy_button(text: str) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("ghostButton")
+        button.setEnabled(False)
+        button.setToolTip(f"{text}（当前结果）")
+        return button
 
     def _addr_set_busy(self, busy: bool, text: str | None = None) -> None:
         self._addr_busy = busy
-        for widget in (self.addr_input, self.addr_lookup, self.addr_seed):
+        for widget in (self.addr_input, self.addr_planet, self.addr_fill,
+                       self.addr_glyphs_copy, self.addr_coords_copy, self.addr_ua_copy):
             widget.setEnabled(not busy)
         if busy:
-            self.addr_copy.setEnabled(False)
             self.addr_fill.setEnabled(False)
         else:
-            self.addr_copy.setEnabled(bool(self._addr_glyphs))
-            self.addr_fill.setEnabled(bool(self._addr_glyphs))
+            self.addr_fill.setEnabled(bool(self._addr_glyphs and self._addr_teleportable))
+            self.addr_glyphs_copy.setEnabled(bool(self._addr_glyphs))
+            self.addr_coords_copy.setEnabled(bool(self._addr_coords))
+            self.addr_ua_copy.setEnabled(bool(self._addr_ua_text))
         if text is not None:
-            self.addr_status.setText(text)
+            self.status.setText(text)
+        self._sync_primary_action()
 
     def _addr_clear_glyph(self) -> None:
         self._addr_glyphs = None
         self._addr_coords = None
+        self._addr_ua_text = None
+        self._addr_teleportable = False
+        for edit in (self.addr_glyphs_edit, self.addr_coords_edit, self.addr_ua_edit):
+            edit.clear()
+            edit.setText("")
+        for button in (self.addr_glyphs_copy, self.addr_coords_copy, self.addr_ua_copy):
+            button.setEnabled(False)
+        self.addr_note.clear()
+        self.addr_note.setVisible(False)
         self.addr_glyph.clear()
-        self.addr_copy.setEnabled(False)
         self.addr_fill.setEnabled(False)
 
     def _address_submit(self) -> None:
-        result = classify_address_input(self.addr_input.text())
-        kind = result["kind"]
-        if kind == "glyphs":
-            self._lookup_glyphs(result["value"])
-        elif kind == "seed":
-            self._lookup_seed(result["value"])
-        elif kind == "coords":
-            self.addr_status.setText(result["message"])
-            self.addr_summary.setText("坐标文本暂不支持直接解析；请使用符文串或种子。")
-            self._sub_address = "坐标文本暂不支持"
-            self._update_subtitle()
-            notify.warn("坐标文本暂不支持直接解析；请使用符文串或种子")
-        elif kind == "empty":
-            self.addr_status.setText(result["message"])
-            self.addr_summary.setText("空态：等待输入地址或种子。")
-            self._sub_address = "等待输入"
-            self._update_subtitle()
-            notify.toast("请输入符文串或种子")
+        if self._addr_busy:
+            return
+        planet = int(self.addr_planet.currentData() or 0)
+        result = convert_address(self.addr_input.text(), planet=planet)
+        if not result.get("ok"):
+            self._addr_clear_glyph()
+            reason = result.get("message") or "无法识别输入。"
+            self.status.setText(f"地址转换失败：{reason}")
+            notify.error(f"地址转换失败：{reason}")
+            self._sync_primary_action()
+            return
+
+        self._addr_glyphs = result.get("glyphs")
+        self._addr_coords = result.get("coords")
+        self._addr_ua_text = result.get("ua_text")
+        self._addr_teleportable = bool(result.get("teleportable"))
+        self.addr_glyphs_edit.setText(self._addr_glyphs or "—")
+        self.addr_coords_edit.setText(self._addr_coords or "—")
+        self.addr_ua_edit.setText(self._addr_ua_text or "—")
+        for edit in (self.addr_glyphs_edit, self.addr_coords_edit, self.addr_ua_edit):
+            edit.setCursorPosition(0)
+        self.addr_glyphs_copy.setEnabled(bool(self._addr_glyphs))
+        self.addr_coords_copy.setEnabled(bool(self._addr_coords))
+        self.addr_ua_copy.setEnabled(bool(self._addr_ua_text))
+        self.addr_fill.setEnabled(bool(self._addr_glyphs and self._addr_teleportable))
+
+        if result.get("kind") in ("glyphs", "ua"):
+            index = self.addr_planet.findData(result.get("planet"))
+            if index >= 0:
+                self.addr_planet.blockSignals(True)
+                try:
+                    self.addr_planet.setCurrentIndex(index)
+                finally:
+                    self.addr_planet.blockSignals(False)
+
+        warning = str(result.get("warning") or "")
+        self.addr_note.setText(warning)
+        self.addr_note.setVisible(bool(warning))
+        if self._addr_glyphs:
+            self._set_glyph(self.addr_glyph, self._addr_glyphs)
         else:
-            self.addr_status.setText(result.get("message") or "输入不合法。")
-            self.addr_summary.setText("无法识别输入；请检查格式。")
-            self._sub_address = "输入不合法"
-            self._update_subtitle()
-            notify.error(result.get("message") or "无法识别输入；请检查格式")
+            self.addr_glyph.clear()
 
-    def _address_glyphs(self) -> None:
-        try:
-            glyphs = normalize_glyphs(self.addr_input.text())
-        except ValueError as e:
-            self.addr_status.setText(str(e))
-            self.addr_summary.setText("符文串校验失败；请输入 12 位十六进制。")
-            self._sub_address = "符文串校验失败"
-            self._update_subtitle()
-            notify.error(f"符文串校验失败：{e}")
-            return
-        self.addr_input.setText(glyphs)
-        self._lookup_glyphs(glyphs)
+        if warning:
+            self.status.setText(
+                f"转换完成：坐标 {self._addr_coords or '—'} · UA {self._addr_ua_text or '—'}"
+                "；符文不可生成。")
+            notify.warn(warning)
+        else:
+            self.status.setText(
+                f"转换完成：符文 {self._addr_glyphs} · 坐标 {self._addr_coords}"
+                f" · UA {self._addr_ua_text}；可分别复制。")
+            notify.success("地址转换完成：符文 / 坐标 / UA 已生成")
+        self._sync_primary_action()
 
-    def _address_seed(self) -> None:
-        try:
-            seed = parse_seed(self.addr_input.text())
-        except ValueError as e:
-            self.addr_status.setText(str(e))
-            self.addr_summary.setText("种子校验失败；请输入 0x… 十六进制。")
-            self._sub_address = "种子校验失败"
-            self._update_subtitle()
-            notify.error(f"种子校验失败：{e}")
-            return
-        self._lookup_seed(seed)
+    def _copy_addr_glyphs(self) -> None:
+        self._copy_text(self._addr_glyphs, "符文串", self.status)
 
-    def _lookup_glyphs(self, glyphs: str) -> None:
-        if self._addr_busy:
-            return
-        self._addr_clear_glyph()
-        self._addr_set_busy(True, f"正在解析符文串{glyphs}…")
-        self.addr_summary.setText("加载中：正在生成星系信息…")
-        self.addr_seed_table.setRowCount(0)
-        self._set_empty_state(self.addr_seed_table, self.addr_seed_empty, False,
-                              "还没有种子反查结果",
-                              "输入 0x… 十六进制种子并点「种子反查」；候选越多越慢。")
-        self._sub_address = f"解析中 {glyphs}"
-        self._update_subtitle()
-        notify.toast(f"正在解析符文串{glyphs}…")
+    def _copy_addr_coords(self) -> None:
+        self._copy_text(self._addr_coords, "坐标", self.status)
 
-        def done(res: dict) -> None:
-            self._addr_set_busy(False)
-            got = res.get("glyphs") or glyphs
-            self._addr_glyphs = got
-            self._addr_coords = res.get("coords")
-            galaxy = res.get("galaxy")
-            dissonant = "是" if res.get("dissonant") else "否"
-            lines = [
-                f"星系：{res.get('name') or res.get('system_name') or '—'}",
-                f"坐标：{res.get('coords') or '—'}  ·  宇宙地址（UA）：{res.get('ua') or '—'}",
-                f"银河：{galaxy if galaxy is not None else '—'}  ·  行星：{res.get('planets', 0)}"
-                f"  ·  卫星：{res.get('moons', 0)}",
-                f"种族：{res.get('race_zh') or res.get('race') or '—'}  ·  "
-                f"异常：{dissonant}",
-                f"符文串：{got}",
-            ]
-            self.addr_summary.setText("\n".join(lines))
-            self._set_glyph(self.addr_glyph, got)
-            self.addr_copy.setEnabled(True)
-            self.addr_fill.setEnabled(True)
-            self.addr_status.setText(f"解析完成：{res.get('name') or got} · 可复制或填入传送输入。")
-            self._sub_address = f"{got} 已解析"
-            self._update_subtitle()
-            notify.success(f"符文串解析完成：{res.get('name') or got}")
-
-        def fail(msg: str) -> None:
-            self._addr_set_busy(False, f"解析失败：{msg}")
-            self.addr_summary.setText(
-                "解析失败：没有生成星系信息；请检查符文串或游戏目录。")
-            self._addr_clear_glyph()
-            self._sub_address = "解析失败"
-            self._update_subtitle()
-            notify.error(f"符文串解析失败：{msg}")
-
-        run_worker(self.svc.system, done, fail, glyphs=glyphs)
-
-    def _lookup_seed(self, seed: int) -> None:
-        if self._addr_busy:
-            return
-        seed_text = f"0x{seed:016X}"
-        self._addr_clear_glyph()
-        self._addr_set_busy(True, f"正在反查种子 {seed_text}…（候选越多越慢）")
-        self.addr_summary.setText(f"加载中：种子 {seed_text} 反查中…")
-        self.addr_seed_table.setRowCount(0)
-        self._set_empty_state(self.addr_seed_table, self.addr_seed_empty, False,
-                              "种子反查中…", "正在生成候选；候选越多越慢，请稍候。")
-        self._sub_address = f"种子反查中 {seed_text}"
-        self._update_subtitle()
-        notify.toast(f"正在反查种子 {seed_text}…（候选越多越慢）")
-
-        def done(res: dict) -> None:
-            self._addr_set_busy(False)
-            hits = res.get("hits") or []
-            candidates = int(res.get("candidates") or 0)
-            self._fill_addr_seed(hits)
-            self._set_empty_state(
-                self.addr_seed_table, self.addr_seed_empty, bool(hits),
-                "未找到匹配星系", "没有可信候选；请放宽限制或换一个种子。")
-            info = (f"种子：{res.get('seed') or seed_text}  ·  候选：{candidates}"
-                    f"  ·  确认：{len(hits)}")
-            if res.get("known_systems"):
-                info += f"  ·  已知星系：{res.get('known_systems')}"
-            self.addr_summary.setText(info)
-            if hits:
-                self.addr_status.setText(
-                    f"反查完成：{candidates} 个候选，确认 {len(hits)} 个星系。")
-                self.addr_seed_table.selectRow(0)
-                self._sub_address = f"种子反查命中 {len(hits)} 个"
-                notify.success(f"种子反查完成：确认 {len(hits)} 个星系")
-            else:
-                reason = res.get("reason") or "没有可信候选。"
-                self.addr_status.setText(f"未找到匹配星系（候选 {candidates}）：{reason}")
-                self._sub_address = "种子反查无结果"
-                notify.warn(f"未找到匹配星系（候选 {candidates}）：{reason}")
-            self._update_subtitle()
-
-        def fail(msg: str) -> None:
-            self._addr_set_busy(False, f"种子反查失败：{msg}")
-            self.addr_seed_table.setRowCount(0)
-            self._set_empty_state(
-                self.addr_seed_table, self.addr_seed_empty, False,
-                "种子反查失败", "没有拿到候选星系；请检查种子或游戏目录后重试。")
-            self.addr_summary.setText("反查失败：没有拿到候选星系。")
-            self._addr_clear_glyph()
-            self._sub_address = "种子反查失败"
-            self._update_subtitle()
-            notify.error(f"种子反查失败：{msg}")
-
-        run_worker(self.svc.locate, done, fail, seed=seed_text)
-
-    def _fill_addr_seed(self, hits: list[dict]) -> None:
-        self._update_warp_action(None)
-        self.addr_seed_table.clearSelection()
-        self.addr_seed_table.setRowCount(len(hits))
-        for i, hit in enumerate(hits):
-            where = " / ".join(str(x) for x in (hit.get("where"), hit.get("what")) if x)
-            if not where and hit.get("steps") is not None:
-                where = f"往回第 {hit.get('steps')} 步"
-            vals = [
-                "已确认（已知星系）" if hit.get("visited") else "已确认",
-                hit.get("coords") or "—",
-                hit.get("glyphs") or "—",
-                str(hit.get("galaxy")) if hit.get("galaxy") is not None else "—",
-                where or "—",
-            ]
-            for j, value in enumerate(vals):
-                item = QTableWidgetItem(str(value))
-                if j == 0:
-                    item.setData(Qt.UserRole, hit)
-                self.addr_seed_table.setItem(i, j, item)
-        self._autosize_table(self.addr_seed_table, (120, 220, 160, 70, 200))
-
-    def _select_addr_seed(self) -> None:
-        rows = self.addr_seed_table.selectionModel().selectedRows()
-        if not rows:
-            self._update_warp_action(None)
-            return
-        item = self.addr_seed_table.item(rows[0].row(), 0)
-        hit = item.data(Qt.UserRole) if item else None
-        if not hit:
-            return
-        glyphs = hit.get("glyphs")
-        self._addr_glyphs = glyphs
-        self._addr_coords = hit.get("coords")
-        self._selection = hit
-        self._set_glyph(self.addr_glyph, glyphs)
-        self.addr_copy.setEnabled(bool(glyphs))
-        self.addr_fill.setEnabled(bool(glyphs))
-        where = " / ".join(str(x) for x in (hit.get("where"), hit.get("what")) if x) or "—"
-        self.addr_summary.setText(
-            f"候选星系：{hit.get('ua') or '—'}\n"
-            f"坐标：{hit.get('coords') or '—'}  ·  银河：{hit.get('galaxy', '—')}\n"
-            f"符文串：{glyphs or '—'}  ·  位置/船：{where}\n"
-            f"匹配：{'已确认（已知星系）' if hit.get('visited') else '已确认'}")
-        self.addr_status.setText(f"已选择 {hit.get('coords') or glyphs or '候选星系'}。")
-        self._sub_address = f"已选择 {glyphs or hit.get('coords') or '候选星系'}"
-        self._update_subtitle()
-        self._update_warp_action(hit)
-
-    def _copy_addr_glyph(self) -> None:
-        self._copy_text(self._addr_glyphs, "符文串", self.addr_status)
+    def _copy_addr_ua(self) -> None:
+        self._copy_text(self._addr_ua_text, "UA", self.status)
 
     def _fill_teleport_input(self, glyphs: str | None, coords: str | None = None,
                              status_label=None) -> None:
@@ -1304,11 +1355,13 @@ class GalaxyPage(QWidget):
             target_label.setText(
                 f"已暂存传送地址：{glyphs}（游戏内页面不可用；未写入游戏）。")
             notify.warn(f"已暂存传送地址：{glyphs}（游戏内页面不可用，未写入游戏）")
-        self._sub_address = f"传送输入 {glyphs}"
-        self._update_subtitle()
 
     def _fill_addr_teleport(self) -> None:
-        self._fill_teleport_input(self._addr_glyphs, self._addr_coords, self.addr_status)
+        if not self._addr_teleportable:
+            self.status.setText(f"无法填入传送：{PLANET_UNKNOWN}。")
+            notify.warn(f"无法填入传送：{PLANET_UNKNOWN}")
+            return
+        self._fill_teleport_input(self._addr_glyphs, self._addr_coords, self.status)
 
     # ---------------------------------------------------------------- 银河索引
 
@@ -1349,50 +1402,48 @@ class GalaxyPage(QWidget):
                     item.setData(Qt.UserRole, r)
                 self.index_table.setItem(i, j, item)
         self.index_table.setSortingEnabled(True)
-        self._autosize_table(self.index_table, (154, 108, 46, 48, 40, 92, 64))
+        self._autosize_table(self.index_table, (154, 112, 52, 70, 48, 100, 72))
 
     def _query_index(self) -> None:
+        if self._index_busy:
+            return
         filters = self._index_filters()
-        self.idx_query.setEnabled(False)
-        self.index_status.setText("加载中：正在查询银河索引…")
+        self._index_busy = True
         self.index_stats.setText("索引统计：查询中…")
-        self._sub_index = "查询中…"
-        self._update_subtitle()
+        self.status.setText("查询中：正在查询银河索引…")
+        self._sync_primary_action()
         notify.toast("正在查询银河索引…")
 
         def done(res: dict) -> None:
-            self.idx_query.setEnabled(True)
+            self._index_busy = False
             rows = res.get("rows") or []
             stats = res.get("stats") or {}
             self._index_rows = rows
             self._fill_index(rows)
             self.index_stats.setText(
                 f"索引库：{stats.get('systems', 0)} 个星系 / {stats.get('planets', 0)} 颗行星"
-                f"  ·  本次命中 {len(rows)} 个星系")
+                f"  ·  命中 {len(rows)} 个星系")
             self._set_empty_state(
                 self.index_table, self.index_empty, bool(rows),
                 "没有匹配的星系", "请放宽条件，或先扫描一片区域；索引会越扫越全。")
             if rows:
-                self.index_status.setText(f"查询完成：命中 {len(rows)} 个星系。")
-                self._sub_index = f"命中 {len(rows)} 个星系"
+                self.status.setText(f"查询完成：命中 {len(rows)} 个星系。")
                 notify.success(f"银河索引查询完成：命中 {len(rows)} 个星系")
             else:
-                self.index_status.setText("没有匹配的星系；请放宽条件，或先扫描一片区域。")
-                self._sub_index = "无结果"
+                self.status.setText("没有匹配的星系；请放宽条件，或先扫描一片区域。")
                 notify.warn("银河索引没有匹配的星系；请放宽条件或先扫描")
-            self._update_subtitle()
+            self._sync_primary_action()
 
         def fail(msg: str) -> None:
-            self.idx_query.setEnabled(True)
+            self._index_busy = False
             self._index_rows = []
             self._fill_index([])
             self._set_empty_state(
                 self.index_table, self.index_empty, False,
                 "索引查询失败", "请检查索引数据库或稍后重试。")
             self.index_stats.setText("索引统计：不可用")
-            self.index_status.setText(f"查询失败：{msg}")
-            self._sub_index = "查询失败"
-            self._update_subtitle()
+            self.status.setText(f"查询失败：{msg}")
+            self._sync_primary_action()
             notify.error(f"银河索引查询失败：{msg}")
 
         run_worker(self.svc.galaxy_query, done, fail, filters=filters, limit=500)
@@ -1403,14 +1454,9 @@ class GalaxyPage(QWidget):
         def done(st: dict) -> None:
             self.index_stats.setText(
                 f"索引库：{st.get('systems', 0)} 个星系 / {st.get('planets', 0)} 颗行星")
-            self._sub_index = (
-                f"{st.get('systems', 0)} 个星系 / {st.get('planets', 0)} 颗行星")
-            self._update_subtitle()
 
         def fail(msg: str) -> None:
             self.index_stats.setText(f"索引统计不可用：{msg}")
-            self._sub_index = "统计不可用"
-            self._update_subtitle()
 
         run_worker(self.svc.galaxy_stats, done, fail)
 
@@ -1440,36 +1486,13 @@ class GalaxyPage(QWidget):
         self.detail.setText("\n".join(lines))
         self._set_glyph(self.detail_glyph, r.get("glyphs"))
         self._selection = r
-        self.selection_hint.setText(
-            f"已选择星系 {r.get('coords') or r.get('ua') or '—'}；可复制地址、显示浮窗或直接传送。")
-        self.index_status.setText(
-            f"已选择 {r.get('coords') or r.get('ua') or '星系'} · 可复制符文串或传送。")
-        self._sub_index = f"已选择 {r.get('coords') or r.get('ua') or '星系'}"
-        self._update_subtitle()
         self._update_warp_action(r)
-
-    def _copy_index_glyph(self) -> None:
-        rows = self.index_table.selectionModel().selectedRows()
-        if not rows:
-            self.index_status.setText("请先选择一个星系。")
-            notify.warn("请先在银河索引里选择一个星系")
-            return
-        item = self.index_table.item(rows[0].row(), 0)
-        r = item.data(Qt.UserRole) if item else None
-        text = (r or {}).get("glyphs")
-        if not text:
-            self.index_status.setText("该星系没有可复制的符文串。")
-            notify.warn("该星系没有可复制的符文串")
-            return
-        QGuiApplication.clipboard().setText(text)
-        self.index_status.setText("符文串已复制到剪贴板。")
-        notify.success(f"符文串已复制：{text}")
 
     def _export_index_csv(self) -> None:
         try:
             data = self.svc.galaxy_export_csv(self._index_filters())
         except Exception as e:                              # noqa: BLE001
-            self.index_status.setText(f"导出失败：{type(e).__name__}: {e}")
+            self.status.setText(f"导出失败：{type(e).__name__}: {e}")
             notify.error(f"导出失败：{type(e).__name__}: {e}")
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -1479,10 +1502,10 @@ class GalaxyPage(QWidget):
         try:
             Path(path).write_text(data, "utf-8")
         except Exception as e:                              # noqa: BLE001
-            self.index_status.setText(f"写入失败：{type(e).__name__}: {e}")
+            self.status.setText(f"写入失败：{type(e).__name__}: {e}")
             notify.error(f"写入失败：{type(e).__name__}: {e}")
             return
-        self.index_status.setText(f"已导出：{path}")
+        self.status.setText(f"已导出：{path}")
         notify.success(f"已导出银河索引（CSV 表格文件）：{path}")
 
     # ---------------------------------------------------------------- 已发现
@@ -1502,8 +1525,22 @@ class GalaxyPage(QWidget):
                 filters["max_distance"] = distance
         return filters
 
-    def _discovered_filters_active(self) -> bool:
-        return bool(self._discovered_filters())
+    def _discovered_query_kwargs(self) -> dict:
+        """``Services.discoveries_query`` 接受的参数（索引不直接支持 max_distance）。"""
+        query: dict = {}
+        if self.disc_biome.currentData():
+            query["biome"] = self.disc_biome.currentData()
+        if self.disc_infested.currentData() is not None:
+            query["infested"] = bool(self.disc_infested.currentData())
+        if self.disc_named.currentData() is not None:
+            query["named"] = bool(self.disc_named.currentData())
+        if self._discovered_origin_ua not in (None, ""):
+            query["near_ua"] = self._discovered_origin_ua
+            query["order"] = "distance"
+            query["limit"] = None if self.disc_distance.value() > 0 else 500
+        else:
+            query["limit"] = 500
+        return query
 
     def _toggle_discovered_origin(self, checked: bool) -> None:
         if not checked:
@@ -1530,8 +1567,7 @@ class GalaxyPage(QWidget):
                 self.disc_center_btn.blockSignals(False)
             self.disc_origin_hint.setText("距离中心：当前星系不可用")
             self.disc_distance.setEnabled(False)
-            self.disc_stats.setText(
-                "已发现：当前星系不可用，无法设置距离中心；请先在右上角刷新当前星系。")
+            self.disc_stats.setText("已发现：当前星系不可用，无法设置距离中心。")
             notify.warn("当前星系不可用，无法作为距离中心")
             return
 
@@ -1543,40 +1579,18 @@ class GalaxyPage(QWidget):
             f"只显示距 {label} 不超过该距离的已发现星球；0 表示不限距离")
         self._apply_discovered_filters()
 
-    def _render_discovered_stats(self, shown: int, *, available: bool = True) -> None:
+    def _render_discovered_stats(self, shown: int, *, total: int | None = None,
+                                 available: bool = True, note: str = "") -> None:
         warnings = list(self._discovered_warnings or [])
         if not available:
             self.disc_stats.setText("已发现：不可用")
         else:
-            meta = self._discovered_meta or {}
-            stats = self._discovered_stats or {}
-            total = int(meta.get("count") or len(self._discovered_all) or 0)
-            parts = [f"已发现：{total} 颗"]
-            try:
-                records = int(meta.get("records") or 0)
-            except (TypeError, ValueError):
-                records = 0
-            if records and records != total:
-                parts.append(f"原始记录 {records} 条")
-            try:
-                duplicates = int(meta.get("duplicates") or 0)
-            except (TypeError, ValueError):
-                duplicates = 0
-            if duplicates:
-                parts.append(f"重复 {duplicates} 条")
-            parts.append(f"当前显示 {shown} 颗")
+            total = int(total if total is not None else shown)
+            parts = [f"已发现：{total} 颗", f"显示 {shown} 颗"]
             if shown >= 500:
-                parts.append("已达列表上限 500 条")
-            for key, label in (("pending", "待上传"), ("named", "已命名"),
-                               ("infested", "虫蚀"), ("unknown_biome", "群系未知")):
-                try:
-                    count = int(stats.get(key) or 0)
-                except (TypeError, ValueError):
-                    count = 0
-                if count:
-                    parts.append(f"{label} {count} 颗")
-            if warnings:
-                parts.append(f"提示 {len(warnings)} 条")
+                parts.append("已达上限 500")
+            if note:
+                parts.append(note)
             self.disc_stats.setText(" · ".join(parts))
         self.disc_stats.setToolTip("\n".join(warnings))
 
@@ -1600,162 +1614,194 @@ class GalaxyPage(QWidget):
                 if j == 0:
                     item.setData(Qt.UserRole, row)
                 self.disc_table.setItem(i, j, item)
-        # 默认保留服务层排序（auto → 距离/发现时间）；用户点表头仍可自行排序。
+        # 默认保留服务层排序（距离/发现时间）；用户点表头仍可自行排序。
         self.disc_table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
         self.disc_table.setSortingEnabled(True)
-        self._autosize_table(self.disc_table, (68, 140, 70, 48, 78, 74, 104))
+        self._autosize_table(self.disc_table, (64, 150, 66, 48, 126, 84, 110))
 
-    def _load_discovered(self, manual: bool = False) -> None:
+    def _load_discovered(self, manual: bool = False, *, rebuild: bool = True) -> None:
+        """首次/刷新时先建索引，再查索引；筛选变化只查索引。"""
         if self._discovered_loading:
             return
+        if self.disc_distance.value() > 0 and self._discovered_origin_ua in (None, ""):
+            self.disc_stats.setText("已发现：请先点「以当前星系为中心」确定距离中心。")
+            return
         self._discovered_loading = True
-        self.disc_refresh_btn.setEnabled(False)
-        self.disc_stats.setText("已发现：读取中…")
+        self.disc_stats.setText(
+            "已发现：建立索引…" if rebuild else "已发现：筛选中…")
         self.disc_stats.setToolTip("")
-        self._set_empty_state(
-            self.disc_table, self.disc_empty, False,
-            "正在读取已发现星球…", "正在读取当前存档的发现记录，请稍候。")
+        if rebuild:
+            self._set_empty_state(
+                self.disc_table, self.disc_empty, False,
+                "正在建立发现索引…", "只读存档、只写本地缓存；首次会慢一些。")
+
+        seq = self._discovered_filter_seq + 1
+        self._discovered_filter_seq = seq
+        query_kwargs = self._discovered_query_kwargs()
+        filters = self._discovered_filters()
+        fallback_filters = dict(filters)
+        fallback_filters.update({"sort": "auto", "limit": 500})
+        index_count = int((self._discovered_index_meta or {}).get("count") or 0)
+
+        def load() -> dict:
+            index_res = None
+            if rebuild:
+                index_res = self.svc.discoveries_index()
+                if not index_res.get("ok"):
+                    # 索引坏了也保留可用性：退回直接读取当前存档。
+                    base = self.svc.discovered_planets()
+                    if not base.get("ok"):
+                        reason = ((base.get("warnings") or [])[:1]
+                                  or [index_res.get("error") or "读取发现记录失败"])[0]
+                        return {"ok": False, "warnings": [str(reason)]}
+                    filtered = self.svc.discovered_filter(
+                        planets=base.get("planets") or [], **fallback_filters)
+                    return {
+                        "ok": True,
+                        "fallback": True,
+                        "index": index_res,
+                        "rows": filtered.get("planets") or [],
+                        "total": int(base.get("count") or 0),
+                        "warnings": list(base.get("warnings") or [])
+                        + [f"索引不可用：{index_res.get('error') or '未知原因'}"],
+                    }
+            else:
+                index_res = dict(self._discovered_index_meta or {})
+                if not index_res.get("ok"):
+                    # 之前索引就不可用：筛选变化继续走直接读取，避免二次失败。
+                    base = self.svc.discovered_planets()
+                    if not base.get("ok"):
+                        reason = ((base.get("warnings") or [])[:1]
+                                  or [index_res.get("error") or "读取发现记录失败"])[0]
+                        return {"ok": False, "warnings": [str(reason)]}
+                    filtered = self.svc.discovered_filter(
+                        planets=base.get("planets") or [], **fallback_filters)
+                    return {
+                        "ok": True,
+                        "fallback": True,
+                        "index": index_res,
+                        "rows": filtered.get("planets") or [],
+                        "total": int(base.get("count") or 0),
+                        "warnings": list(base.get("warnings") or [])
+                        + [f"索引不可用：{index_res.get('error') or '未知原因'}"],
+                    }
+
+            query = dict(query_kwargs)
+            save_id = (index_res or {}).get("save_id")
+            if save_id:
+                query["save_id"] = save_id
+            queried = self.svc.discoveries_query(**query)
+            rows = [row for row in (queried.get("planets") or []) if isinstance(row, dict)]
+            if filters.get("max_distance"):
+                # 索引查询没有 max_distance：这里仍交给服务层按距离再筛一次。
+                filtered = self.svc.discovered_filter(
+                    planets=rows,
+                    near_ua=filters.get("near_ua"),
+                    max_distance=filters.get("max_distance"),
+                    limit=500,
+                )
+                rows = [row for row in (filtered.get("planets") or [])
+                        if isinstance(row, dict)]
+            total = index_count
+            if rebuild:
+                total = int((index_res or {}).get("count") or 0)
+            return {"ok": True, "index": index_res, "rows": rows,
+                    "total": total, "warnings": []}
 
         def done(res) -> None:
+            if seq != self._discovered_filter_seq:
+                return
             self._discovered_loading = False
-            self.disc_refresh_btn.setEnabled(True)
             self._discovered_loaded = True
             res = res if isinstance(res, dict) else {}
-            self._discovered_meta = res
             self._discovered_warnings = [
                 str(w) for w in (res.get("warnings") or []) if str(w).strip()]
-            self._discovered_stats = res.get("stats") if isinstance(res.get("stats"), dict) else {}
+            index_meta = res.get("index") if isinstance(res.get("index"), dict) else {}
+            self._discovered_index_meta = index_meta
             self._discovered_has_data = bool(res.get("ok"))
-            raw_rows = res.get("planets") or []
-            self._discovered_all = (
-                [row for row in raw_rows if isinstance(row, dict)]
-                if self._discovered_has_data else [])
-            self._discovered_filter_seq += 1
+            rows = [row for row in (res.get("rows") or []) if isinstance(row, dict)]
+            self._discovered_rows = rows
+            self._discovered_all = rows
+            total = int(res.get("total") or 0)
+            self._discovered_meta = {
+                "count": total,
+                "cached": bool(index_meta.get("cached")),
+                "rebuilt": bool(index_meta.get("rebuilt")),
+            }
+            self._fill_discovered(rows)
 
             if not self._discovered_has_data:
-                self._discovered_rows = []
-                self._fill_discovered([])
-                self.disc_export_btn.setEnabled(False)
                 self._set_discovered_filter_enabled(False)
                 reason = (self._discovered_warnings[0] if self._discovered_warnings
                           else "没有读取到当前存档的发现数据。")
                 self._set_empty_state(
                     self.disc_table, self.disc_empty, False,
                     "没有可用的已发现数据",
-                    f"{reason}\n请先在设置页配置存档/游戏目录，再点「刷新」。")
+                    f"{reason}\n请先在设置页配置存档/游戏目录，再刷新。")
                 self._render_discovered_stats(0, available=False)
-                self.disc_warp_hint.setText("当前没有可用的已发现星球数据。")
+                self._sync_primary_action()
                 if manual:
                     notify.warn(f"已发现星球不可用：{reason}")
                 return
 
             self._set_discovered_filter_enabled(True)
-            if not self._discovered_all:
-                self._discovered_rows = []
-                self._fill_discovered([])
-                self.disc_export_btn.setEnabled(False)
+            note = "直接读取" if res.get("fallback") else ""
+            if total <= 0:
                 self._set_empty_state(
                     self.disc_table, self.disc_empty, False,
                     "没有已发现的星球",
                     "当前存档里没有 Planet 类型的发现记录；可先扫描或继续探索后刷新。")
-                self._render_discovered_stats(0)
-                self.disc_warp_hint.setText("当前存档没有已发现的星球。")
-                if manual:
-                    notify.warn("当前存档没有已发现的星球")
-                return
-
-            if self._discovered_filters_active():
-                # 已选筛选条件时，刷新后仍按同一组条件取数（过滤仍由服务层完成）。
-                self._apply_discovered_filters()
-            else:
-                self._discovered_rows = list(self._discovered_all)
-                self._fill_discovered(self._discovered_rows)
-                self.disc_export_btn.setEnabled(True)
+                self._render_discovered_stats(0, total=0, note=note)
+            elif not rows:
                 self._set_empty_state(
-                    self.disc_table, self.disc_empty, True,
-                    "没有已发现的星球", "")
-                self._render_discovered_stats(len(self._discovered_rows))
+                    self.disc_table, self.disc_empty, False,
+                    "没有匹配的已发现星球",
+                    "当前筛选条件下没有命中；请放宽群系/虫蚀/命名/距离条件。")
+                self._render_discovered_stats(0, total=total, note=note)
+            else:
+                self._set_empty_state(self.disc_table, self.disc_empty, True)
+                self._render_discovered_stats(len(rows), total=total, note=note)
+            self._sync_primary_action()
             if manual:
-                notify.success(f"已发现星球已刷新：{len(self._discovered_all)} 颗")
+                notify.success(f"已发现星球已刷新：索引 {total} 颗")
 
         def fail(msg: str) -> None:
-            self._discovered_loading = False
-            self.disc_refresh_btn.setEnabled(True)
-            self._discovered_loaded = True
-            self._discovered_has_data = False
-            self._discovered_all = []
-            self._discovered_rows = []
-            self._discovered_meta = {}
-            self._discovered_stats = {}
-            self._discovered_warnings = [str(msg)]
-            self._fill_discovered([])
-            self.disc_export_btn.setEnabled(False)
-            self._set_discovered_filter_enabled(False)
-            self._set_empty_state(
-                self.disc_table, self.disc_empty, False,
-                "没有可用的已发现数据",
-                f"读取已发现星球失败：{msg}\n请先在设置页配置存档/游戏目录，再点「刷新」。")
-            self._render_discovered_stats(0, available=False)
-            self.disc_warp_hint.setText("当前没有可用的已发现星球数据。")
-            notify.warn(f"读取已发现星球失败：{msg}")
-
-        run_worker(self.svc.discovered_planets, done, fail)
-
-    def _apply_discovered_filters(self, *_args) -> None:
-        if not self._discovered_has_data or not self._discovered_all:
-            return
-        if self.disc_distance.value() > 0 and self._discovered_origin_ua in (None, ""):
-            self.disc_stats.setText(
-                "已发现：请先点「以当前星系为中心」确定距离中心，再按距离筛选。")
-            return
-        filters = self._discovered_filters()
-        filters.setdefault("sort", "auto")
-        filters.setdefault("limit", 500)
-        seq = self._discovered_filter_seq + 1
-        self._discovered_filter_seq = seq
-        self.disc_stats.setText("已发现：筛选中…")
-
-        def done(res) -> None:
             if seq != self._discovered_filter_seq:
                 return
-            res = res if isinstance(res, dict) else {}
-            if not res.get("ok"):
-                reason = ((res.get("warnings") or ["筛选没有返回数据"])[0])
+            self._discovered_loading = False
+            self._discovered_loaded = True
+            if rebuild:
+                self._discovered_has_data = False
+                self._discovered_all = []
+                self._discovered_rows = []
+                self._discovered_meta = {}
+                self._discovered_index_meta = {}
+                self._discovered_warnings = [str(msg)]
+                self._fill_discovered([])
+                self._set_discovered_filter_enabled(False)
+                self._set_empty_state(
+                    self.disc_table, self.disc_empty, False,
+                    "没有可用的已发现数据",
+                    f"读取已发现星球失败：{msg}\n请先在设置页配置存档/游戏目录，再刷新。")
+                self._render_discovered_stats(0, available=False)
+                notify.warn(f"读取已发现星球失败：{msg}")
+            else:
                 self._discovered_rows = []
                 self._fill_discovered([])
-                self.disc_export_btn.setEnabled(False)
                 self._set_empty_state(
                     self.disc_table, self.disc_empty, False,
                     "筛选已发现星球失败",
-                    f"{reason}\n请检查筛选条件后重试。")
-                self.disc_stats.setText(f"已发现：筛选失败（{reason}）")
-                notify.warn(f"筛选已发现星球失败：{reason}")
-                return
-            rows = [row for row in (res.get("planets") or []) if isinstance(row, dict)]
-            self._discovered_rows = rows
-            self._fill_discovered(rows)
-            self.disc_export_btn.setEnabled(bool(rows))
-            self._set_empty_state(
-                self.disc_table, self.disc_empty, bool(rows),
-                "没有匹配的已发现星球",
-                "当前筛选条件下没有命中；请放宽群系/虫蚀/命名/距离条件。")
-            self._render_discovered_stats(len(rows))
+                    f"没有拿到筛选结果：{msg}\n请检查条件后重试。")
+                self.disc_stats.setText(f"已发现：筛选失败（{msg}）")
+                notify.warn(f"筛选已发现星球失败：{msg}")
+            self._sync_primary_action()
 
-        def fail(msg: str) -> None:
-            if seq != self._discovered_filter_seq:
-                return
-            self._discovered_rows = []
-            self._fill_discovered([])
-            self.disc_export_btn.setEnabled(False)
-            self._set_empty_state(
-                self.disc_table, self.disc_empty, False,
-                "筛选已发现星球失败",
-                f"没有拿到筛选结果：{msg}\n请检查条件后重试。")
-            self.disc_stats.setText(f"已发现：筛选失败（{msg}）")
-            notify.warn(f"筛选已发现星球失败：{msg}")
+        run_worker(load, done, fail)
 
-        run_worker(self.svc.discovered_filter, done, fail,
-                   planets=list(self._discovered_all), **filters)
+    def _apply_discovered_filters(self, *_args) -> None:
+        if not self._discovered_has_data:
+            return
+        self._load_discovered(rebuild=False)
 
     def _select_discovered(self) -> None:
         rows = self.disc_table.selectionModel().selectedRows()
@@ -1788,8 +1834,6 @@ class GalaxyPage(QWidget):
         self.detail_title.setText(title)
         self.detail.setText("\n".join(lines))
         self._set_glyph(self.detail_glyph, row.get("glyphs"))
-        self.selection_hint.setText(
-            f"已选择 {title}；可复制地址、显示浮窗或直接传送。")
         self._update_warp_action(self._discovered_warp_row(row))
 
     @staticmethod
@@ -1876,11 +1920,9 @@ class GalaxyPage(QWidget):
         self._last_scan_filters = filters
         self._update_filter_summary()
         self._update_warp_action(None)
-        self.scan_btn.setEnabled(False)
         self.scan_cancel_btn.setEnabled(True)
         self.scan_cancel_btn.setVisible(True)
-        self._sub_scan = "扫描中…"
-        self._update_subtitle()
+        self._sync_primary_action()
         self.status.setText(
             f"加载中：正在扫描附近星系并写入银河索引（{self.filter_summary.text()}）…")
         notify.toast(f"开始扫描附近星系（目标 {int(self.count.value())} 个系统）…")
@@ -1888,10 +1930,8 @@ class GalaxyPage(QWidget):
             self._scan_job = self.svc.start_galaxy_scan(
                 radius=0, systems_per_region=int(self.count.value()), filters=filters, limit=200)
         except Exception as e:                              # noqa: BLE001
-            self.scan_btn.setEnabled(True)
             self.scan_cancel_btn.setVisible(False)
-            self._sub_scan = "无法开始"
-            self._update_subtitle()
+            self._sync_primary_action()
             self.status.setText(f"扫描无法开始：{type(e).__name__}: {e}")
             notify.error(f"扫描无法开始：{type(e).__name__}: {e}")
             return
@@ -1908,8 +1948,6 @@ class GalaxyPage(QWidget):
             notify.error(f"取消扫描失败：{type(e).__name__}: {e}")
             return
         self.scan_cancel_btn.setEnabled(False)
-        self._sub_scan = "正在取消…"
-        self._update_subtitle()
         self.status.setText("正在取消扫描…（当前系统完成后停止）")
         notify.warn("已请求取消扫描；当前系统完成后停止")
 
@@ -1922,29 +1960,23 @@ class GalaxyPage(QWidget):
         scanned = int(p.get("scanned") or p.get("tested") or 0)
         target = int(self.count.value())
         self.status.setText(
-            f"扫描进行中：已扫 {scanned} / {target} 个系统 · 可点右上角「取消扫描」")
-        self._sub_scan = f"扫描中，已扫 {scanned} 个系统"
-        self._update_subtitle()
+            f"扫描进行中：已扫 {scanned} / {target} 个系统 · 可点顶部「取消扫描」")
         if job.status == "running":
             return
         self._timer.stop()
-        self.scan_btn.setEnabled(True)
         self.scan_cancel_btn.setVisible(False)
         self.scan_cancel_btn.setEnabled(True)
+        self._sync_primary_action()
         if job.status == "cancelled":
             self._scan_rows = []
             self._fill_scan_rows([])
             self._set_empty_state(
                 self.scan_table, self.scan_empty, False,
-                "扫描已取消", "已停止扫描；可调整条件后重新点「扫描」。")
-            self._sub_scan = f"已取消，已扫 {scanned} 个系统"
-            self._update_subtitle()
+                "扫描已取消", "已停止扫描；可调整条件后重新点顶部「扫描」。")
             self.status.setText(f"扫描已取消：已扫 {scanned} 个系统。")
             notify.warn("扫描已取消")
             return
         if job.error:
-            self._sub_scan = "扫描失败"
-            self._update_subtitle()
             self.status.setText(f"扫描失败：{job.error}")
             notify.error(f"扫描失败：{job.error}")
             return
@@ -1982,13 +2014,11 @@ class GalaxyPage(QWidget):
         self.tabs.setCurrentWidget(self.scan_page)
         if rows:
             self.status.setText(f"扫描完成：命中 {len(rows)} 条（已写入银河索引）。")
-            self._sub_scan = f"完成，命中 {len(rows)} 条"
             notify.success(f"扫描完成：命中 {len(rows)} 条，已写入银河索引")
         else:
             self.status.setText("扫描完成：没有匹配的星球；请放宽筛选条件或扩大扫描范围。")
-            self._sub_scan = "完成，无结果"
             notify.warn("扫描完成：没有匹配的星球；请放宽筛选条件或扩大扫描范围")
-        self._update_subtitle()
+        self._sync_primary_action()
         self._refresh_index_stats()
 
     def _fill_scan_rows(self, rows: list[dict]) -> None:
@@ -2009,6 +2039,7 @@ class GalaxyPage(QWidget):
                 self.scan_table.setItem(i, j, item)
         self.scan_table.setSortingEnabled(True)
         self._autosize_table(self.scan_table, (48, 100, 80, 190, 140, 100))
+        self._sync_primary_action()
 
     def _select_planet(self) -> None:
         rows = self.planets.selectionModel().selectedRows()
@@ -2033,8 +2064,6 @@ class GalaxyPage(QWidget):
             f"资源：{p.get('resources') or '—'}\n"
             f"坐标：{selected.get('coords') or '—'}\n"
             f"符文串：{selected.get('glyphs') or '—'}")
-        self.selection_hint.setText(
-            f"已选择行星 #{p.get('index', '?')}；可复制地址、显示浮窗或直接传送。")
         self._set_glyph(self.detail_glyph, selected.get("glyphs"))
         self._update_warp_action(selected)
 
@@ -2056,32 +2085,20 @@ class GalaxyPage(QWidget):
             f"坐标：{r.get('coords') or '—'}\n"
             f"符文串：{r.get('glyphs') or '—'}\n"
             f"星系：{r.get('system_name') or r.get('galaxy_name') or r.get('galaxy') or '—'}")
-        self.selection_hint.setText(
-            f"已选择扫描结果 {r.get('coords') or r.get('glyphs') or '—'}；"
-            "可复制地址、显示浮窗或直接传送。")
         self._set_glyph(self.detail_glyph, r.get("glyphs"))
         self._update_warp_action(r)
 
-    def _warp_buttons(self) -> list[QPushButton]:
-        return [b for b in (getattr(self, "warp_btn", None),
-                            getattr(self, "index_warp_btn", None),
-                            getattr(self, "detail_warp_btn", None),
-                            getattr(self, "disc_warp_btn", None)) if b is not None]
-
     def _set_warp_busy(self, busy: bool) -> None:
         self._warp_busy = busy
-        for button in self._warp_buttons():
-            button.setText("传送中…" if busy else "传送到此星球")
-            button.setEnabled(False if busy else self._warp_target is not None)
+        self.warp_btn.setText("传送中…" if busy else "传送到此星球")
+        self._sync_primary_action()
 
     def _update_warp_action(self, row: dict | None = None) -> None:
-        """刷新所有「传送到此星球」入口；选中行后立即更新可用性与提示。"""
+        """刷新传送入口；选中行后只更新可用性、tooltip 与状态行。"""
         target = _warp_target_for(row) if isinstance(row, dict) else None
         self._warp_target = target
         self._warp_row = row if isinstance(row, dict) and target else None
-        enabled = target is not None and not self._warp_busy
-        for button in self._warp_buttons():
-            button.setEnabled(enabled)
+        self._warp_tooltip = ""
 
         if target:
             planet_note = ("系统级结果：传送时可选择行星（1-6，默认 #1）"
@@ -2089,25 +2106,16 @@ class GalaxyPage(QWidget):
             glyphs = target.get("glyphs") or ""
             tooltip = (f"调用游戏内传送门机制，传送到 {target['system']}/{planet_note}"
                        + (f"（门地址 {glyphs}）" if glyphs else "（选择行星后生成门地址）"))
-            for button in self._warp_buttons():
-                button.setToolTip(tooltip)
-            hint = f"可传送：{target['system']}/{planet_note}"
+            self._warp_tooltip = tooltip
+            self.warp_btn.setToolTip(tooltip)
+            hint = f"已选择：{target['system']}/{planet_note}"
             hint += f" · 门地址 {glyphs}" if glyphs else " · 选择行星后生成门地址"
-            self.warp_hint.setText(hint)
-            self.index_warp_hint.setText(hint)
-            if hasattr(self, "disc_warp_hint"):
-                self.disc_warp_hint.setText(hint)
+            self.status.setText(hint)
         else:
-            no_address = "该结果没有可用的门地址，无法传送。" if isinstance(row, dict) \
-                else "选择一条结果后可传送到该星球。"
-            for button in self._warp_buttons():
-                button.setToolTip("选中一条能生成合法门地址的结果后可传送")
-            self.warp_hint.setText(no_address)
-            self.index_warp_hint.setText(no_address)
-            if hasattr(self, "disc_warp_hint"):
-                self.disc_warp_hint.setText(
-                    "选择一条已发现行星后可传送到该星球。"
-                    if not isinstance(row, dict) else no_address)
+            self.warp_btn.setToolTip("选中一条能生成合法门地址的结果后可传送")
+            if isinstance(row, dict):
+                self.status.setText("该结果没有可用的门地址，无法传送。")
+        self._sync_primary_action()
 
     def _ask_warp_planet(self) -> int | None:
         """系统级结果没有行星序号：让用户选 1..6（默认 1），不替用户猜。"""
@@ -2203,7 +2211,7 @@ class GalaxyPage(QWidget):
         glyphs = self._selected_glyphs()
         if not glyphs:
             self.status.setText(
-                "浮窗显示失败：请先在行星表、扫描结果或银河索引中选择一个带符文串的星球。")
+                "浮窗显示失败：请先在行星表、扫描结果、银河索引或已发现中选择一个带符文串的星球。")
             notify.warn("浮窗显示失败：请先选择一个带符文串的星球")
             return
         self.status.setText(f"加载中：正在生成符文浮窗 {glyphs}…")
@@ -2236,9 +2244,6 @@ class GalaxyPage(QWidget):
             self._overlay = None
             self.status.setText(f"浮窗显示失败：{type(e).__name__}: {e}")
             notify.error(f"浮窗显示失败：{type(e).__name__}: {e}")
-
-    def _prepare_travel(self) -> None:
-        self._fill_teleport_input(self._selected_glyphs(), self._selected_coords(), self.status)
 
     def _export_csv(self) -> None:
         filters = self._scan_filters()

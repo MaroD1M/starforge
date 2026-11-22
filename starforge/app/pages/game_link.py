@@ -1,4 +1,4 @@
-"""游戏内通道：连接状态机、实时遥测、传送/扫描安全区。"""
+"""联动页：三步状态机（运行时 → 连接 → 模板 Mod）+ 高级只读区。"""
 from __future__ import annotations
 
 import json
@@ -33,7 +33,9 @@ from PySide6.QtWidgets import (
 
 from ...services import get_services
 from .. import notify
-from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..dialogs.confirm import ask_write
+from ..widgets.feedback import ErrorBanner, LoadingOverlay
+from ..widgets.game_flow import StepPanel
 from ..widgets.live_assets import (
     BLOCK_LABELS,
     BLOCKS,
@@ -49,7 +51,8 @@ from ..widgets.planet_dossier import (
     PoiDossier,
     format_planet_text,
 )
-from ..widgets.ui import Card, muted
+from ..widgets.settings_flow import FoldSection
+from ..widgets.ui import Card, elide_label, muted
 from ..widgets.worker import run as run_worker
 
 _READ_LABELS = {"player": "玩家位置", "system": "当前星系",
@@ -92,9 +95,6 @@ def _risk_tag(text: str, state: str = "warn") -> QLabel:
     return lab
 
 
-from ..dialogs.confirm import ask_write
-
-
 class GameLinkPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -111,7 +111,6 @@ class GameLinkPage(QWidget):
         self._cap_state_known = False
         self._portal_available = False
         self._portal_reason = "当前游戏内代理未实现传送门效果；需要实机验证后启用。"
-        self._unverified_key: str | None = None
         self._read_btns: list[QPushButton] = []
         self._safety_btns: list[QPushButton] = []
         self._cap_buttons: list[tuple[QWidget, str]] = []
@@ -121,6 +120,8 @@ class GameLinkPage(QWidget):
         self._snapshots: list[dict] = []
         self._snapshots_path = ""
         self._snapshots_error = ""
+        self._mod_files = 0
+        self._template_mod_installed = False
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(1500)
         self._poll_timer.timeout.connect(self._poll_hello)
@@ -143,31 +144,62 @@ class GameLinkPage(QWidget):
         root.addWidget(scroll)
 
         self.header = PageHeader(
-            "游戏内代理",
-            "连接游戏、读取实时遥测、行星档案与兴趣点；高风险操作请先备份存档。")
+            "联动",
+            "按顺序完成三步：准备运行时 → 连接游戏 → 安装模板 Mod；"
+            "传送、实时资产与诊断收在下方「高级」。")
+        self.refresh_btn = QPushButton("刷新状态")
+        self.refresh_btn.setObjectName("ghostButton")
+        self.refresh_btn.setToolTip("重新检查运行时、连接与模板 Mod；不会写任何文件")
+        self.refresh_btn.clicked.connect(self.refresh)
+        self.header.add_action(self.refresh_btn)
         outer.addWidget(self.header)
+
         self.error_banner = ErrorBanner("")
         self.error_banner.set_retry_callback(self.refresh)
         outer.addWidget(self.error_banner)
 
-        top = QGridLayout()
-        top.setHorizontalSpacing(PAGE_SPACING)
-        top.setVerticalSpacing(PAGE_SPACING)
-
-        status = Card("连接状态", "正常包内置运行时，不需要联网")
+        # ------------------------------------------------------------ 三步状态机
+        status = Card("连接状态", "按 ① → ② → ③ 顺序完成；未完成的步骤也可以点，会提示缺什么。")
         sv = status.v
-        steps = QHBoxLayout()
-        steps.setSpacing(6)
-        self.step_runtime = QLabel("1  运行时")
-        self.step_mod = QLabel("2  游戏内组件")
-        self.step_mod.setToolTip("游戏内组件（NMSpy/pymhf）")
-        self.step_agent = QLabel("3  游戏内代理")
-        self.step_agent.setToolTip("由游戏内组件（NMSpy/pymhf）提供")
-        for lab in (self.step_runtime, self.step_mod, self.step_agent):
-            lab.setObjectName("chip")
-            steps.addWidget(lab)
-        steps.addStretch(1)
+        steps = QGridLayout()
+        steps.setHorizontalSpacing(PAGE_SPACING)
+        steps.setVerticalSpacing(PAGE_SPACING)
+        self.step1 = StepPanel(1, "运行时 / 组件")
+        self.step2 = StepPanel(2, "游戏连接")
+        self.step3 = StepPanel(3, "模板 Mod")
+        for col, panel in enumerate((self.step1, self.step2, self.step3)):
+            steps.addWidget(panel, 0, col)
+            steps.setColumnStretch(col, 1)
         sv.addLayout(steps)
+
+        # 兼容旧状态标签（外部只读引用），实际显示由步骤面板负责。
+        self.step_runtime = self.step1.chip
+        self.step_mod = self.step2.chip
+        self.step_agent = self.step3.chip
+        self.runtime_status = self.step1.status
+        self.component_status = self.step1.status
+        self.agent_file_status = muted("")
+
+        self.bootstrap_btn = self.step1.action
+        self.repair_btn = self.step1.action
+        self.step1.action.clicked.connect(self._step1_action)
+        self.connect_btn = self.step2.action
+        self.connect_btn.clicked.connect(self._connect)
+        self.install_mod_btn = self.step3.action
+        self.install_mod_btn.clicked.connect(self._install_template_mod)
+        self.step3.set_alt("打开 Mod 目录", "只打开目录，不写文件", self._open_mods_dir)
+        self.open_mods_btn = self.step3.alt
+
+        self.step2.set_alt(
+            "启动游戏并注入",
+            "启动游戏并注入游戏内代理；也可以先手动进游戏再点「连接游戏」",
+            lambda: self._connect(start_game=True))
+        self.start_btn = self.step2.alt
+        self.step1.set_alt(
+            "重写代理文件（安装）",
+            "把当前版本的 starforge_agent.py 写入 ~/.starforge/agent；不碰存档",
+            self._install_agent_file)
+        self.install_agent_btn = self.step1.alt
 
         meta = QHBoxLayout()
         meta.setSpacing(6)
@@ -177,160 +209,27 @@ class GameLinkPage(QWidget):
         self.mp_status.setObjectName("chip")
         meta.addWidget(self.build_status)
         meta.addWidget(self.mp_status)
+        meta.addWidget(_risk_tag("运行时安装=写本机文件", "warn"))
+        meta.addWidget(_risk_tag("模板 Mod=写游戏 MODS", "warn"))
         meta.addStretch(1)
         sv.addLayout(meta)
 
-        self.status = muted("检查中…")
+        self.status = muted("正在检查运行时与连接状态…")
+        self.status.setObjectName("muted")
         sv.addWidget(self.status)
-        self.connection_empty = EmptyState(
-            "正在检查游戏内代理",
-            "先确认运行时与游戏内组件，再进入游戏并载入存档。",
-            icon="◇")
-        self.connection_empty.setMaximumHeight(176)
-        self.connection_empty.actionTriggered.connect(self._connect)
-        self.empty_state = self.connection_empty
-        sv.addWidget(self.connection_empty)
+        outer.addWidget(status)
 
-        self.connect_btn = QPushButton("连接游戏")
-        self.connect_btn.setObjectName("primary")
-        self.connect_btn.setToolTip("连接已运行的游戏并注入；缺少组件时会提示修复")
-        self.connect_btn.clicked.connect(self._connect)
-        sv.addWidget(self.connect_btn)
-
-        actions = QGridLayout()
-        actions.setHorizontalSpacing(6)
-        actions.setVerticalSpacing(6)
-        self.start_btn = QPushButton("启动游戏并注入")
-        self.start_btn.clicked.connect(lambda: self._connect(start_game=True))
-        actions.addWidget(self.start_btn, 0, 0)
-        self.stop_btn = QPushButton("停止启动器")
-        self.stop_btn.setToolTip(
-            "只终止本应用启动的启动器进程；游戏内已注入的代理会保留到游戏退出")
-        self.stop_btn.clicked.connect(self._stop)
-        actions.addWidget(self.stop_btn, 0, 1)
-        self.refresh_btn = QPushButton("刷新状态")
-        self.refresh_btn.clicked.connect(self.refresh)
-        actions.addWidget(self.refresh_btn, 1, 0)
-        self.probe_btn = QPushButton("外部内存只读探测")
-        self.probe_btn.clicked.connect(self._external_probe)
-        actions.addWidget(self.probe_btn, 1, 1)
-        actions.setColumnStretch(0, 1)
-        actions.setColumnStretch(1, 1)
-        sv.addLayout(actions)
-        top.addWidget(status, 0, 0)
-
-        tele = Card("实时遥测", "连接并载入存档后可读取")
-        tv = tele.v
-        tele_grid = QGridLayout()
-        tele_grid.setHorizontalSpacing(6)
-        tele_grid.setVerticalSpacing(6)
-        for i, (text, cmd) in enumerate((("玩家位置", "player"), ("当前星系", "system"),
-                                         ("当前行星", "planet"), ("游戏内船槽", "ships"))):
-            btn = QPushButton(text)
-            btn.clicked.connect(lambda _=False, c=cmd: self._read(c))
-            tele_grid.addWidget(btn, i // 2, i % 2)
-            self._read_btns.append(btn)
-            self._cap_buttons.append((btn, cmd))
-        tele_grid.setColumnStretch(0, 1)
-        tele_grid.setColumnStretch(1, 1)
-        tv.addLayout(tele_grid)
-        self.telemetry = muted("连接后点上面的按钮读取游戏内状态。")
-        tv.addWidget(self.telemetry)
-        tv.addStretch(1)
-        top.addWidget(tele, 0, 1)
-        top.setColumnStretch(0, 3)
-        top.setColumnStretch(1, 2)
-        outer.addLayout(top)
-
-        runtime = Card(
-            "运行时与游戏内组件",
-            "安装/修复/卸载只影响本机 ~/.starforge/agent；不会写存档，也不会改游戏 GAMEDATA")
-        rt_tags = QHBoxLayout()
-        rt_tags.setSpacing(6)
-        rt_tags.addWidget(_risk_tag("状态=只读", "ok"))
-        rt_tags.addWidget(_risk_tag("安装=写本机文件", "warn"))
-        rt_tags.addWidget(_risk_tag("卸载=删除代理文件", "warn"))
-        rt_tags.addStretch(1)
-        runtime.add_layout(rt_tags)
-        self.runtime_status = QLabel("运行时：检查中…")
-        self.runtime_status.setObjectName("gameRuntimeStatus")
-        self.runtime_status.setWordWrap(True)
-        runtime.add(self.runtime_status)
-        self.component_status = QLabel("游戏内组件：检查中…")
-        self.component_status.setObjectName("gameComponentStatus")
-        self.component_status.setWordWrap(True)
-        runtime.add(self.component_status)
-        self.agent_file_status = QLabel("代理文件：检查中…")
-        self.agent_file_status.setObjectName("gameAgentFileStatus")
-        self.agent_file_status.setWordWrap(True)
-        runtime.add(self.agent_file_status)
-        self.runtime_action_note = muted(
-            "说明：正常安装包已内置运行时；「准备运行时」只在缺失/损坏时联网下载。")
-        runtime.add(self.runtime_action_note)
-
-        rt_btns = QGridLayout()
-        rt_btns.setHorizontalSpacing(6)
-        rt_btns.setVerticalSpacing(6)
-        self.bootstrap_btn = QPushButton("准备运行时（安装）")
-        self.bootstrap_btn.setToolTip(
-            "安装/解压 Python 运行时到 ~/.starforge/agent/runtime；缺失时才联网")
-        self.bootstrap_btn.clicked.connect(self._prepare_runtime)
-        rt_btns.addWidget(self.bootstrap_btn, 0, 0)
-        self.repair_btn = QPushButton("安装 / 修复组件（安装）")
-        self.repair_btn.setToolTip(
-            "安装或更新 NMSpy + pymhf 到运行时；不写存档。缺运行时时先点「准备运行时」")
-        self.repair_btn.clicked.connect(self._repair)
-        rt_btns.addWidget(self.repair_btn, 0, 1)
-        self.install_agent_btn = QPushButton("重写代理文件（安装）")
-        self.install_agent_btn.setToolTip(
-            "把当前版本的 starforge_agent.py 写入 ~/.starforge/agent；不碰存档")
-        self.install_agent_btn.clicked.connect(self._install_agent_file)
-        rt_btns.addWidget(self.install_agent_btn, 1, 0)
-        self.uninstall_agent_btn = QPushButton("卸载游戏内组件（卸载）")
-        self.uninstall_agent_btn.setToolTip(
-            "删除 ~/.starforge/agent/starforge_agent.py；不动运行时、存档或游戏目录")
-        self.uninstall_agent_btn.clicked.connect(self._uninstall_agent_file)
-        rt_btns.addWidget(self.uninstall_agent_btn, 1, 1)
-        rt_btns.setColumnStretch(0, 1)
-        rt_btns.setColumnStretch(1, 1)
-        runtime.add_layout(rt_btns)
-        for btn in (self.bootstrap_btn, self.repair_btn,
-                    self.install_agent_btn, self.uninstall_agent_btn):
-            btn.setEnabled(False)
-        outer.addWidget(runtime)
-
-        self.live_assets = LiveAssetsCard()
-        self.live_assets_card = self.live_assets
-        outer.addWidget(self.live_assets)
-
-        planet = Card("行星档案", "读取当前行星档案；需要先进入存档")
-        pv = planet.v
-        prow = QHBoxLayout()
-        prow.setSpacing(6)
-        self.planet_scan_btn = QPushButton("读取行星档案")
-        self.planet_scan_btn.setToolTip("读取当前行星的天气、哨兵、资源、动植物与生物标识（ID）")
-        self.planet_scan_btn.clicked.connect(self._planet_scan)
-        prow.addWidget(self.planet_scan_btn)
-        self.planet_refresh_btn = QPushButton("刷新档案")
-        self.planet_refresh_btn.setToolTip("重新读取当前行星档案")
-        self.planet_refresh_btn.clicked.connect(self._refresh_planet)
-        prow.addWidget(self.planet_refresh_btn)
-        self.planet_copy_btn = QPushButton("复制档案")
-        self.planet_copy_btn.setToolTip("复制当前行星档案为文本")
-        self.planet_copy_btn.clicked.connect(self._copy_planet)
-        prow.addWidget(self.planet_copy_btn)
-        prow.addStretch(1)
-        pv.addLayout(prow)
-        self.planet_result = PlanetDossier()
-        self.planet_result.setMinimumHeight(150)
-        self.planet_result.set_message("尚未读取行星档案；请先连接游戏并进入存档。")
-        pv.addWidget(self.planet_result)
-        self._cap_buttons.extend([(self.planet_scan_btn, "planet.scan"),
-                                  (self.planet_refresh_btn, "planet.scan")])
-        outer.addWidget(planet)
-
-        safety = Card("安全区", "高风险操作；先备份存档")
+        # ------------------------------------------------------------ 传送（高风险）
+        safety = Card("安全区 · 传送", "写玩家位置；需要二次确认，只支持单人模式。")
         fv = safety.v
+        safety_tags = QHBoxLayout()
+        safety_tags.setSpacing(6)
+        safety_tags.addWidget(_risk_tag("写玩家位置", "warn"))
+        safety_tags.addWidget(_risk_tag("二次确认", "ok"))
+        safety_tags.addWidget(_risk_tag("仅单人", "ok"))
+        safety_tags.addStretch(1)
+        fv.addLayout(safety_tags)
+
         form = QFormLayout()
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(8)
@@ -356,7 +255,8 @@ class GameLinkPage(QWidget):
         form.addRow("目标星系", galaxy_row)
         transfer_row = QHBoxLayout()
         transfer_row.setSpacing(6)
-        tp = QPushButton("传送到此地址")
+        tp = QPushButton("传送到此地址（写位置）")
+        tp.setToolTip("按符文地址把玩家位置写过去；需要二次确认，只支持单人模式")
         tp.clicked.connect(self._teleport)
         transfer_row.addWidget(tp)
         restore = QPushButton("还原上一次传送")
@@ -385,15 +285,75 @@ class GameLinkPage(QWidget):
         self._cap_buttons.append((self.instant, "scan.instant"))
         scan_row.addStretch(1)
         fv.addLayout(scan_row)
-        self.allow_unverified = QCheckBox("允许未验证游戏版本实验写操作")
-        self.allow_unverified.setAccessibleName("允许未验证游戏版本实验写操作")
-        self.allow_unverified.setEnabled(False)
-        self.allow_unverified.setToolTip("当前版本没有对应的安全设置，暂不可用。")
-        self.allow_unverified.toggled.connect(self._save_gating)
-        fv.addWidget(self.allow_unverified)
-        self.gating_note = muted("读取安全设置中…")
-        fv.addWidget(self.gating_note)
+
+        self.unverified_state = QLabel("实验写：关闭 · 由「设置 → 安全」控制")
+        self.unverified_state.setObjectName("chip")
+        self.unverified_state.setToolTip(
+            "实验写操作由游戏版本闸门与「设置 → 安全」共同控制；本页不再重复放开关。")
+        fv.addWidget(self.unverified_state)
         outer.addWidget(safety)
+
+        # ------------------------------------------------------------ 高级（折叠）
+        self.advanced = FoldSection(
+            "实时资产 / 传送记录 / 诊断（高级）",
+            "只读资产、遥测、行星档案、传送记录与日志；默认收起，不占首屏。",
+            summary="实时资产和遥测在连接游戏后自动读取；传送记录只读，还原需二次确认。",
+            expanded=False)
+        adv = self.advanced.body_layout
+
+        self.live_assets = LiveAssetsCard()
+        self.live_assets_card = self.live_assets
+        adv.addWidget(self.live_assets)
+
+        tele = QWidget()
+        tv = QVBoxLayout(tele)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(6)
+        tele_title = QLabel("实时遥测")
+        tele_title.setObjectName("sectionTitle")
+        tv.addWidget(tele_title)
+        tele_grid = QGridLayout()
+        tele_grid.setHorizontalSpacing(6)
+        tele_grid.setVerticalSpacing(6)
+        for i, (text, cmd) in enumerate((("玩家位置", "player"), ("当前星系", "system"),
+                                         ("当前行星", "planet"), ("游戏内船槽", "ships"))):
+            btn = QPushButton(text)
+            btn.clicked.connect(lambda _=False, c=cmd: self._read(c))
+            tele_grid.addWidget(btn, i // 2, i % 2)
+            self._read_btns.append(btn)
+            self._cap_buttons.append((btn, cmd))
+        tele_grid.setColumnStretch(0, 1)
+        tele_grid.setColumnStretch(1, 1)
+        tv.addLayout(tele_grid)
+        self.telemetry = muted("连接后会读取游戏内状态；按钮会根据能力自动启用。")
+        tv.addWidget(self.telemetry)
+        adv.addWidget(tele)
+
+        planet = Card("行星档案", "读取当前行星档案；需要先进入存档")
+        pv = planet.v
+        prow = QHBoxLayout()
+        prow.setSpacing(6)
+        self.planet_scan_btn = QPushButton("读取行星档案")
+        self.planet_scan_btn.setToolTip("读取当前行星的天气、哨兵、资源、动植物与生物标识（ID）")
+        self.planet_scan_btn.clicked.connect(self._planet_scan)
+        prow.addWidget(self.planet_scan_btn)
+        self.planet_refresh_btn = QPushButton("刷新档案")
+        self.planet_refresh_btn.setToolTip("重新读取当前行星档案")
+        self.planet_refresh_btn.clicked.connect(self._refresh_planet)
+        prow.addWidget(self.planet_refresh_btn)
+        self.planet_copy_btn = QPushButton("复制档案")
+        self.planet_copy_btn.setToolTip("复制当前行星档案为文本")
+        self.planet_copy_btn.clicked.connect(self._copy_planet)
+        prow.addWidget(self.planet_copy_btn)
+        prow.addStretch(1)
+        pv.addLayout(prow)
+        self.planet_result = PlanetDossier()
+        self.planet_result.setMinimumHeight(150)
+        self.planet_result.set_message("尚未读取行星档案；请先连接游戏并进入存档。")
+        pv.addWidget(self.planet_result)
+        self._cap_buttons.extend([(self.planet_scan_btn, "planet.scan"),
+                                  (self.planet_refresh_btn, "planet.scan")])
+        adv.addWidget(planet)
 
         snaps = Card(
             "传送记录",
@@ -404,7 +364,8 @@ class GameLinkPage(QWidget):
         sn_tags.addWidget(_risk_tag("还原=写位置（需确认）", "warn"))
         sn_tags.addStretch(1)
         snaps.add_layout(sn_tags)
-        self.snap_summary = muted("尚未读取传送记录。")
+        self.snap_summary = elide_label("尚未读取传送记录。")
+        self.snap_summary.setObjectName("muted")
         snaps.add(self.snap_summary)
         self.snap_table = QTableWidget(0, 4)
         self.snap_table.setObjectName("gameSnapshotsTable")
@@ -462,7 +423,7 @@ class GameLinkPage(QWidget):
         snaps.add(muted(
             "还原不会修改存档文件；它通过游戏内代理写玩家位置。"
             "若代理返回 confirmation=pending，本页会如实标注「未读回确认」。"))
-        outer.addWidget(snaps)
+        adv.addWidget(snaps)
 
         poi = Card("附近兴趣点", "传送门 / 古遗迹 / 货船 / 飞船；需要游戏内代理实机校准")
         ov = poi.v
@@ -486,24 +447,39 @@ class GameLinkPage(QWidget):
         self.poi_result.set_message(
             "附近兴趣点：需要游戏内代理实机校准；未校准前不会显示任何结果，也不会伪造坐标。")
         ov.addWidget(self.poi_result)
-        outer.addWidget(poi)
+        adv.addWidget(poi)
 
-        mods = Card("表情模板 Mod", "安装后游戏表情菜单会出现 8 个可领取模板；只写游戏 GAMEDATA/MODS 目录")
-        modbar = QHBoxLayout()
-        self.install_mod_btn = QPushButton("安装 / 更新模板 Mod")
-        self.install_mod_btn.setToolTip("把 starforge-templates 写入游戏 GAMEDATA/MODS；重启游戏后生效")
-        self.install_mod_btn.clicked.connect(self._install_template_mod)
-        modbar.addWidget(self.install_mod_btn)
-        modbar.addStretch(1)
-        self.open_mods_btn = QPushButton("打开 Mod 目录")
-        self.open_mods_btn.setToolTip("在资源管理器中打开游戏 GAMEDATA/MODS")
-        self.open_mods_btn.clicked.connect(self._open_mods_dir)
-        modbar.addWidget(self.open_mods_btn)
-        mods.add_layout(modbar)
-        self.mod_status = QLabel("未安装（或未知）：点左侧按钮安装，装完需要重启游戏")
-        self.mod_status.setWordWrap(True)
-        mods.add(self.mod_status)
-        outer.addWidget(mods)
+        tools = QWidget()
+        tv2 = QVBoxLayout(tools)
+        tv2.setContentsMargins(0, 0, 0, 0)
+        tv2.setSpacing(6)
+        tools_title = QLabel("连接工具")
+        tools_title.setObjectName("sectionTitle")
+        tv2.addWidget(tools_title)
+        tool_grid = QGridLayout()
+        tool_grid.setHorizontalSpacing(6)
+        tool_grid.setVerticalSpacing(6)
+        self.stop_btn = QPushButton("停止启动器")
+        self.stop_btn.setToolTip(
+            "只终止本应用启动的启动器进程；游戏内已注入的代理会保留到游戏退出")
+        self.stop_btn.clicked.connect(self._stop)
+        tool_grid.addWidget(self.stop_btn, 0, 0)
+        self.probe_btn = QPushButton("外部内存只读探测")
+        self.probe_btn.clicked.connect(self._external_probe)
+        tool_grid.addWidget(self.probe_btn, 0, 1)
+        self.uninstall_agent_btn = QPushButton("卸载组件（卸载）")
+        self.uninstall_agent_btn.setToolTip(
+            "删除 ~/.starforge/agent/starforge_agent.py；不动运行时、存档或游戏目录")
+        self.uninstall_agent_btn.clicked.connect(self._uninstall_agent_file)
+        tool_grid.addWidget(self.uninstall_agent_btn, 1, 0)
+        tool_grid.setColumnStretch(0, 1)
+        tool_grid.setColumnStretch(1, 1)
+        tv2.addLayout(tool_grid)
+        self.runtime_action_note = muted(
+            "安装/修复只影响本机 ~/.starforge/agent，不会写存档或改游戏 GAMEDATA。")
+        tv2.addWidget(self.runtime_action_note)
+        tv2.addWidget(self.agent_file_status)
+        adv.addWidget(tools)
 
         logcard = Card("日志", "诊断数据按 JSON 格式原样记录，便于回报问题")
         logbar = QHBoxLayout()
@@ -521,7 +497,8 @@ class GameLinkPage(QWidget):
         self.log.setMaximumHeight(220)
         self.log.setStyleSheet("font-family:Consolas,monospace;font-size:11.5px;")
         logcard.add(self.log)
-        outer.addWidget(logcard)
+        adv.addWidget(logcard)
+        outer.addWidget(self.advanced)
         outer.addStretch(1)
 
         self.portal_mode = self.teleport_mode
@@ -534,11 +511,12 @@ class GameLinkPage(QWidget):
         self.poi_scan_result = self.poi_result
         self.poi_dossier = self.poi_result
         self.poi_table = self.poi_result.table
-        self.unverified_writes = self.allow_unverified
-        self.allow_unverified_writes = self.allow_unverified
+        self.unverified_writes = self.unverified_state
+        self.allow_unverified_writes = self.unverified_state
         self.loading_overlay = LoadingOverlay(self, "正在连接游戏内代理…")
         self.loading = self.loading_overlay
         self._set_portal_available(False, self._portal_reason)
+        self._sync_steps()
 
     # ---------------------------------------------------------------- 状态
 
@@ -546,7 +524,7 @@ class GameLinkPage(QWidget):
         if self._loaded:
             return
         self._loaded = True
-        self._load_gating()
+        self._load_gating_state()
         self.refresh()
         self._load_snapshots()
 
@@ -589,7 +567,7 @@ class GameLinkPage(QWidget):
         run_worker(self.svc.live_capabilities, done, fail)
 
     def _apply_state(self, cap: dict) -> None:
-        """按 build/多人/hello 三方结果更新界面与按钮（可单独测试）。"""
+        """按 build/多人/hello 三方结果更新三步状态与按钮（可单独测试）。"""
         st = cap.get("status") or {}
         runtime_files = bool(st.get("runtime_ready"))
         runtime = (runtime_files and bool(st.get("pymhf_http_api"))
@@ -597,8 +575,9 @@ class GameLinkPage(QWidget):
         self._runtime_files = runtime_files
         self._runtime_ready = runtime
         self._runtime_error = str(st.get("runtime_error") or "")
-        reachable = bool(st.get("reachable"))
-        self._reachable = reachable
+        self._supported = bool(st.get("supported"))
+        self._agent_installed = bool(st.get("mod_installed"))
+        self._reachable = bool(st.get("reachable"))
         hello = st.get("hello") or {}
         self._in_game = bool(hello.get("in_game"))
         self._multiplayer = bool(cap.get("multiplayer", hello.get("multiplayer")))
@@ -611,14 +590,6 @@ class GameLinkPage(QWidget):
         status_zh = {"verified": "已验证", "unverified": "未验证",
                      "unknown": "未知"}.get(status_text.lower(), self._cn(status_text))
         build_id = str(build_info.get("build_id") or known.get("build") or "—")
-        self._chip(self.step_runtime, "1  运行时 ✓" if runtime_files else "1  运行时 ✗",
-                   runtime_files)
-        self._chip(self.step_mod, "2  游戏内组件 ✓" if runtime else "2  游戏内组件 ✗", runtime)
-        if not runtime and st.get("mod_installed"):
-            self.step_mod.setToolTip("游戏内组件文件已安装，但 NMSpy/pymhf 未就绪；请点修复")
-        else:
-            self.step_mod.setToolTip("游戏内组件（NMSpy/pymhf）")
-        self._chip(self.step_agent, "3  游戏内代理 ✓" if reachable else "3  游戏内代理 ✗", reachable)
         self._chip(self.build_status, f"游戏版本 {build_id} · {status_zh}", verified)
         if self._multiplayer:
             mp_text, mp_ok = "多人：写已禁用", False
@@ -628,42 +599,28 @@ class GameLinkPage(QWidget):
             mp_text, mp_ok = "单人：可写", True
         self._chip(self.mp_status, mp_text, mp_ok)
         self.build_status.setToolTip(self._cn(str(build_info.get("reason") or status_zh)))
-        if reachable and not self._in_game:
-            text = "已注入，但游戏还没进入存档。请载入存档后再读取/传送。"
-        else:
-            extra = []
-            if not verified and build_info.get("reason"):
-                extra.append(self._cn(str(build_info["reason"])))
-            if self._multiplayer:
-                extra.append("多人模式：传送/还原/扫描写已禁用")
-            note = self._cn(str(st.get("note") or ""))
-            text = "；".join([x for x in [note, *extra] if x])
-        if not runtime and runtime_files and self._runtime_error:
-            text = f"{text}；组件读取错误：{self._runtime_error}" if text else \
-                f"组件读取错误：{self._runtime_error}"
-        self.status.setText(text)
-        self.repair_btn.setEnabled(bool(st.get("supported")) and runtime_files)
-        self.bootstrap_btn.setEnabled(bool(st.get("supported")) and not runtime_files)
-        self.install_agent_btn.setEnabled(bool(st.get("supported")))
-        self.uninstall_agent_btn.setEnabled(bool(st.get("supported"))
-                                             and bool(st.get("mod_installed")))
-        self.connect_btn.setEnabled(bool(st.get("supported")) and runtime)
-        self.start_btn.setEnabled(bool(st.get("supported")) and runtime)
-        self.stop_btn.setEnabled(bool(st.get("supported")))
-        if not runtime_files:
-            self.repair_btn.setToolTip(
-                "运行时文件缺失：先点「准备运行时（安装）」，再安装/修复组件")
-        else:
-            self.repair_btn.setToolTip(
-                "安装或更新 NMSpy + pymhf 到运行时；不写存档")
+        self.mp_status.setToolTip(
+            "多人模式：传送/还原/扫描写会自动禁用。" if self._multiplayer
+            else "单人模式：写操作仍受安全设置与二次确认约束。")
+
         self._apply_runtime_status(st)
+        self._mod_files = self._detect_template_mod()
+        self._template_mod_installed = self._mod_files > 0
+
+        supported = self._supported
+        for btn in (self.bootstrap_btn, self.connect_btn, self.start_btn,
+                    self.install_agent_btn, self.stop_btn):
+            btn.setEnabled(supported)
+        self.uninstall_agent_btn.setEnabled(supported and self._agent_installed)
+        self.install_mod_btn.setEnabled(True)
+
         caps = cap.get("capabilities") or {}
         self._caps = caps
         self._cap_state_known = True
         for btn, key in self._cap_buttons:
             lookup = key if key in caps else _CAP_FALLBACK.get(key, key)
             info = caps.get(lookup) or {}
-            btn.setEnabled(reachable and self._in_game and bool(info.get("available")))
+            btn.setEnabled(self._reachable and self._in_game and bool(info.get("available")))
             if key in ("planet.scan", "scan.poi"):
                 reason = self._read_block_reason(key)
                 btn.setToolTip(reason or btn.toolTip())
@@ -686,12 +643,12 @@ class GameLinkPage(QWidget):
         self._set_portal_available(portal_ok, portal_reason)
         self.error_banner.clear()
         self._asset_banner_active = False
-        self._update_connection_empty()
-        if reachable and self._in_game:
+        self._sync_steps()
+        if self._reachable and self._in_game:
             self._refresh_live_assets()
         else:
             self._reset_live_assets()
-        if reachable and not self._in_game:
+        if self._reachable and not self._in_game:
             if not self._poll_timer.isActive():
                 self._poll_timer.start()
         else:
@@ -699,6 +656,7 @@ class GameLinkPage(QWidget):
         self._update_snapshot_buttons()
 
     def _apply_runtime_status(self, st: dict) -> None:
+        """生成步骤 1 的一行状态；完整版本清单只放 tooltip，避免重复说明。"""
         st = st if isinstance(st, dict) else {}
         supported = bool(st.get("supported"))
         runtime_files = bool(st.get("runtime_ready"))
@@ -706,92 +664,175 @@ class GameLinkPage(QWidget):
         ver = str(st.get("runtime_python_version") or "")
         bundled = bool(st.get("runtime_bundled"))
         err = str(st.get("runtime_error") or "")
-        if not supported:
-            self.runtime_status.setText("运行时：不可用（游戏内通道仅支持 Windows）")
-        elif runtime_files:
-            source = "内置" if bundled else "系统/自定义"
-            self.runtime_status.setText(
-                f"运行时：已就绪 · Python {ver or '版本未知'} · {source}")
-        else:
-            detail = f"（{err}）" if err else ""
-            self.runtime_status.setText(f"运行时：缺失或不完整{detail}")
-        self.runtime_status.setToolTip(py or err or "没有可用的运行时路径")
-
         nmspy = str(st.get("nmspy_version") or "")
         expected = str(st.get("expected_nmspy") or "")
         pymhf = str(st.get("pymhf_version") or "")
         http = bool(st.get("pymhf_http_api"))
         mismatches = [str(x) for x in (st.get("runtime_mismatches") or [])]
-        if not runtime_files:
-            component = "游戏内组件：等待运行时（先点「准备运行时」）"
+
+        if not supported:
+            self._runtime_line = "不可用：游戏内通道仅支持 Windows"
+            self._runtime_tip = self._runtime_line
+        elif not runtime_files:
+            detail = f"：{self._cn(err)}" if err else ""
+            self._runtime_line = f"运行时缺失{detail}"
+            self._runtime_tip = py or err or "没有可用的运行时路径"
         elif nmspy and pymhf and http:
-            component = (f"游戏内组件：NMSpy {nmspy} · pymhf {pymhf} · HTTP API 可用")
+            source = "内置" if bundled else "系统/自定义"
+            self._runtime_line = f"已就绪 · Python {ver or '版本未知'}"
+            self._runtime_tip = (f"运行时来源：{source}\n"
+                                 f"NMSpy {nmspy} · pymhf {pymhf} · HTTP API 可用\n"
+                                 f"运行时：{py or '路径未知'}")
         else:
             missing = []
             if not nmspy:
-                missing.append("缺 NMSpy")
+                missing.append("NMSpy")
             if not pymhf:
-                missing.append("缺 pymhf")
+                missing.append("pymhf")
             if not http:
-                missing.append("缺 HTTP API")
-            component = "游戏内组件：" + "、".join(missing) + "；点「安装 / 修复组件」"
+                missing.append("HTTP API")
+            self._runtime_line = "组件缺失：" + "、".join(missing)
+            self._runtime_tip = "点「安装 / 修复组件」补齐；不会写存档。"
         if expected and nmspy and mismatches:
-            component += f" · 期望 NMSpy {expected}"
-        self.component_status.setText(component)
-        self.component_status.setToolTip(
-            "\n".join(mismatches) if mismatches else
-            (f"期望 NMSpy {expected}" if expected else "没有版本清单可对比"))
+            self._runtime_tip += "\n期望 NMSpy " + expected + "\n" + "\n".join(mismatches)
 
         mod_installed = bool(st.get("mod_installed"))
         mod_path = str(st.get("mod_path") or "")
         if mod_installed:
-            # 长路径会把标签最小宽度撑到 364px，窄窗口下被裁；显示文件名，完整路径放 tooltip。
+            # 长路径会把标签最小宽度撑大；只显示文件名，完整路径放 tooltip。
             shown = os.path.basename(mod_path) if mod_path else "路径未知"
             self.agent_file_status.setText(f"代理文件：已安装 · {shown}")
             self.agent_file_status.setToolTip(mod_path)
         else:
-            self.agent_file_status.setText(
-                "代理文件：未安装（不影响离线功能；连接游戏前需写入）")
+            self.agent_file_status.setText("代理文件：未安装（连接游戏前会自动写入）")
             self.agent_file_status.setToolTip("~/.starforge/agent/starforge_agent.py")
+
         if mismatches:
             self.runtime_action_note.setText(
                 "组件版本提示：" + "；".join(mismatches) +
-                "。点「安装 / 修复组件」同步到版本清单。")
+                "。点上方按钮同步到版本清单。")
         elif not runtime_files and err:
             self.runtime_action_note.setText(
-                f"运行时读取失败：{err}；点「准备运行时（安装）」重新准备。")
+                f"运行时读取失败：{err}；点「准备运行时」重新准备。")
         elif runtime_files and nmspy and pymhf and http:
             self.runtime_action_note.setText(
                 "运行时与组件已就绪；卸载只会删除代理文件，不影响运行时与存档。")
-
-    def _update_connection_empty(self) -> None:
-        state = self.connection_empty
-        if not self._runtime_ready:
-            state.title_label.setText("游戏内组件未就绪")
-            detail = f"（{self._runtime_error}）" if self._runtime_error else ""
-            state.description_label.setText(
-                f"运行时文件或 NMSpy/pymhf 未完整加载{detail}；"
-                "请先点「准备运行时（安装）」，再点「安装 / 修复组件」。")
-            state.description_label.setVisible(True)
-            state.show()
-        elif not self._reachable:
-            state.title_label.setText("尚未连接游戏内代理")
-            state.description_label.setText(
-                "进入游戏并载入存档后，点「连接游戏」。")
-            state.description_label.setVisible(True)
-            state.show()
-        elif not self._in_game:
-            state.title_label.setText("已注入，等待进入存档")
-            state.description_label.setText(
-                "游戏内组件已就绪；载入存档后页面会自动刷新可用能力。")
-            state.description_label.setVisible(True)
-            state.show()
         else:
-            state.hide()
+            self.runtime_action_note.setText(
+                "安装/修复只影响本机 ~/.starforge/agent，不会写存档或改游戏 GAMEDATA。")
+
+    def _sync_steps(self) -> None:
+        """三步状态机：只有前一步完成才把下一步标成「进行中」。"""
+        supported = getattr(self, "_supported", True)
+        ready = self._runtime_ready
+        mod = self._template_mod_installed
+        runtime_files = self._runtime_files
+        reachable = self._reachable
+        in_game = self._in_game
+
+        # ① 运行时 / 组件
+        if not supported:
+            s1_state, s1_line = "error", "不可用：游戏内通道仅支持 Windows"
+            s1_action = "准备运行时"
+        elif not runtime_files:
+            s1_state, s1_line = "current", getattr(self, "_runtime_line", "运行时缺失")
+            s1_action = "准备运行时"
+        elif not ready:
+            s1_state, s1_line = "error", getattr(self, "_runtime_line", "组件缺失")
+            s1_action = "安装 / 修复组件"
+        else:
+            s1_state, s1_line = "done", getattr(self, "_runtime_line", "已就绪")
+            s1_action = "修复组件"
+        self.step1.set_state(
+            s1_state, s1_line, s1_action,
+            getattr(self, "_runtime_tip", "准备运行时或修复组件；不会写存档。"))
+
+        # ② 游戏连接
+        if ready and reachable and in_game:
+            s2_state, s2_line, s2_action = "done", "已连接 · 存档已载入", "刷新状态"
+        elif ready and reachable:
+            s2_state = "current"
+            s2_line = "已注入 · 等待载入存档"
+            s2_action = "刷新状态"
+        elif ready:
+            s2_state = "current"
+            s2_line = "未连接 · 进入游戏并载入存档后点「连接游戏」"
+            s2_action = "连接游戏"
+        else:
+            s2_state = "waiting"
+            s2_line = "等待第 1 步完成"
+            s2_action = "连接游戏"
+        self.step2.set_state(
+            s2_state, s2_line, s2_action,
+            "连接已运行的游戏；缺少运行时时会提示先完成第 1 步。")
+
+        # ③ 模板 Mod
+        if mod:
+            s3_state = "done"
+            s3_line = f"已安装 {self._mod_files} 个文件 · 重启游戏后生效"
+            if not self._mod_files:
+                s3_line = "已安装 · 重启游戏后生效"
+            s3_action = "重新安装模板 Mod"
+        elif ready and reachable and in_game:
+            s3_state = "current"
+            s3_line = "未安装 · 只写 GAMEDATA/MODS，装完重启游戏"
+            s3_action = "安装 / 更新模板 Mod"
+        else:
+            s3_state = "waiting"
+            s3_line = "等待第 2 步完成；也可提前安装"
+            s3_action = "安装 / 更新模板 Mod"
+        self.step3.set_state(
+            s3_state, s3_line, s3_action,
+            "安装后游戏表情菜单会出现 8 个可领取模板；不修改游戏原始文件。")
+        self.install_mod_btn.setEnabled(True)
+
+        self._update_next_hint(supported, ready, runtime_files,
+                               reachable, in_game, mod)
+
+    def _update_next_hint(self, supported: bool = True, ready: bool = False,
+                          runtime_files: bool = False, reachable: bool = False,
+                          in_game: bool = False, mod: bool = False) -> None:
+        """页面只保留一条“下一步”：当前第一个未完成步骤要做什么。"""
+        if not supported:
+            text = "下一步：游戏内通道仅支持 Windows；离线抓船、看图等功能不受影响。"
+        elif not runtime_files:
+            err = f"（{self._runtime_error}）" if self._runtime_error else ""
+            text = (f"下一步：点第 1 步「准备运行时」{err}；正常安装包已内置，不需要联网。")
+        elif not ready:
+            text = "下一步：点第 1 步「安装 / 修复组件」，补齐 NMSpy / pymhf。"
+        elif not reachable:
+            text = "下一步：进入游戏并载入存档，然后点第 2 步「连接游戏」。"
+        elif not in_game:
+            text = "下一步：在游戏里载入存档，页面会自动刷新。"
+        elif not mod:
+            text = "下一步：点第 3 步「安装 / 更新模板 Mod」，装完重启游戏。"
+        else:
+            text = ("三步已完成：实时资产会自动读取；传送与诊断已收进下方「高级」。")
+        self.status.setText(text)
+        self.status.setToolTip(text)
+
+    def _detect_template_mod(self) -> int:
+        """只读检查模板 Mod 是否已安装；返回文件数（0 = 未安装）。"""
+        try:
+            from ... import locate_game
+            from ...core import settings as settings_core
+
+            game = locate_game.normalize(settings_core.current().game_dir or "")
+            if not game:
+                return 0
+            base = os.path.join(game, "GAMEDATA", "MODS", "starforge-templates")
+            if not os.path.isdir(base):
+                return 0
+            count = 0
+            for _root, _dirs, files in os.walk(base):
+                count += len(files)
+            return count
+        except Exception:                                   # noqa: BLE001 - 检测失败按未安装处理
+            return 0
 
     def _read_block_reason(self, key: str) -> str:
         if not self._runtime_ready:
-            return "内置运行时未就绪；请先点「准备运行时（安装）」再点「安装 / 修复组件」。"
+            return "内置运行时未就绪；请先点「准备运行时」再点「安装 / 修复组件」。"
         if not self._reachable:
             return "未连接游戏内代理；请先点「连接游戏」并确认游戏已注入。"
         if not self._in_game:
@@ -1058,51 +1099,39 @@ class GameLinkPage(QWidget):
                 return str(key)
         return None
 
-    def _load_gating(self) -> None:
+    def _set_unverified_chip(self, text: str, state: str = "warn") -> None:
+        self.unverified_state.setText(text)
+        self.unverified_state.setProperty("state", state)
+        self.unverified_state.setToolTip(
+            text + "；实验写仍受游戏版本闸门约束，开关统一放在「设置 → 安全」。")
+        self._chip(self.unverified_state, text, state == "ok")
+
+    def _load_gating_state(self) -> None:
+        """只读显示实验写状态；开关只在「设置 → 安全」里改，避免两页重复。"""
         def done(res: dict) -> None:
             settings = (res or {}).get("settings") or {}
             key = self._gating_key(settings)
             self._unverified_key = key
-            self.allow_unverified.blockSignals(True)
             if key is None:
-                self.allow_unverified.setChecked(False)
-                self.allow_unverified.setEnabled(False)
-                self.allow_unverified.setToolTip("当前版本没有对应的安全设置，暂不可用。")
-                self.gating_note.setText("当前版本没有“允许未验证游戏版本实验写操作”设置，暂不可用。")
+                self._set_unverified_chip("实验写：不可用（当前版本无此设置）", "warn")
+            elif settings.get(key):
+                self._set_unverified_chip("实验写：已开启 · 去「设置 → 安全」修改", "warn")
             else:
-                self.allow_unverified.setChecked(bool(settings.get(key)))
-                self.allow_unverified.setEnabled(True)
-                self.allow_unverified.setToolTip("由游戏版本闸门控制；未验证版本仍可能拒绝实验写操作。")
-                self.gating_note.setText("已读取安全设置；实验写操作仍受游戏版本闸门约束。")
-            self.allow_unverified.blockSignals(False)
+                self._set_unverified_chip("实验写：关闭 · 去「设置 → 安全」修改", "ok")
 
         def fail(msg: str) -> None:
             self._unverified_key = None
-            self.allow_unverified.blockSignals(True)
-            self.allow_unverified.setChecked(False)
-            self.allow_unverified.blockSignals(False)
-            self.allow_unverified.setEnabled(False)
-            self.allow_unverified.setToolTip("读取安全设置失败，暂不可用。")
-            self.gating_note.setText(f"读取安全设置失败：{self._cn(msg)}；此选项暂不可用。")
+            self._set_unverified_chip(
+                f"实验写：状态未知（{self._cn(msg)}）", "warn")
 
         run_worker(self.svc.settings_snapshot, done, fail)
 
-    def _save_gating(self, on: bool) -> None:
-        if not self._unverified_key:
-            self.gating_note.setText("当前版本没有对应的安全设置，此选项不可用。")
-            notify.warn("当前版本没有对应的安全设置，此选项不可用。")
-            return
-        try:
-            self.svc.update_settings(**{self._unverified_key: bool(on)})
-        except Exception as e:                              # noqa: BLE001
-            text = f"保存安全设置失败：{self._cn(f'{type(e).__name__}: {e}')}"
-            self.gating_note.setText(text)
-            self.error_banner.show_error(text)
-            notify.error(text)
-            return
-        self.gating_note.setText("安全设置已保存；实验写操作仍受游戏版本闸门约束。"
-                                 if on else "安全设置已保存；实验写操作已关闭。")
-        notify.success("安全设置已保存。")
+    def _step1_action(self) -> None:
+        """步骤 1 的主按钮：缺运行时先装运行时，否则安装/修复组件。"""
+        if not self._runtime_files:
+            self._prepare_runtime()
+        else:
+            self._repair()
 
     def _poll_hello(self) -> None:
         if self._poll_busy:
@@ -1143,7 +1172,7 @@ class GameLinkPage(QWidget):
     def _connect(self, start_game: bool = False) -> None:
         if not self._runtime_ready:
             detail = f"：{self._runtime_error}" if self._runtime_error else ""
-            text = (f"游戏内组件未就绪{detail}；请先点「准备运行时（安装）」和"
+            text = (f"游戏内组件未就绪{detail}；请先点「准备运行时」和"
                     "「安装 / 修复组件」，或重新解压完整包。")
             notify.warn(text)
             self.error_banner.show_error(text)
@@ -1223,6 +1252,12 @@ class GameLinkPage(QWidget):
         run_worker(self.svc.live_probe, done, fail)
 
     def _prepare_runtime(self) -> None:
+        if not ask_write(
+                self, "准备运行时",
+                "将把 Python 运行时写入 ~/.starforge/agent/runtime。\n"
+                "不会修改存档或游戏 GAMEDATA。继续？"):
+            notify.toast("已取消准备运行时。")
+            return
         self._log("准备游戏内运行时…")
         self.loading_overlay.start("正在准备游戏内运行时…")
         notify.toast("正在准备游戏内运行时…")
@@ -1261,6 +1296,12 @@ class GameLinkPage(QWidget):
         run_worker(self.svc.agent_bootstrap_runtime, done, fail)
 
     def _repair(self) -> None:
+        if not ask_write(
+                self, "安装 / 修复组件",
+                "将安装或更新 NMSpy + pymhf 到 ~/.starforge/agent。\n"
+                "不会修改存档或游戏 GAMEDATA。继续？"):
+            notify.toast("已取消安装 / 修复组件。")
+            return
         self._log("安装/修复运行时与游戏内组件…")
         self.loading_overlay.start("正在安装/修复游戏内组件…")
         notify.toast("正在安装/修复游戏内组件…")
@@ -1274,13 +1315,13 @@ class GameLinkPage(QWidget):
             if res.get("ok") is False:
                 detail = self._cn(str(res.get("error") or res.get("code") or "未知错误"))
                 if res.get("needs_runtime"):
-                    text = (f"修复未完成：{detail}；先点「准备运行时（安装）」，"
+                    text = (f"修复未完成：{detail}；先点「准备运行时」，"
                             "再重试「安装 / 修复组件」。")
                 elif res.get("code") == "E_RUNTIME_PYTHON":
-                    text = (f"修复未完成：{detail}；请点「准备运行时（安装）」"
+                    text = (f"修复未完成：{detail}；请点「准备运行时」"
                             "重新准备与清单一致的运行时。")
                 else:
-                    text = (f"修复未完成：{detail}；可先点「准备运行时（安装）」检查运行时，"
+                    text = (f"修复未完成：{detail}；可先点「准备运行时」检查运行时，"
                             "或展开日志查看 pip 输出。")
                 self.runtime_action_note.setText(text)
                 self.error_banner.show_error(text)
@@ -1294,7 +1335,7 @@ class GameLinkPage(QWidget):
             self.refresh()
 
         def fail(msg: str) -> None:
-            text = (f"修复失败：{self._cn(msg)}；先点「准备运行时（安装）」，"
+            text = (f"修复失败：{self._cn(msg)}；先点「准备运行时」，"
                     "或查看 launcher.log 后重试。")
             self._log(text)
             self.loading_overlay.stop()
@@ -1305,6 +1346,12 @@ class GameLinkPage(QWidget):
         run_worker(self.svc.agent_install_deps, done, fail)
 
     def _install_agent_file(self) -> None:
+        if not ask_write(
+                self, "重写代理文件",
+                "将把 starforge_agent.py 写入 ~/.starforge/agent。\n"
+                "不会修改存档或游戏 GAMEDATA。继续？"):
+            notify.toast("已取消写入代理文件。")
+            return
         self._log("重写代理文件…")
         self.runtime_action_note.setText("正在把 starforge_agent.py 写入 ~/.starforge/agent…")
 
@@ -1532,24 +1579,28 @@ class GameLinkPage(QWidget):
         if answer != QMessageBox.Yes:
             return
         self.install_mod_btn.setEnabled(False)
-        self.mod_status.setText("正在安装…")
+        self.step3.set_status("正在安装模板 Mod…")
 
         def done(res: dict) -> None:
             self.install_mod_btn.setEnabled(True)
             if not res.get("ok", True):
-                text = f"安装失败：{res.get('error') or res.get('code') or '未知错误'}"
-                self.mod_status.setText(text)
+                text = (f"安装失败：{res.get('error') or res.get('code') or '未知错误'}"
+                        "；请到「设置 → 路径」确认游戏目录。")
+                self.step3.set_state("error", text, "重试安装模板 Mod", text)
                 notify.error(text)
                 return
             files = len(res.get("files") or [])
-            self.mod_status.setText(
-                f"已安装 {files} 个文件到 {res.get('path')}；重启游戏后生效")
+            self._mod_files = files
+            self._template_mod_installed = files > 0 or bool(res.get("path"))
+            self._sync_steps()
             notify.success("模板 Mod 已安装，重启游戏后表情菜单可见")
 
         def fail(msg: str) -> None:
             self.install_mod_btn.setEnabled(True)
-            self.mod_status.setText(f"安装失败：{msg}")
-            notify.error(f"安装失败：{msg}")
+            text = f"安装失败：{msg}；请检查游戏目录与 GAMEDATA/MODS 权限。"
+            self.step3.set_state("error", text, "重试安装模板 Mod", text)
+            self.error_banner.show_error(text)
+            notify.error(text)
 
         run_worker(self.svc.install_template_mod, done, fail, confirm=True)
 

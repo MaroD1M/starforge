@@ -146,11 +146,14 @@ def test_ship_lab_results_keep_keyboard_multi_select_and_locate_entry(qapp, monk
 
     from starforge.app.pages import ship_lab as ship_lab_mod
 
+    # 本测试只验证快捷键与反查入口，不启动真实 3D 预览线程。
+    monkeypatch.setattr(ship_lab_mod, "run_worker", lambda *a, **k: None)
     page = ship_lab_mod.ShipLabPage()
     try:
         assert page.results.selectionMode() == QAbstractItemView.ExtendedSelection
         assert page.results.focusPolicy() == Qt.StrongFocus
         assert page.workers.value() == ship_lab_mod.default_workers()
+        # 「查星系」已收进详情「更多」菜单，但仍是唯一入口。
         assert page.locate_btn.text() == "查星系"
 
         for seed in ("0x1", "0x2"):
@@ -174,5 +177,109 @@ def test_ship_lab_results_keep_keyboard_multi_select_and_locate_entry(qapp, monk
         page.results.setCurrentItem(page.results.item(0))
         page._locate_seed()
         assert calls == ["0x1"]
+    finally:
+        page.close()
+
+
+def test_lab_ship_card_only_exposes_seed_grade_and_one_attribute(qapp):
+    from starforge.app.widgets.lab_ship_card import card_facts, grade_text, key_attribute
+
+    row = {"type": "fighter", "type_label": "战斗机", "ship_class": "S",
+           "seed": "0xABC", "parts": ["_PIT_A", "_WING_B", "_ENGINE_C"]}
+    assert card_facts(row) == ("0xABC", "S", "3 部件")
+    assert grade_text({}) == "—"
+    assert key_attribute({"seed": "0x1"}) == "—"
+    assert key_attribute({"parts": ["A", "B"]}) == "2 部件"
+    assert key_attribute({"look_match": {"primary": 0.12}}) == "涂装 Δ0.12"
+
+
+def test_ship_lab_one_primary_switches_between_push_and_detail(qapp):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QListWidgetItem
+
+    from starforge.app.pages.ship_lab import ShipLabPage
+
+    page = ShipLabPage()
+    try:
+        assert page.primary_btn.text() == "开始搜索"
+        assert page.secondary_btn.isHidden()
+        assert [btn.text() for btn in page.detail_actions] == [
+            "开始搜索", "复制种子", "渲染图", "更多 ▾"]
+        # 详情 9 个动作已收进一个菜单：不再有 9 个常驻按钮。
+        assert page.write_btn.text() == "写入存档…"
+        assert page.locate_btn.text() == "查星系"
+        assert page.snapshot_btn.text() == "保存截图…"
+
+        page.results.blockSignals(True)
+        for seed, typ in (("0x1", "fighter"), ("0x2", "banana")):
+            item = QListWidgetItem(seed)
+            item.setData(Qt.UserRole, {"type": typ, "seed": seed})
+            page.results.addItem(item)
+
+        page.results.setCurrentRow(0)
+        page.results.item(0).setSelected(True)
+        page._sync_primary()
+        assert page.primary_btn.text() == "送进游戏"
+        assert page.secondary_btn.text() == "看详情"
+        assert page.secondary_btn.isEnabled()
+        assert page.secondary_btn.toolTip()
+
+        page.results.clearSelection()
+        page.results.setCurrentRow(1)
+        page.results.item(1).setSelected(True)
+        page._sync_primary()
+        assert page.primary_btn.text() == "看详情"
+        assert page.secondary_btn.text() == "送进游戏"
+        assert not page.secondary_btn.isEnabled()
+        assert "模板" in page.secondary_btn.toolTip()
+
+        page.results.clearSelection()
+        page._sync_primary()
+        assert page.primary_btn.text() == "开始搜索"
+        assert page.secondary_btn.isHidden()
+    finally:
+        page.close()
+
+
+def test_ship_lab_key_filters_visible_and_advanced_collapsed_by_default(qapp):
+    from starforge.app.pages.ship_lab import ShipLabPage
+
+    page = ShipLabPage()
+    try:
+        # 3 个关键项常驻；其余默认收起。
+        assert page.ship.isVisibleTo(page)
+        assert page.look_on.isVisibleTo(page)
+        assert page.filter.isVisibleTo(page)
+        assert page.advanced.isHidden()
+        assert page.more_filters_btn.text().startswith("更多筛选")
+
+        page.more_filters_btn.setChecked(True)
+        assert not page.advanced.isHidden()
+        assert "收起筛选" in page.more_filters_btn.text()
+
+        page.more_filters_btn.setChecked(False)
+        assert page.advanced.isHidden()
+    finally:
+        page.close()
+
+
+def test_ship_lab_compare_has_single_menu_entry(qapp):
+    from PySide6.QtGui import QAction
+
+    from starforge.app.pages.ship_lab import ShipLabPage
+
+    page = ShipLabPage()
+    try:
+        assert isinstance(page.add_compare_btn, QAction)
+        assert page.compare_btn.menu() is page.compare_menu
+        assert [action.text() for action in page.compare_menu.actions()] == [
+            "加入选中", "打开对比", "清空对比"]
+        page._compare_rows = [
+            {"type": "fighter", "seed": "0x1"},
+            {"type": "fighter", "seed": "0x2"},
+        ]
+        page._update_compare_buttons()
+        assert page.compare_btn.text() == "对比 (2)"
+        assert page.open_compare_action.isEnabled()
     finally:
         page.close()

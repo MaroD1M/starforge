@@ -23,7 +23,8 @@ ACTION_ROLE = Qt.UserRole
 HEADER_ROLE = Qt.UserRole + 1
 LABEL_ROLE = Qt.UserRole + 2
 EMPTY_TEXT = "没有匹配命令"
-GROUP_ORDER = ["页面", "操作"]
+# “我要…”放在第一组：用目标描述任务，而不是让用户先理解页面结构。
+GROUP_ORDER = ["我要…", "工作区", "页面", "操作"]
 
 
 class _CommandList(QListWidget):
@@ -84,7 +85,7 @@ class CommandPalette(QDialog):
         v.addWidget(hint)
 
         self.edit = QLineEdit()
-        self.edit.setPlaceholderText("例如：找船 / 游戏内 / 设置 / 刷新")
+        self.edit.setPlaceholderText("例如：找乐土 / 送进游戏 / 诊断 / 设置")
         self.edit.setAccessibleName("命令搜索框")
         self.edit.setToolTip("输入关键词筛选命令；↑/↓ 选择，Enter 执行，Esc 关闭")
         self.edit.setClearButtonEnabled(True)

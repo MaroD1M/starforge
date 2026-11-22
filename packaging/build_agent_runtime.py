@@ -166,6 +166,21 @@ def prune_runtime(runtime: Path, site_packages: Path) -> None:
             removed += n
             count += 1
 
+    # embeddable Python 里 agent 确定不用的运行文件：
+    #   python.cat      Windows 目录签名，仅安装/校验用；
+    #   pythonw.exe     启动器固定用 python.exe；
+    #   sqlite3.dll/_sqlite3.pyd  pymhf/nmspy/FastAPI 不 import sqlite3；
+    #   wcwidth C 扩展  纯 Python 实现是官方回退（wcwidth/__init__.py 里 HAS_C_EXTENSION）。
+    for rel in ("python.cat", "pythonw.exe", "sqlite3.dll", "_sqlite3.pyd"):
+        n = _remove(runtime / rel)
+        if n:
+            removed += n
+            count += 1
+    n = _remove(site_packages / "wcwidth" / "_wcwidth_c.pyd")
+    if n:
+        removed += n
+        count += 1
+
     # 测试/示例/文档/头文件目录（整个 runtime，含 site-packages）。
     n, c = _remove_named_dirs(runtime, DEV_DIR_NAMES)
     removed += n

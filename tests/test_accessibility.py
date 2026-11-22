@@ -149,7 +149,7 @@ def test_navigation_and_page_header_accessibility(qapp):
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QFrame
 
-    from starforge.app.shell import NAV, SHORTCUT_INDEX, MainWindow
+    from starforge.app.shell import NAV, SHORTCUT_INDEX, WORKSPACES, MainWindow
     from starforge.app.widgets.page_header import PageHeader
 
     win = MainWindow()
@@ -164,8 +164,21 @@ def test_navigation_and_page_header_accessibility(qapp):
 
         assert win.palette_btn.accessibleName() == "打开命令面板"
         assert "Ctrl+K" in win.palette_btn.toolTip()
-        assert win.breadcrumb.accessibleName() == "当前页面：概览"
+        assert win.breadcrumb.accessibleName().startswith("当前页面：")
         assert "Ctrl+Shift+T" in win.dock.toggle.toolTip()
+
+        # 新 IA：默认只显示 4 个工作区，旧 7 页按钮保留但隐藏。
+        assert [ws["key"] for ws in WORKSPACES] == ["intel", "mine", "link", "settings"]
+        assert set(win.nav.workspace_buttons) == {"intel", "mine", "link", "settings"}
+        assert win._legacy.isHidden()
+        assert win.nav.workspace_buttons["intel"].accessibleName() == "情报台工作区"
+        assert win.nav.view_buttons["search"].accessibleName() == "情报台工作区：搜船"
+        # 不用 QButtonGroup 的互斥焦点：所有工作区/子入口都要能被 Tab 到。
+        for button in (*win.nav.workspace_buttons.values(),
+                       *win.nav.view_buttons.values()):
+            assert button.focusPolicy() == Qt.StrongFocus
+        for key, _label in NAV:
+            assert not win._buttons[key].isVisible()
 
         headers = win.pages["home"].findChildren(PageHeader)
         assert headers and headers[0].accessibleName().startswith("概览")

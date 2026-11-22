@@ -18,7 +18,8 @@
 | [AGENT.md](AGENT.md) | 游戏内通道：pymhf Python Mod 形态、15 个 HTTP 端点、认证、build 闸门、`SaveToData` 只读解析 | 2026-11-22 / 0.15.0 |
 | [LESSONS.md](LESSONS.md) | 经验与踩坑：注入三次崩溃与二分、`/ships` 两套结构、portal 三档、token 三源、热重载、图标、写闸门、文档漂移 | 2026-11-22 / 0.15.0 |
 | [DEV-GUIDE.md](DEV-GUIDE.md) | 开发/测试/打包：环境、fixture、约定、PyInstaller 与 vendor、自检、新增页面/端点 | 2026-11-22 / 0.15.0 |
-| [PACKAGING.md](PACKAGING.md) | 包体构成与削减：CI 裁剪项、体积报告脚本、110 MiB 预算与发布自检 | 2026-11-21 / 0.15.0 |
+| [PACKAGING.md](PACKAGING.md) | 包体构成与削减：CI 裁剪项、体积报告脚本、发布自检（预算口径已更新为 [SIZE-BUDGET.md](SIZE-BUDGET.md)） | 2026-11-22 / 0.15.0 |
+| [SIZE-BUDGET.md](SIZE-BUDGET.md) | 体积预算与实测：基线构成、PyInstaller 排除清单、Inno Setup LZMA2、v0.16 ≤70 MiB / v1.0 ≤55 MiB、零额外下载 | 2026-11-22 / 0.15.0 |
 | [ROADMAP-2026-11.md](ROADMAP-2026-11.md) | 全景规划：现状能力、可扩展方向、体积精简、版本兼容、UI/UX 规范、维护与里程碑 | 2026-11-22 / 0.15.0 |
 
 ## 实验记录

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..theme import SPACE_L, SPACE_M, SPACE_S
+from ..theme import CARD_RADIUS, SPACE_L, SPACE_M, SPACE_S
 
 KIND_ALIASES = {
     "info": "info",
@@ -176,15 +176,15 @@ class EmptyState(QFrame):
         super().__init__(parent)
         self.setObjectName("emptyState")
         self.setAccessibleName(f"空状态：{title or '暂无内容'}")
-        self.setStyleSheet("""
-            QFrame#emptyState {
+        self.setStyleSheet(f"""
+            QFrame#emptyState {{
                 background: #0f141d;
                 border: 1px solid #1e2432;
-                border-radius: 12px;
-            }
-            QLabel#emptyIcon { color: #5ad7ff; font-size: 28px; }
-            QLabel#emptyTitle { color: #e6ecf5; font-size: 15px; font-weight: 700; }
-            QLabel#emptyDescription { color: #8b95a7; font-size: 11.5px; }
+                border-radius: {CARD_RADIUS}px;
+            }}
+            QLabel#emptyIcon {{ color: #5ad7ff; font-size: 28px; }}
+            QLabel#emptyTitle {{ color: #e6ecf5; font-size: 15px; font-weight: 700; }}
+            QLabel#emptyDescription {{ color: #8b95a7; font-size: 11.5px; }}
         """)
         v = QVBoxLayout(self)
         v.setContentsMargins(SPACE_L, SPACE_M, SPACE_L, SPACE_M)
@@ -222,6 +222,7 @@ class EmptyState(QFrame):
             label.setMinimumHeight(max(label.sizeHint().height(),
                                        label.heightForWidth(max(1, label.width()))))
         self.button = QPushButton(button_text or "操作")
+        # 空态按钮是页面的辅助入口，不和页面唯一的主操作抢颜色。
         self.button.setObjectName("emptyAction")
         self.button.setAccessibleName(button_text or "操作")
         self.button.setVisible(bool(button_text))

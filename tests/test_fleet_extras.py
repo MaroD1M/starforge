@@ -16,6 +16,8 @@ from starforge.app.pages.fleet import (
     freighter_rows,
     frigate_rows,
     multitool_rows,
+    primary_action,
+    write_preview_lines,
 )
 from starforge.core import settings as settings_mod
 from starforge.core.errors import BadRequest, WriteDisabled
@@ -47,6 +49,32 @@ def test_multitool_and_freighter_rows_are_read_only_safe():
     assert ["型号", "FREIGHTER_PROC.SCENE.MBIN"] in rows
     assert ["种子", "0x2"] in rows
     assert freighter_rows(None)[0] == ["型号", "—"]
+
+
+def test_write_preview_shows_before_and_after():
+    ship = {"ship_class": "A", "slot": 3,
+            "stats": {"damage": 10, "shield": 20, "hyperdrive": None}}
+    lines = write_preview_lines(ship)
+    assert lines[0].startswith("写回预览")
+    assert lines[1] == "写回前：A 级 · 伤害 10 · 护盾 20"
+    assert "before → after" in lines[2]
+
+    raw_after = {"class": "S", "stats": [{"id": "SHIP_DAMAGE", "value": 99},
+                                         {"id": "SHIP_SHIELD", "value": 88}]}
+    lines = write_preview_lines(ship, {"slot": 3, "after": raw_after})
+    assert lines[2] == "写回后：S 级 · 伤害 99 · 护盾 88"
+
+    assert write_preview_lines(None)[1] == "写回前：未知 级 · 无属性数据"
+
+
+def test_primary_action_is_context_dependent():
+    ship = {"slot": 3}
+    assert primary_action(ship, can_write=True, can_push=True) == "write"
+    assert primary_action(ship, can_write=False, can_push=True) == "push"
+    assert primary_action(ship, can_write=True, can_push=False) == "write"
+    assert primary_action(ship, can_write=False, can_push=False) == "none"
+    assert primary_action(None, can_write=True, can_push=True) == "none"
+    assert primary_action(ship, can_write=True, can_push=True, busy=True) == "none"
 
 
 def test_save_extra_table_formatters():
