@@ -19,6 +19,7 @@
 | [LESSONS.md](LESSONS.md) | 经验与踩坑：注入三次崩溃与二分、`/ships` 两套结构、portal 三档、token 三源、热重载、图标、写闸门、文档漂移 | 2026-11-22 / 0.15.0 |
 | [DEV-GUIDE.md](DEV-GUIDE.md) | 开发/测试/打包：环境、fixture、约定、PyInstaller 与 vendor、自检、新增页面/端点 | 2026-11-22 / 0.15.0 |
 | [PACKAGING.md](PACKAGING.md) | 包体构成与削减：CI 裁剪项、体积报告脚本、110 MiB 预算与发布自检 | 2026-11-21 / 0.15.0 |
+| [ROADMAP-2026-11.md](ROADMAP-2026-11.md) | 全景规划：现状能力、可扩展方向、体积精简、版本兼容、UI/UX 规范、维护与里程碑 | 2026-11-22 / 0.15.0 |
 
 ## 实验记录
 
@@ -34,6 +35,9 @@
 |---|---|---|
 | [research/FEATURE-GAPS.md](research/FEATURE-GAPS.md) | 功能缺口审计（快照）：已实现/只读/占位/缺失清单、UI 断点与修复状态 | 2026-11-22 |
 | [research/CREATURE-SEARCH.md](research/CREATURE-SEARCH.md) | 生物建模与“按特征搜索 → 传送”研究：存档字段、上游方案、分阶段落地 | 2026-11-22 |
+| [research/OSS-PLANET-SEARCH.md](research/OSS-PLANET-SEARCH.md) | 星球检索开源项目评估：nms-copilot/nms-core/APF 的可借鉴点与不可用项 | 2026-11-22 |
+| [research/OSS-SAVE-INDEX.md](research/OSS-SAVE-INDEX.md) | 存档发现索引：3,240 条记录、schema 草案、增量与查询场景 | 2026-11-22 |
+| [research/OSS-DATA-PIPELINE.md](research/OSS-DATA-PIPELINE.md) | 数据/模型管线：HGPAKtool/MBINCompiler/nms-archive/NMSDK 的许可与边界 | 2026-11-22 |
 
 ## 归档（历史，不代表当前实现）
 
