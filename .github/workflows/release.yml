@@ -36,7 +36,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: 安装依赖（可编辑安装，保证 --collect-submodules 能解析到包）
         shell: pwsh
