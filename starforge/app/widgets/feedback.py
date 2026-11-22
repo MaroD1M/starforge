@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QFrame,
@@ -12,9 +12,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
+
+from ..theme import SPACE_L, SPACE_M, SPACE_S
 
 KIND_ALIASES = {
     "info": "info",
@@ -57,8 +60,8 @@ class _ToastCard(QFrame):
             QLabel#toastText {{ color: #e2e7f0; }}
         """)
         h = QHBoxLayout(self)
-        h.setContentsMargins(14, 10, 14, 10)
-        h.setSpacing(10)
+        h.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_S)
+        h.setSpacing(SPACE_S)
         badge = QLabel(label)
         badge.setObjectName("toastBadge")
         badge.setAccessibleName(f"提示类型：{label}")
@@ -68,9 +71,21 @@ class _ToastCard(QFrame):
         message.setObjectName("toastText")
         message.setAccessibleName(str(text))
         message.setWordWrap(True)
+        message.setMinimumWidth(0)
+        message.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         h.addWidget(message, 1)
         self.badge = badge
         self.message = message
+
+    def resizeEvent(self, event) -> None:                   # noqa: N802 - Qt 回调
+        super().resizeEvent(event)
+        # 换行文本在高 DPI 下可能按旧宽度估算高度，导致最后一行被裁。
+        try:
+            need = self.message.heightForWidth(max(1, self.message.width()))
+            if need > self.message.minimumHeight():
+                self.message.setMinimumHeight(need)
+        except Exception:                                    # noqa: BLE001
+            pass
 
 
 class ToastHost(QWidget):
@@ -88,7 +103,7 @@ class ToastHost(QWidget):
         self._max_cards = 5
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(8)
+        self._layout.setSpacing(SPACE_S)
         self._layout.addStretch(1)
         if parent is not None:
             parent.installEventFilter(self)
@@ -172,8 +187,8 @@ class EmptyState(QFrame):
             QLabel#emptyDescription { color: #8b95a7; font-size: 11.5px; }
         """)
         v = QVBoxLayout(self)
-        v.setContentsMargins(20, 18, 20, 18)
-        v.setSpacing(8)
+        v.setContentsMargins(SPACE_L, SPACE_M, SPACE_L, SPACE_M)
+        v.setSpacing(SPACE_S)
         v.setAlignment(Qt.AlignCenter)
         self.icon_label = QLabel()
         self.icon_label.setObjectName("emptyIcon")
@@ -188,14 +203,24 @@ class EmptyState(QFrame):
         self.title_label.setObjectName("emptyTitle")
         self.title_label.setAccessibleName("空状态标题")
         self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setWordWrap(True)
+        self.title_label.setMinimumWidth(0)
+        self.title_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         v.addWidget(self.title_label)
         self.description_label = QLabel(description)
         self.description_label.setObjectName("emptyDescription")
         self.description_label.setAccessibleName("空状态说明")
         self.description_label.setAlignment(Qt.AlignCenter)
         self.description_label.setWordWrap(True)
+        self.description_label.setMinimumWidth(0)
+        self.description_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.description_label.setVisible(bool(description))
         v.addWidget(self.description_label)
+        # 先按初始宽度写入一个保守高度，避免父布局在首次排布时
+        # 用 wordWrap 的单行最小高度把图标/说明压扁。
+        for label in (self.title_label, self.description_label):
+            label.setMinimumHeight(max(label.sizeHint().height(),
+                                       label.heightForWidth(max(1, label.width()))))
         self.button = QPushButton(button_text or "操作")
         self.button.setObjectName("emptyAction")
         self.button.setAccessibleName(button_text or "操作")
@@ -206,13 +231,50 @@ class EmptyState(QFrame):
     def resizeEvent(self, event) -> None:       # noqa: N802 - Qt 回调
         super().resizeEvent(event)
         # QLabel 的 wordWrap 在 150%/200% 缩放下可能按未受限宽度计算高度，
-        # 导致说明文字底部被裁掉；这里按实际宽度补足最小高度。
-        try:
-            need = self.description_label.heightForWidth(self.description_label.width())
-            if need > self.description_label.minimumHeight():
-                self.description_label.setMinimumHeight(need)
-        except Exception:                                    # noqa: BLE001
-            pass
+        # 导致标题/说明底部被裁掉；这里按实际宽度同步最小高度（可增可减）。
+        changed = False
+        for label in (self.title_label, self.description_label):
+            if not label.isVisible():
+                continue
+            try:
+                need = label.heightForWidth(max(1, label.width()))
+                if need != label.minimumHeight():
+                    label.setMinimumHeight(need)
+                    changed = True
+            except Exception:                                # noqa: BLE001
+                pass
+        if changed:
+            # 换行高度变化后必须让父布局重新计算，否则卡片仍按旧高度裁切。
+            self.updateGeometry()
+
+    def _content_height(self) -> int:
+        """按当前宽度计算内容所需高度（含图标、换行文本、间距与边距）。"""
+        layout = self.layout()
+        if layout is None:
+            return 0
+        margins = layout.contentsMargins()
+        height = margins.top() + margins.bottom()
+        first = True
+        for index in range(layout.count()):
+            widget = layout.itemAt(index).widget()
+            if widget is None or widget.isHidden():
+                continue
+            need = max(widget.minimumHeight(), widget.minimumSizeHint().height())
+            if isinstance(widget, QLabel) and widget.wordWrap() and widget.width() > 0:
+                need = max(need, widget.heightForWidth(widget.width()))
+            if not first:
+                height += layout.spacing()
+            height += need
+            first = False
+        return height
+
+    def minimumSizeHint(self) -> QSize:                      # noqa: N802 - Qt API
+        base = super().minimumSizeHint()
+        return QSize(base.width(), max(base.height(), self._content_height()))
+
+    def sizeHint(self) -> QSize:                             # noqa: N802 - Qt API
+        base = super().sizeHint()
+        return QSize(base.width(), max(base.height(), self._content_height()))
 
     def set_action(self, text: str, callback=None) -> None:
         self.button.setText(text or "操作")
@@ -242,28 +304,32 @@ class LoadingOverlay(QWidget):
                 border: 1px solid #28303f;
                 border-radius: 4px;
                 background: #0c1119;
-                max-height: 6px;
             }
             QProgressBar#loadingBar::chunk { background: #2f6fd0; border-radius: 3px; }
         """)
         v = QVBoxLayout(self)
-        v.setContentsMargins(24, 24, 24, 24)
+        v.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
         v.setAlignment(Qt.AlignCenter)
         card = QFrame()
         card.setObjectName("loadingCard")
         cv = QVBoxLayout(card)
-        cv.setContentsMargins(24, 18, 24, 18)
-        cv.setSpacing(10)
+        cv.setContentsMargins(SPACE_L, SPACE_M, SPACE_L, SPACE_M)
+        cv.setSpacing(SPACE_S)
         self.label = QLabel(text)
         self.label.setObjectName("loadingText")
         self.label.setAccessibleName("加载提示")
         self.label.setAlignment(Qt.AlignCenter)
+        self.label.setWordWrap(True)
+        self.label.setMinimumWidth(0)
         cv.addWidget(self.label)
         self.progress = QProgressBar()
         self.progress.setObjectName("loadingBar")
         self.progress.setAccessibleName("加载进度")
         self.progress.setRange(0, 0)
         self.progress.setFixedWidth(220)
+        # 进度条只做视觉提示、不显示文字；固定高度避免被压缩成细线。
+        self.progress.setFixedHeight(8)
+        self.progress.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.progress.setTextVisible(False)
         cv.addWidget(self.progress, 0, Qt.AlignCenter)
         v.addWidget(card, 0, Qt.AlignCenter)
@@ -320,16 +386,19 @@ class ErrorBanner(QFrame):
             QLabel#errorMessage { color: #f3b6a7; }
         """)
         h = QHBoxLayout(self)
-        h.setContentsMargins(12, 8, 12, 8)
-        h.setSpacing(10)
+        h.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_S)
+        h.setSpacing(SPACE_S)
         self.message = QLabel(str(reason or ""))
         self.message.setObjectName("errorMessage")
         self.message.setAccessibleName("错误原因")
         self.message.setWordWrap(True)
+        self.message.setMinimumWidth(0)
+        self.message.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         h.addWidget(self.message, 1)
         self.retry = QPushButton("重试")
         self.retry.setObjectName("retryButton")
         self.retry.setAccessibleName("重试")
+        self.retry.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.retry.clicked.connect(self._retry)
         h.addWidget(self.retry)
         self._retry_callback = None

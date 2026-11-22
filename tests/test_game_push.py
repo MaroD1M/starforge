@@ -63,6 +63,24 @@ def test_push_ship_success_carries_emote_title(monkeypatch):
                      "confirm": True}
 
 
+def test_push_ship_propagates_unchanged_for_direct_claim(monkeypatch):
+    """槽里已是该种子时 writer 返回 unchanged：界面据此提示直接领取，不额外加字段。"""
+    svc = get_services()
+    monkeypatch.setattr(Services, "live_status", lambda self: _status())
+    monkeypatch.setattr(
+        Services, "live_push",
+        lambda self, t, s, confirm=False: {"ok": True, "unchanged": True,
+                                           "type": t, "seed": s})
+
+    res = svc.live_push_ship(REF, confirm=True)
+
+    assert res["ok"] is True
+    assert res["unchanged"] is True
+    # 实测无需重载存档：不要再引入 reload_required / next_step 之类的字段
+    assert "reload_required" not in res
+    assert "next_step" not in res
+
+
 def test_push_ship_rejects_when_game_not_running(monkeypatch):
     svc = get_services()
     monkeypatch.setattr(Services, "live_status", lambda self: _status(running=False))
@@ -236,5 +254,6 @@ def test_live_push_success_after_confirm(monkeypatch):
 
     assert res["ok"] is True
     assert res["type"] == "sentinel"
-    assert res["seed"] == 0xCAFE
-    assert res["address"] == 0x1234
+    # 服务层把 u64 转成 hex 字符串，避免 Qt 信号 int64 溢出（实测 OverflowError）
+    assert res["seed"] == "0x000000000000CAFE"
+    assert res["address"] == "0x0000000000001234"

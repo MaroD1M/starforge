@@ -2,20 +2,26 @@
 from __future__ import annotations
 
 import json
+import os
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -36,6 +42,37 @@ def _coerce_int(value: object, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+_KIND_LABELS = {
+    "player": "玩家存档",
+    "account": "账号数据",
+    "manifest": "清单文件",
+    "unknown": "无法识别",
+}
+
+
+def _human_size(value: object) -> str:
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if size < 0:
+        return "—"
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return "—"
+
+
+def _risk_tag(text: str, state: str = "warn") -> QLabel:
+    """只读/写/安装风险标识，沿用主题里的 chip 样式。"""
+    lab = QLabel(text)
+    lab.setObjectName("chip")
+    lab.setProperty("state", state)
+    lab.setToolTip(f"风险标识：{text}")
+    return lab
 
 
 def _path_row(edit: QLineEdit) -> QWidget:
@@ -62,6 +99,9 @@ class SettingsPage(QWidget):
         self._loaded = False
         self._syncing = False
         self._env_loaded = False
+        self._saves_files: list[dict] = []
+        self._saves_default = ""
+        self._saves_dir = ""
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -112,6 +152,80 @@ class SettingsPage(QWidget):
         self.path_empty.actionTriggered.connect(self._autodetect)
         paths_card.add(self.path_empty)
         root.addWidget(paths_card)
+
+        saves_card = Card(
+            "存档目录与文件",
+            "只读扫描目录下的 .hg；「设为当前存档目录」只写设置，不碰存档内容")
+        tag_row = QHBoxLayout()
+        tag_row.setSpacing(6)
+        tag_row.addWidget(_risk_tag("只读扫描", "ok"))
+        tag_row.addWidget(_risk_tag("切换目录=写设置", "warn"))
+        tag_row.addStretch(1)
+        saves_card.add_layout(tag_row)
+        self.saves_summary = muted("尚未扫描存档目录。")
+        saves_card.add(self.saves_summary)
+        self.saves_table = QTableWidget(0, 5)
+        self.saves_table.setObjectName("settingsSavesTable")
+        self.saves_table.setHorizontalHeaderLabels(["文件", "类型", "大小", "船数", "可读性"])
+        self.saves_table.verticalHeader().setVisible(False)
+        self.saves_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.saves_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.saves_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.saves_table.setAlternatingRowColors(True)
+        self.saves_table.setMinimumHeight(200)
+        self.saves_table.setMaximumHeight(240)
+        header = self.saves_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in (1, 2, 3):
+            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        self.saves_table.itemSelectionChanged.connect(self._saves_selection_changed)
+        self.saves_table.itemDoubleClicked.connect(lambda *_: self._use_saves_dir())
+
+        detail_box = QWidget()
+        detail = QVBoxLayout(detail_box)
+        detail.setContentsMargins(8, 0, 0, 0)
+        detail.setSpacing(6)
+        detail.addWidget(muted("选中一行查看完整路径与可执行提示"))
+        self.save_detail = QLabel("尚未扫描存档目录。")
+        self.save_detail.setWordWrap(True)
+        self.save_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.save_detail.setMinimumWidth(240)
+        detail.addWidget(self.save_detail, 1, Qt.AlignTop)
+        saves_split = QSplitter(Qt.Horizontal)
+        saves_split.setObjectName("settingsSavesSplitter")
+        saves_split.setChildrenCollapsible(False)
+        saves_split.setMinimumHeight(210)
+        saves_split.addWidget(self.saves_table)
+        saves_split.addWidget(detail_box)
+        saves_split.setStretchFactor(0, 3)
+        saves_split.setStretchFactor(1, 2)
+        saves_split.setSizes([560, 340])
+        saves_card.add(saves_split)
+
+        saves_btns = QHBoxLayout()
+        saves_btns.setSpacing(6)
+        self.saves_refresh_btn = QPushButton("刷新列表（只读）")
+        self.saves_refresh_btn.setToolTip("重新扫描存档目录；只读取文件头，不写任何文件")
+        self.saves_refresh_btn.clicked.connect(self._load_saves)
+        saves_btns.addWidget(self.saves_refresh_btn)
+        self.saves_use_btn = QPushButton("设为当前存档目录（写设置）")
+        self.saves_use_btn.setToolTip(
+            "把选中存档所在目录写入设置；不会修改存档。"
+            "回到「我的船队」点「读取存档」后按该目录的 save.hg / save2.hg 读取")
+        self.saves_use_btn.setEnabled(False)
+        self.saves_use_btn.clicked.connect(self._use_saves_dir)
+        saves_btns.addWidget(self.saves_use_btn)
+        self.saves_open_btn = QPushButton("打开目录（只读）")
+        self.saves_open_btn.setToolTip("在资源管理器中打开当前存档目录")
+        self.saves_open_btn.clicked.connect(self._open_saves_dir)
+        saves_btns.addWidget(self.saves_open_btn)
+        saves_btns.addStretch(1)
+        saves_card.add_layout(saves_btns)
+        saves_card.add(muted(
+            "切换只决定「我的船队」重新读取时扫描哪个目录；切换后回到船队页点「读取存档」生效。"
+            "若要精确使用 save3.hg 这类文件，请在船队页点「浏览…」选择该文件。"))
+        root.addWidget(saves_card)
 
         safety = Card("安全与性能", "写入默认关闭；修改后立即保存")
         self.write = QCheckBox("允许写入存档")
@@ -184,16 +298,52 @@ class SettingsPage(QWidget):
         self.out = QTextEdit()
         self.out.setReadOnly(True)
         self.out.setMinimumHeight(240)
+        self.out.setMaximumHeight(320)
         self.out.setPlaceholderText("体检结果会以结构化文本显示在这里。")
         diag.add(self.out)
         self.doctor_output = self.out
         root.addWidget(diag)
 
+        selfcheck = Card(
+            "自检",
+            "端到端验证数据层/存档/搜索/预览/符文/星系；只读，不执行写入步骤")
+        sc_row = QHBoxLayout()
+        sc_row.setSpacing(6)
+        sc_row.addWidget(_risk_tag("只读", "ok"))
+        self.selfcheck_btn = QPushButton("运行自检（只读）")
+        self.selfcheck_btn.setToolTip(
+            "运行 Services.diagnostics（selfcheck，include_write=False）；不写存档")
+        self.selfcheck_btn.clicked.connect(self._selfcheck)
+        sc_row.addWidget(self.selfcheck_btn)
+        sc_row.addStretch(1)
+        selfcheck.add_layout(sc_row)
+        self.selfcheck_summary = muted("尚未运行自检。")
+        selfcheck.add(self.selfcheck_summary)
+        self.selfcheck_table = QTableWidget(0, 4)
+        self.selfcheck_table.setObjectName("settingsSelfcheckTable")
+        self.selfcheck_table.setHorizontalHeaderLabels(["状态", "步骤", "耗时", "详情"])
+        self.selfcheck_table.verticalHeader().setVisible(False)
+        self.selfcheck_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.selfcheck_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.selfcheck_table.setAlternatingRowColors(True)
+        self.selfcheck_table.setMinimumHeight(140)
+        self.selfcheck_table.setMaximumHeight(240)
+        sc_header = self.selfcheck_table.horizontalHeader()
+        sc_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        sc_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        sc_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        sc_header.setSectionResizeMode(3, QHeaderView.Stretch)
+        selfcheck.add(self.selfcheck_table)
+        self.selfcheck_hint = muted("")
+        selfcheck.add(self.selfcheck_hint)
+        self.selfcheck_table.hide()
+        self.selfcheck_hint.hide()
+        root.addWidget(selfcheck)
+
         about = Card("关于")
         about.add(QLabel(f"starforge {__import__('starforge').__version__} · 原生界面（Qt）"))
         about.add(muted("只监听本机；不联网；默认只读；游戏内代理默认不安装。"))
         root.addWidget(about)
-        root.addStretch(1)
         scroll.setWidget(body)
         outer.addWidget(scroll)
         self._syncing = False
@@ -228,6 +378,7 @@ class SettingsPage(QWidget):
             if not self._env_loaded:
                 self._env_loaded = True
                 self._refresh_env()
+            self._load_saves()
 
         def fail(msg: str) -> None:
             text = f"读取设置失败：{msg}"
@@ -271,6 +422,200 @@ class SettingsPage(QWidget):
             self._log(text)
             self.error_banner.show_error(text)
             notify.error(text)
+
+    # ------------------------------------------------------------ 存档列表
+
+    def _load_saves(self) -> None:
+        folder = self.saves.text().strip() or None
+        self.saves_summary.setText("正在扫描存档目录…（只读，不写存档）")
+        self.saves_refresh_btn.setEnabled(False)
+
+        def fetch() -> dict:
+            data = self.svc.saves(folder)
+            default = ""
+            try:
+                default = str((self.svc.default_save() or {}).get("path") or "")
+            except Exception:                               # noqa: BLE001 - 默认存档只是提示
+                default = ""
+            return {"saves": data if isinstance(data, dict) else {},
+                    "default": default}
+
+        run_worker(fetch, self._saves_done, self._saves_failed)
+
+    def _saves_done(self, res: dict) -> None:
+        self.saves_refresh_btn.setEnabled(True)
+        res = res if isinstance(res, dict) else {}
+        data = res.get("saves") or {}
+        files = [f for f in (data.get("files") or []) if isinstance(f, dict)]
+        self._saves_files = files
+        self._saves_default = str(res.get("default") or "")
+        self._saves_dir = str(data.get("dir") or "")
+
+        def _key(f: dict) -> tuple:
+            path = os.path.normcase(str(f.get("path") or ""))
+            default_rank = 0 if self._saves_default and path == os.path.normcase(
+                self._saves_default) else 1
+            return (str(f.get("kind") or "") != "player", not bool(f.get("ok")),
+                    default_rank, str(f.get("name") or "").lower())
+
+        files.sort(key=_key)
+        self.saves_table.setRowCount(0)
+        for f in files:
+            self._append_save_row(f)
+        players = [f for f in files if f.get("kind") == "player" and f.get("ok")]
+        if not self._saves_dir:
+            self.saves_summary.setText(
+                "未找到存档目录：请在上方「存档目录」里选择，或点「自动检测」。")
+            self.save_detail.setText(
+                "没有可读取的存档目录。\n下一步：在「路径」卡片选择存档目录（含 save.hg），"
+                "再点「刷新列表」。")
+        elif not files:
+            self.saves_summary.setText(
+                f"目录 {self._saves_dir} 里没有 .hg 文件；确认是否选错目录。")
+            self.save_detail.setText(
+                f"路径：{self._saves_dir}\n\n"
+                "没有发现 .hg 文件。请确认这里是否是无人深空的存档目录。")
+        else:
+            self.saves_summary.setText(
+                f"目录 {self._saves_dir} · {len(files)} 个文件 · "
+                f"{len(players)} 份可读玩家存档")
+            self.save_detail.setText(
+                "选中一行查看完整路径、船数与可读性。\n"
+                "「设为当前存档目录」只写入设置；不会修改存档内容。")
+        self.saves_use_btn.setEnabled(bool(self._saves_dir or self.saves.text().strip()))
+        if players and not self._saves_default:
+            self.save_detail.setText(self.save_detail.text() +
+                                     "\n\n船队页未找到默认存档（save.hg / save2.hg）。")
+        if self._saves_default:
+            self.saves_summary.setToolTip(
+                f"「我的船队」当前默认存档：{self._saves_default}")
+        else:
+            self.saves_summary.setToolTip("没有找到默认存档（save.hg / save2.hg）")
+
+    def _append_save_row(self, f: dict) -> None:
+        row = self.saves_table.rowCount()
+        self.saves_table.insertRow(row)
+        name = str(f.get("name") or "—")
+        path = str(f.get("path") or "")
+        kind = str(f.get("kind") or "unknown")
+        ok = bool(f.get("ok"))
+        error = str(f.get("error") or "")
+        is_default = bool(self._saves_default) and os.path.normcase(
+            path) == os.path.normcase(self._saves_default)
+        name_item = QTableWidgetItem(f"{name}（默认）" if is_default else name)
+        name_item.setData(Qt.UserRole, f)
+        name_item.setToolTip(path or name)
+        self.saves_table.setItem(row, 0, name_item)
+
+        kind_item = QTableWidgetItem(_KIND_LABELS.get(kind, kind))
+        kind_item.setToolTip(f"类型：{_KIND_LABELS.get(kind, kind)}")
+        self.saves_table.setItem(row, 1, kind_item)
+
+        size_item = QTableWidgetItem(_human_size(f.get("size")))
+        size_item.setToolTip(f"{_coerce_int(f.get('size'), 0)} 字节")
+        size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.saves_table.setItem(row, 2, size_item)
+
+        ships = "—" if kind != "player" or not ok else str(_coerce_int(f.get("ships"), 0))
+        ships_item = QTableWidgetItem(ships)
+        ships_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.saves_table.setItem(row, 3, ships_item)
+
+        if kind != "player":
+            readable, color = "不适用", QColor("#8b95a7")
+            read_tip = f"不适用：{error or '不是玩家存档'}"
+        elif ok:
+            readable, color = "可读", QColor("#a8e8c9")
+            read_tip = f"可读：{_coerce_int(f.get('ships'), 0)} 艘船"
+        else:
+            readable, color = "不可读", QColor("#f3b6a7")
+            read_tip = f"不可读：{error or '未知原因'}"
+        read_item = QTableWidgetItem(readable)
+        read_item.setForeground(color)
+        read_item.setToolTip(read_tip)
+        self.saves_table.setItem(row, 4, read_item)
+
+    def _saves_failed(self, msg: str) -> None:
+        self.saves_refresh_btn.setEnabled(True)
+        text = f"扫描存档目录失败：{msg}"
+        self.saves_summary.setText(text + "；可点「刷新列表」重试。")
+        self.save_detail.setText(
+            f"{text}\n\n下一步：确认存档目录存在且可访问；仍失败时打开日志目录查看原因。")
+        self._log(text)
+        self.error_banner.show_error(text)
+
+    def _selected_save(self) -> dict | None:
+        row = self.saves_table.currentRow()
+        if row < 0:
+            return None
+        item = self.saves_table.item(row, 0)
+        data = item.data(Qt.UserRole) if item is not None else None
+        return data if isinstance(data, dict) else None
+
+    def _saves_selection_changed(self) -> None:
+        f = self._selected_save()
+        if f is None:
+            self.saves_use_btn.setEnabled(bool(self._saves_dir or self.saves.text().strip()))
+            return
+        self.saves_use_btn.setEnabled(True)
+        path = str(f.get("path") or "")
+        kind = str(f.get("kind") or "unknown")
+        kind_text = _KIND_LABELS.get(kind, kind)
+        lines = [
+            f"文件：{f.get('name') or '—'}",
+            f"路径：{path or '—'}",
+            f"类型：{kind_text}",
+            f"大小：{_human_size(f.get('size'))}",
+        ]
+        if kind == "player":
+            lines.append(f"船数：{_coerce_int(f.get('ships'), 0) if f.get('ok') else '—'}")
+        lines.append(f"可读性：{'可读' if f.get('ok') else '不适用或不可读'}")
+        if f.get("error"):
+            lines.append(f"原因：{f['error']}")
+        if kind != "player":
+            lines.append("提示：这类文件不能当作玩家存档读取，切换到它所在目录也不会改变这一点。")
+        elif self._saves_default and os.path.normcase(path) == os.path.normcase(
+                self._saves_default):
+            lines.append("提示：这是船队页默认读取的存档（重新读取时生效）。")
+        else:
+            lines.append(
+                "提示：船队页默认优先读取 save.hg / save2.hg；要精确使用这个文件，"
+                "请到「我的船队」点「浏览…」选择。")
+        self.save_detail.setText("\n".join(lines))
+
+    def _use_saves_dir(self) -> None:
+        f = self._selected_save()
+        folder = ""
+        if f and f.get("path"):
+            folder = os.path.dirname(str(f["path"]))
+        folder = folder or self._saves_dir or self.saves.text().strip()
+        if not folder:
+            notify.warn("还没有可切换的存档目录；请先选择或自动检测。")
+            return
+        try:
+            self.svc.update_settings(saves_dir=folder)
+        except Exception as e:                              # noqa: BLE001
+            text = f"保存存档目录失败：{type(e).__name__}: {e}"
+            self.saves_summary.setText(text)
+            self.error_banner.show_error(text)
+            notify.error(text)
+            return
+        self._syncing = True
+        try:
+            self.saves.setText(folder)
+        finally:
+            self._syncing = False
+        self._update_path_empty()
+        self._log(f"已切换存档目录：{folder}")
+        notify.success("已设为当前存档目录；回到「我的船队」点「读取存档」生效。")
+        self._load_saves()
+
+    def _open_saves_dir(self) -> None:
+        folder = self._saves_dir or self.saves.text().strip()
+        if not folder or not os.path.isdir(folder):
+            notify.warn("存档目录不存在或尚未设置；请先选择目录或自动检测。")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def _autodetect(self) -> None:
         self._log("自动检测中…")
@@ -408,6 +753,117 @@ class SettingsPage(QWidget):
         self._log(text)
         self.error_banner.show_error(text)
         notify.error(text)
+
+    # ------------------------------------------------------------ 自检
+
+    def _selfcheck(self) -> None:
+        self.selfcheck_btn.setEnabled(False)
+        self.selfcheck_summary.setText("正在运行自检…（只读，不写存档）")
+        self.loading_overlay.start("正在运行自检（只读）…")
+        notify.toast("正在运行自检（只读）…")
+        run_worker(self.svc.diagnostics, self._selfcheck_done, self._selfcheck_failed)
+
+    def _selfcheck_failed(self, msg: str) -> None:
+        self.selfcheck_btn.setEnabled(True)
+        self.loading_overlay.stop()
+        text = f"自检失败：{msg}"
+        self.selfcheck_summary.setText(text + "；可点「运行自检」重试。")
+        self.selfcheck_table.hide()
+        self.selfcheck_hint.show()
+        self.selfcheck_hint.setText(
+            "下一步：先在「诊断」点「运行体检」确认 Python/Qt 依赖，"
+            "再打开日志目录查看 starforge.log 尾部；仍失败时导出诊断包。")
+        self._log(text)
+        self.error_banner.show_error(text)
+        notify.error(text)
+
+    def _selfcheck_done(self, res: dict) -> None:
+        self.selfcheck_btn.setEnabled(True)
+        self.loading_overlay.stop()
+        res = res if isinstance(res, dict) else {}
+        steps = [s for s in (res.get("steps") or []) if isinstance(s, dict)]
+        self.selfcheck_table.setRowCount(0)
+        self.selfcheck_table.show()
+        self.selfcheck_hint.show()
+        for step in steps:
+            self._append_selfcheck_row(step)
+        passed = sum(1 for s in steps if s.get("ok"))
+        summary = str(res.get("summary") or f"{passed}/{len(steps)} 步通过")
+        ok = bool(res.get("ok", passed == len(steps)))
+        self.selfcheck_summary.setText(
+            f"{summary} · {'全部关键步骤通过' if ok else '有关键步骤失败'}")
+        self.selfcheck_hint.setText(self._selfcheck_advice(steps, ok))
+        self._log(f"自检完成：{summary}")
+        if ok:
+            self.error_banner.clear()
+            notify.success(f"自检完成：{summary}")
+        else:
+            notify.warn(f"自检完成：{summary}；请按下方建议处理。")
+
+    def _append_selfcheck_row(self, step: dict) -> None:
+        row = self.selfcheck_table.rowCount()
+        self.selfcheck_table.insertRow(row)
+        ok = bool(step.get("ok"))
+        critical = bool(step.get("critical", True))
+        if ok:
+            state, color = "✓ 通过", QColor("#a8e8c9")
+        elif critical:
+            state, color = "✗ 失败", QColor("#f3b6a7")
+        else:
+            state, color = "! 非关键失败", QColor("#f0cd9a")
+        state_item = QTableWidgetItem(state)
+        state_item.setForeground(color)
+        self.selfcheck_table.setItem(row, 0, state_item)
+        name = str(step.get("name") or "—")
+        name_item = QTableWidgetItem(name)
+        name_item.setToolTip("关键步骤" if critical else "非关键步骤")
+        self.selfcheck_table.setItem(row, 1, name_item)
+        ms = step.get("ms")
+        time_item = QTableWidgetItem(f"{_coerce_int(ms, 0)} ms" if ms is not None else "—")
+        time_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.selfcheck_table.setItem(row, 2, time_item)
+        detail = str(step.get("detail") or "—")
+        detail_item = QTableWidgetItem(detail)
+        detail_item.setToolTip(detail)
+        self.selfcheck_table.setItem(row, 3, detail_item)
+
+    @staticmethod
+    def _selfcheck_advice(steps: list[dict], ok: bool) -> str:
+        if ok:
+            return ("下一步：全部关键步骤通过。可回到「诊断」点「导出诊断包」留档；"
+                    "游戏内代理相关项仍需在「游戏内代理」页连接后再验证。")
+        failed = [s for s in steps if not s.get("ok")]
+        critical = [s for s in failed if s.get("critical", True)]
+        target = critical[0] if critical else (failed[0] if failed else {})
+        name = str(target.get("name") or "")
+        detail = str(target.get("detail") or "").lower()
+        prefix = "关键步骤失败" if critical else "非关键步骤失败"
+        if "部件目录" in name or "部件图标" in name or "catalog" in detail:
+            action = ("在「路径」确认数据目录含 Gagarin/ships/catalog.txt，"
+                      "或设置 STARFORGE_GAMEDATA 后点「刷新列表」/重跑自检。")
+        elif "存档" in name or "save" in detail:
+            action = ("在「路径」选择含 save.hg 的存档目录；若存档损坏，"
+                      "请用「我的船队 → 备份」恢复一份可读存档后再试。")
+        elif "搜索" in name:
+            action = "放宽搜索条件（减少 want/avoid）并确认数据目录可用后重试。"
+        elif "3D" in name or "预览" in name or "glb" in detail:
+            action = ("确认游戏根目录正确（含 Binaries/NMS.exe）且 GAMEDATA 完整；"
+                      "否则 3D 预览会停在 L0。")
+        elif "缩略图" in name:
+            action = "先运行「运行体检」确认 numpy / texture2ddecoder 可用，再重跑自检。"
+        elif "符文" in name:
+            action = ("确认游戏 pak 可读且 texture2ddecoder 可用；缺失时会退化为内置字体，"
+                      "不影响其它功能。")
+        elif "星系" in name:
+            action = ("星系生成需要 unicorn 与游戏数据：先运行「运行体检」确认 unicorn 可用，"
+                      "并在「路径」确认游戏目录。")
+        elif "实时通道" in name:
+            action = ("该项是非关键项：打开游戏并在「游戏内代理」页连接后重跑自检；"
+                      "不连接也能继续使用离线功能。")
+        else:
+            action = ("打开「诊断」里的「打开日志目录」，查看 starforge.log 尾部；"
+                      "仍无法定位时点「导出诊断包」。")
+        return f"下一步（{prefix}：{name or '未知步骤'}）：{action}"
 
     @staticmethod
     def _format_doctor(res: dict) -> str:

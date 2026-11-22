@@ -239,7 +239,7 @@ def test_live_push_json_output(monkeypatch, capsys):
     rc = cli.cmd_live_push(types.SimpleNamespace(
         type="solar", seed="42", json=True, yes=True))
     rep = json.loads(capsys.readouterr().out)
-    assert rc == 0 and rep["ok"] is True and rep["seed"] == 42
+    assert rc == 0 and rep["ok"] is True and rep["seed"] == "0x000000000000002A"
 
 
 def test_live_push_locate_failure_has_actionable_hint(monkeypatch, capsys):
@@ -310,7 +310,7 @@ def test_live_push_main_wires_parser_to_command(monkeypatch, capsys):
     rc = cli.main(["live", "push", "--type", "fighter", "--seed", "0xCAFE",
                    "--yes", "--json"])
     rep = json.loads(capsys.readouterr().out)
-    assert rc == 0 and rep["type"] == "fighter" and rep["seed"] == 0xCAFE
+    assert rc == 0 and rep["type"] == "fighter" and rep["seed"] == "0x000000000000CAFE"
 
 
 def test_live_push_argparse_rejects_unknown_type(capsys):

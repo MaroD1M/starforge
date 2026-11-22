@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
@@ -34,6 +35,7 @@ from ..dialogs.class_editor import ClassEditorDialog
 from ..dialogs.save_edit import SaveEditDialog
 from ..dialogs.save_extras import SaveExtrasDialog
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
+from ..widgets.fleet_flow import FleetFlowBar
 from ..widgets.game_push import GamePushButton
 from ..widgets.page import PageSplitter, page_layout
 from ..widgets.page_header import PageHeader
@@ -156,12 +158,19 @@ class FleetPage(QWidget):
         self.header = PageHeader(
             "我的船队",
             "监视存档变化，随时备份恢复或批量导出，并查看飞船属性与 3D 模型。")
+        # PageHeader 默认垂直策略是 Minimum（sizeHint 即最小高度），
+        # 会把整页最小高度抬到页头 sizeHint；这里允许压缩，矮窗口才不被裁。
+        self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.header.subtitle.setWordWrap(False)
+        self.header.subtitle.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.header.subtitle.setToolTip(self.header.subtitle.text())
         root.addWidget(self.header)
 
-        split = PageSplitter("fleet")
-        root.addWidget(split, 1)
+        outer = PageSplitter("fleet-v2")
+        root.addWidget(outer, 1)
 
         left = Card("存档", "自动发现或手动选择")
+        left.setMinimumWidth(210)
         v = left.v
         self.path = QLineEdit()
         self.path.setPlaceholderText("save.hg")
@@ -175,7 +184,12 @@ class FleetPage(QWidget):
         self.info = muted("选择存档后读取")
         v.addWidget(self.info)
         v.addStretch(1)
-        split.addWidget(left)
+        outer.addWidget(left)
+
+        # 主从表：左边列表/标签页，右边详情；两者各自可拖拽，详情不被挤压。
+        split = PageSplitter("fleet-main-v2")
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 0)
 
         self.load_btn = QPushButton("读取存档")
         self.load_btn.setObjectName("primary")
@@ -207,6 +221,7 @@ class FleetPage(QWidget):
         self.header.add_action(self.export_btn)
 
         mid = QWidget()
+        mid.setMinimumWidth(340)
         mv = QVBoxLayout(mid)
         mv.setContentsMargins(8, 0, 8, 0)
         self.tabs = QTabWidget()
@@ -259,6 +274,9 @@ class FleetPage(QWidget):
             "选择 save.hg 后点「读取存档」；监视到存档变化会自动刷新。",
             icon="◇", button_text="读取存档")
         self.empty_state.set_action("读取存档", self._load)
+        for label in (self.empty_state.title_label, self.empty_state.description_label):
+            label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            label.setMinimumWidth(0)
         sv.addWidget(self.empty_state, 1)
         self.tabs.addTab(ship_tab, "飞船")
 
@@ -283,44 +301,62 @@ class FleetPage(QWidget):
 
         right = Card("飞船详情")
         self.detail_card = right
+        right.setMinimumWidth(320)
         rv = right.v
         self.title = QLabel("未选择飞船")
         self.title.setStyleSheet("font-size:15px;font-weight:700;")
+        self.title.setWordWrap(True)
         rv.addWidget(self.title)
+
+        # 预览区（3D / 静态图 / 固定模型说明）单独成块并保留最小高度，
+        # 矮窗口时优先压缩下方属性文字，不把预览压扁。
+        preview = QWidget()
+        pv = QVBoxLayout(preview)
+        pv.setContentsMargins(0, 0, 0, 0)
+        pv.setSpacing(4)
         self.viewer = ShipViewer()
-        self.viewer.setMinimumHeight(300)
-        rv.addWidget(self.viewer, 1)
+        self.viewer.setMinimumHeight(240)
+        pv.addWidget(self.viewer, 1)
         self.fallback = QLabel()
         self.fallback.setAlignment(Qt.AlignCenter)
         self.fallback.setWordWrap(True)
-        self.fallback.setMinimumHeight(300)
+        self.fallback.setMinimumHeight(240)
         self.fallback.hide()
-        rv.addWidget(self.fallback, 1)
+        pv.addWidget(self.fallback, 1)
         self.pets_note = QLabel(
             "同伴：可从存档 UA 解出来源星球的 12 位符文并复制；3D 预览仍需要生物生成器。")
         self.pets_note.setWordWrap(True)
         self.pets_note.setAlignment(Qt.AlignCenter)
-        self.pets_note.setMinimumHeight(300)
+        self.pets_note.setMinimumHeight(240)
         self.pets_note.hide()
-        rv.addWidget(self.pets_note, 1)
+        pv.addWidget(self.pets_note, 1)
+        preview.setMinimumHeight(240)
+        rv.addWidget(preview, 1)
+
         self.detail = muted("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
         rv.addWidget(self.detail)
-        row2 = QHBoxLayout()
+        buttons = FleetFlowBar()
         self.copy_btn = QPushButton("复制种子")
         self.copy_btn.clicked.connect(self._copy_seed)
-        row2.addWidget(self.copy_btn)
+        buttons.addWidget(self.copy_btn)
         self.edit_btn = QPushButton("船级/属性…")
         self.edit_btn.setEnabled(False)
         self.edit_btn.setToolTip("修改选中飞船的等级与属性；先备份，可写入副本")
         self.edit_btn.clicked.connect(self._open_class_editor)
-        row2.addWidget(self.edit_btn)
+        buttons.addWidget(self.edit_btn)
         self.push_btn = GamePushButton(self.svc, self)
-        row2.addWidget(self.push_btn)
-        rv.addLayout(row2)
+        buttons.addWidget(self.push_btn)
+        rv.addWidget(buttons)
+        split.addWidget(mid)
         split.addWidget(right)
-        split.setStretchFactor(1, 1)
-        split.set_default_sizes([240, 700, 340])
+        split.set_default_sizes([480, 320])
         split.restore()
+
+        outer.addWidget(split)
+        outer.setStretchFactor(0, 0)
+        outer.setStretchFactor(1, 1)
+        outer.set_default_sizes([230, 860])
+        outer.restore()
 
     # ---------------------------------------------------------------- 数据
 
@@ -451,6 +487,7 @@ class FleetPage(QWidget):
                 "同伴：可从存档 UA 解出来源星球的 12 位符文并复制；"
                 "3D 预览仍需要生物生成器。")
             self.viewer.hide()
+            self.fallback.hide()
             self.pets_note.show()
             self.detail.setText(
                 "同伴目前只读：描述符、种子、群系、来源星球与符文；传送需二次确认。")
@@ -467,6 +504,7 @@ class FleetPage(QWidget):
             self.pets_note.setText("这里只读展示存档中的船队扩展数据；没有 API 的写回不会伪造。")
             self.pets_note.show()
             self.viewer.hide()
+            self.fallback.hide()
             if self._loaded_path:
                 self.detail.setText("正在读取船队扩展…")
                 self._load_extras()
@@ -479,8 +517,11 @@ class FleetPage(QWidget):
         self.edit_btn.show()
         self.push_btn.show()
         self.pets_note.hide()
+        self.fallback.hide()
         self.viewer.show()
         self.detail.setText("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
+        if self.list.selectedItems():
+            self._select()
 
     def _status(self, text: str) -> None:
         window = self.window()
@@ -517,7 +558,12 @@ class FleetPage(QWidget):
             self.error_banner.clear()
             self._loaded_path = str(res.get("path") or "")
             self._ships = res.get("ships") or []
-            self.result_info.setText(f"{len(self._ships)} 艘  ·  {res.get('path')}")
+            # 长路径会撑爆/截断工具栏，只显示文件名，完整路径放 tooltip。
+            save_name = Path(self._loaded_path).name if self._loaded_path else ""
+            self.result_info.setText(
+                f"{len(self._ships)} 艘  ·  {save_name}" if save_name
+                else f"{len(self._ships)} 艘")
+            self.result_info.setToolTip(self._loaded_path or "尚未读取存档")
             warns = res.get("warnings") or []
             self.info.setText(f"{len(self._ships)} 艘" + (f"  ·  {len(warns)} 条警告" if warns else ""))
             self._rebuild_ship_list()
@@ -663,36 +709,68 @@ class FleetPage(QWidget):
             return
         s = items[0].data(Qt.UserRole) or {}
         self.title.setText(f"{s.get('type_label') or s.get('type')}  {s.get('seed')}")
+
+        # 固定模型（护卫舰/货船/部分拦截机等）没有程序化外观：不进入 3D 管线，
+        # 否则 model3d 会去找 gamedata/<type>，在日志里刷 BadRequest/FileNotFoundError。
+        from ...data.shipref import PROC_MODELS
+
+        if not s.get("procedural") or str(s.get("type") or "") not in PROC_MODELS:
+            self.pets_note.hide()
+            self.viewer.hide()
+            self.fallback.show()
+            self.fallback.setPixmap(QPixmap())
+            self.fallback.setText("固定模型：没有程序化 3D 预览\n（种子不会改变它的外观）")
+            self.detail.setText("该船型是固定模型，3D 预览不可用；可查看等级与属性。")
+            return
+
+        self.pets_note.hide()
         self.detail.setText("生成 3D 几何…")
 
+        stats = s.get("stats") or {}
+        stat_text = "  ".join(
+            f"{STAT_LABELS.get(k, k)}: {v}" for k, v in stats.items()) or "无属性数据"
+
         def done(mesh: dict) -> None:
+            self.viewer.set_mesh(mesh.get("groups") or {}, mesh.get("colours") or {})
+            valid = True
+            try:
+                valid = bool(self.viewer.isValid())
+            except Exception:                              # noqa: BLE001
+                valid = True
+            if not valid:
+                # 无 OpenGL（远程桌面/离屏）时不要把空白画布当预览。
+                image_fallback("当前环境没有可用的 OpenGL")
+                return
             self.fallback.hide()
             self.viewer.show()
-            self.viewer.set_mesh(mesh.get("groups") or {}, mesh.get("colours") or {})
-            stats = s.get("stats") or {}
-            st = "  ".join(f"{STAT_LABELS.get(k, k)}: {v}" for k, v in stats.items()) or "无属性数据"
-            self.detail.setText(f"{st}\n{mesh.get('verts', 0):,} 顶点 / {mesh.get('tris', 0):,} 三角")
+            self.detail.setText(
+                f"{stat_text}\n{mesh.get('verts', 0):,} 顶点 / {mesh.get('tris', 0):,} 三角")
 
         def image_fallback(msg: str) -> None:
             self.viewer.hide()
             self.fallback.show()
-            self.fallback.setText(f"实时 3D 不可用（{msg}）\n正在尝试静态渲染…")
+            self.fallback.setPixmap(QPixmap())
+            self.fallback.setText(f"{stat_text}\n\n实时 3D 不可用（{msg}）\n正在尝试静态渲染…")
 
             def got(data: bytes | None) -> None:
                 if not data:
-                    self.fallback.setText(f"实时 3D 不可用（{msg}）")
+                    self.fallback.setText(f"{stat_text}\n\n实时 3D 不可用（{msg}）")
                     return
                 pix = QPixmap()
                 pix.loadFromData(data, "PNG")
                 if pix.isNull():
-                    self.fallback.setText(f"实时 3D 不可用（{msg}）")
+                    self.fallback.setText(f"{stat_text}\n\n实时 3D 不可用（{msg}）")
                     return
+                # 预览区可能比 420px 窄：按实际宽度缩放，避免右侧和底部裁切。
+                width = max(220, (self.fallback.width() or 420) - 8)
+                if pix.width() > width:
+                    pix = pix.scaledToWidth(width, Qt.SmoothTransformation)
                 self.fallback.setPixmap(pix)
                 self.fallback.setToolTip(msg)
-                self.detail.setText(f"静态预览 · {msg}")
+                self.detail.setText(f"{stat_text}\n静态预览 · {msg}")
 
             def bad(_m: str) -> None:
-                self.fallback.setText(f"实时 3D 不可用（{msg}）")
+                self.fallback.setText(f"{stat_text}\n\n实时 3D 不可用（{msg}）")
 
             run_worker(self.svc.preview_png, got, bad,
                        s.get("type"), s.get("seed"), s.get("parts"), 420)

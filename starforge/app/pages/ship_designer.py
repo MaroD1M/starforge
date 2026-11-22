@@ -13,6 +13,7 @@ from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QTreeWidget,
     QTreeWidgetItem,
     QWidget,
@@ -30,10 +32,11 @@ from ...services import get_services
 from .. import notify
 from ..dialogs.design_write import DesignWriteDialog
 from ..dialogs.part_preview import PartPreviewDialog
-from ..widgets.page import PageSplitter, page_layout
+from ..widgets.lab_ui import WrapLabel, fixed_height, stretch_button
+from ..widgets.page import PageSplitter, page_layout, scroll_panel
 from ..widgets.page_header import PageHeader
 from ..widgets.ship_viewer import ShipViewer
-from ..widgets.ui import Card, icon_from_png, muted, placeholder_icon
+from ..widgets.ui import Card, icon_from_png, placeholder_icon
 from ..widgets.worker import run as run_worker
 
 SHIPS = [("sentinel", "拦截机"), ("fighter", "战斗机"), ("hauler", "运输舰"),
@@ -41,6 +44,10 @@ SHIPS = [("sentinel", "拦截机"), ("fighter", "战斗机"), ("hauler", "运输
          ("living", "生物舰"), ("solar", "太阳帆")]
 
 EXAMPLE_SEED = "0x992C8A47F60A6B10"
+# 三栏最小宽度：1180×760 以及 990px 内容宽（最小窗口减去导航栏）都不挤压。
+DESIGNER_MIN_LEFT = 268
+DESIGNER_MIN_MIDDLE = 320
+DESIGNER_MIN_RIGHT = 324
 
 
 def _slug(name: str) -> str:
@@ -277,14 +284,26 @@ class ShipDesignerPage(QWidget):
         self.header = PageHeader(
             "飞船设计器",
             "逐个选择部件即时查看 3D 组合，再用这套部件搜索可用种子。")
+        # 换行副标题会把 PageHeader 的 sizeHint 撑高，允许收缩到实际单行高度。
+        self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         root.addWidget(self.header)
         split = PageSplitter("ship_designer")
         root.addWidget(split, 1)
-        split.addWidget(self._build_parts())
-        split.addWidget(self._build_preview())
-        split.addWidget(self._build_actions())
+
+        parts = scroll_panel(self._build_parts())
+        parts.setMinimumWidth(DESIGNER_MIN_LEFT)
+        preview = self._build_preview()
+        preview.setMinimumWidth(DESIGNER_MIN_MIDDLE)
+        actions = scroll_panel(self._build_actions())
+        actions.setMinimumWidth(DESIGNER_MIN_RIGHT)
+
+        split.addWidget(parts)
+        split.addWidget(preview)
+        split.addWidget(actions)
+        split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
-        split.set_default_sizes([300, 600, 380])
+        split.setStretchFactor(2, 0)
+        split.set_default_sizes([290, 540, 380])
         split.restore()
 
     def _build_parts(self) -> QWidget:
@@ -299,9 +318,10 @@ class ShipDesignerPage(QWidget):
         v.addWidget(self.ship)
 
         row = QHBoxLayout()
-        self.parts_status = muted("选择船型后加载部件表")
+        self.parts_status = WrapLabel("选择船型后加载部件表")
+        self.parts_status.setObjectName("muted")
         row.addWidget(self.parts_status, 1)
-        clear = QPushButton("清空")
+        clear = fixed_height(QPushButton("清空"))
         clear.setToolTip("清空所有组的选择")
         clear.clicked.connect(self._clear_parts)
         row.addWidget(clear)
@@ -315,26 +335,27 @@ class ShipDesignerPage(QWidget):
         self.tree.setStyleSheet("QTreeWidget::item { height: 38px; }")
         self.tree.setMouseTracking(True)
         self.tree.setUniformRowHeights(True)
+        self.tree.setMinimumHeight(240)
         self.tree.itemChanged.connect(self._on_tree_changed)
         self.tree.itemClicked.connect(self._show_part_detail)
         self.tree.currentItemChanged.connect(self._on_detail_current)
         v.addWidget(self.tree, 1)
 
-        self.part_detail = QLabel("悬停或点击部件查看预览与详情")
+        self.part_detail = WrapLabel("悬停或点击部件查看预览与详情")
         self.part_detail.setObjectName("muted")
-        self.part_detail.setMinimumHeight(54)
-        self.part_detail.setWordWrap(True)
-        self.part_detail.setStyleSheet("background:#08111d;border:1px solid #24384a;border-radius:8px;padding:8px;")
+        self.part_detail.setStyleSheet(
+            "background:#08111d;border:1px solid #24384a;border-radius:8px;padding:8px;")
         v.addWidget(self.part_detail)
         detail_row = QHBoxLayout()
         detail_row.addStretch(1)
-        self.part_3d_btn = QPushButton("3D 预览")
+        self.part_3d_btn = fixed_height(QPushButton("3D 预览"))
         self.part_3d_btn.setToolTip("在独立小窗中 3D 预览当前部件")
         self.part_3d_btn.clicked.connect(self._open_part_preview)
         detail_row.addWidget(self.part_3d_btn)
         v.addLayout(detail_row)
 
-        self.parts_count = muted("尚未加载部件表")
+        self.parts_count = WrapLabel("尚未加载部件表")
+        self.parts_count.setObjectName("muted")
         v.addWidget(self.parts_count)
         return wrap
 
@@ -353,19 +374,25 @@ class ShipDesignerPage(QWidget):
         self.fallback.hide()
         v.addWidget(self.fallback, 1)
 
-        views = QHBoxLayout()
-        for text, mode in (("等轴", "iso"), ("俯视", "top"),
-                           ("侧视", "side"), ("正视", "front")):
-            button = QPushButton(text)
+        # 3 列 2 行：窄栏下按钮不会互相挤压或被裁切。
+        views = QGridLayout()
+        views.setHorizontalSpacing(6)
+        views.setVerticalSpacing(6)
+        for index, (text, mode) in enumerate((("等轴", "iso"), ("俯视", "top"),
+                                              ("侧视", "side"), ("正视", "front"))):
+            button = stretch_button(QPushButton(text))
             button.clicked.connect(lambda _=False, m=mode: self.viewer.set_view(m))
-            views.addWidget(button)
-        spin = QPushButton("自转")
+            views.addWidget(button, index // 3, index % 3)
+        spin = stretch_button(QPushButton("自转"))
         spin.setCheckable(True)
         spin.toggled.connect(self.viewer.set_spin)
-        views.addWidget(spin)
+        views.addWidget(spin, 1, 1)
+        for column in range(3):
+            views.setColumnStretch(column, 1)
         v.addLayout(views)
 
-        self.preview_detail = muted("选择部件后将生成 3D 预览。")
+        self.preview_detail = WrapLabel("选择部件后将生成 3D 预览。")
+        self.preview_detail.setObjectName("muted")
         v.addWidget(self.preview_detail)
         return wrap
 
@@ -374,51 +401,60 @@ class ShipDesignerPage(QWidget):
         v = wrap.v
 
         self.summary = QListWidget()
-        self.summary.setMaximumHeight(150)
+        self.summary.setMinimumHeight(96)
+        self.summary.setMaximumHeight(150)    # 上限，不是固定高度：条目少时自然收缩
         v.addWidget(self.summary)
-        self.summary_count = muted("尚未选择部件（空选也可以预览默认外形）")
+        self.summary_count = WrapLabel("尚未选择部件（空选也可以预览默认外形）")
+        self.summary_count.setObjectName("muted")
         v.addWidget(self.summary_count)
 
         v.addWidget(QLabel("预览种子"))
         seed_row = QHBoxLayout()
+        seed_row.setSpacing(6)
         self.seed_edit = QLineEdit(EXAMPLE_SEED)
         self.seed_edit.setPlaceholderText("例如 0x992C8A47F60A6B10")
+        self.seed_edit.setMinimumWidth(80)
         self.seed_edit.editingFinished.connect(self._refresh_preview)
         seed_row.addWidget(self.seed_edit, 1)
-        copy = QPushButton("复制种子")
+        copy = fixed_height(QPushButton("复制种子"))
         copy.clicked.connect(self._copy_seed)
         seed_row.addWidget(copy)
         v.addLayout(seed_row)
 
-        self.search_btn = QPushButton("用这些部件搜索种子")
+        self.search_btn = fixed_height(QPushButton("用这些部件搜索种子"))
         self.search_btn.setObjectName("primary")
         self.search_btn.clicked.connect(self._start_search)
         v.addWidget(self.search_btn)
 
-        self.search_status = muted("至少选择一个部件后即可搜索。")
+        self.search_status = WrapLabel("至少选择一个部件后即可搜索。")
+        self.search_status.setObjectName("muted")
         v.addWidget(self.search_status)
 
         v.addWidget(QLabel("搜索结果"))
         self.results = QListWidget()
+        self.results.setMinimumHeight(140)
         self.results.itemSelectionChanged.connect(self._select_result)
         v.addWidget(self.results, 1)
 
         files = QHBoxLayout()
-        self.save_design_btn = QPushButton("保存设计…")
+        files.setSpacing(6)
+        self.save_design_btn = stretch_button(QPushButton("保存设计…"))
         self.save_design_btn.setToolTip("把当前船型与部件保存为本地 .nmsdesign.json；不写存档")
         self.save_design_btn.clicked.connect(self._save_design)
-        files.addWidget(self.save_design_btn)
-        self.load_design_btn = QPushButton("载入设计…")
+        files.addWidget(self.save_design_btn, 1)
+        self.load_design_btn = stretch_button(QPushButton("载入设计…"))
         self.load_design_btn.setToolTip("从本地 .nmsdesign.json 恢复部件与种子；不写存档")
         self.load_design_btn.clicked.connect(self._load_design)
-        files.addWidget(self.load_design_btn)
+        files.addWidget(self.load_design_btn, 1)
         v.addLayout(files)
 
-        self.write_design_btn = QPushButton("写入存档…")
+        self.write_design_btn = fixed_height(QPushButton("写入存档…"))
         self.write_design_btn.setToolTip("把当前种子写入新船槽或替换现有槽；先备份，可写入副本")
         self.write_design_btn.clicked.connect(self._write_design)
         v.addWidget(self.write_design_btn)
-        v.addWidget(muted("设计文件只保存在本地；写入存档会走备份、二次确认、读回校验与回滚。"))
+        note = WrapLabel("设计文件只保存在本地；写入存档会走备份、二次确认、读回校验与回滚。")
+        note.setObjectName("muted")
+        v.addWidget(note)
         return wrap
 
     # ------------------------------------------------------------ 数据

@@ -132,3 +132,29 @@ def test_agent_connect_refuses_without_game(monkeypatch):
     res = get_services().agent_connect()
     assert res["ok"] is False
     assert res["code"] == "E_NO_GAME"
+
+def test_live_push_sanitizes_u64_for_qt_signals(monkeypatch):
+    """写入返回的种子是 u64（>2^63），透传给 Qt 信号会 OverflowError；服务层要转成 hex 字符串。"""
+    import contextlib
+
+    from starforge.core import settings
+    from starforge.live import mem, writer
+
+    old = bool(settings.current().write_enabled)
+    settings.update(write_enabled=True)
+    monkeypatch.setattr(mem, "IS_WINDOWS", True)
+    monkeypatch.setattr(mem, "attach", lambda *_a, **_k: contextlib.nullcontext(object()))
+    monkeypatch.setattr(
+        writer, "push",
+        lambda *_a, **_k: {"ok": True, "seed": 0xCBB96B52CAB439CF,
+                           "before": 0xA0524F4652415453, "after": 0xCBB96B52CAB439CF,
+                           "address": 0x13B3B8F59E8, "score": 1.0})
+    try:
+        res = get_services().live_push("sentinel", "0xCBB96B52CAB439CF", confirm=True)
+    finally:
+        settings.update(write_enabled=old)
+
+    assert res["ok"] is True
+    for key in ("seed", "before", "after", "address"):
+        assert isinstance(res[key], str) and res[key].startswith("0x"), (key, res[key])
+    assert res["score"] == 1.0

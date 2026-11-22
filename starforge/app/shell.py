@@ -1,9 +1,10 @@
 """原生主窗口（Command Deck）：CommandBar + NavRail + Workspace + JobDock。"""
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings, QThreadPool, QTimer, QUrl, Qt
+from PySide6.QtCore import QSettings, Qt, QThreadPool, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -11,6 +12,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -19,18 +22,26 @@ from PySide6.QtWidgets import (
 from ..core import paths, strings
 from ..services import get_services
 from .context import AppContext
-from .pages.home import HomePage
-from .pages.game_link import GameLinkPage
 from .pages.fleet import FleetPage
-from .pages.ship_lab import ShipLabPage
+from .pages.galaxy import GalaxyPage
+from .pages.game_link import GameLinkPage
+from .pages.home import HomePage
 from .pages.settings import SettingsPage
 from .pages.ship_designer import ShipDesignerPage
-from .pages.galaxy import GalaxyPage
+from .pages.ship_lab import ShipLabPage
+from .theme import (
+    COMMAND_BAR_MARGIN,
+    RAIL_WIDTH,
+    SPACE_L,
+    SPACE_M,
+    SPACE_S,
+    SPACE_XS,
+)
 from .widgets.command_palette import CommandPalette
 from .widgets.feedback import ToastHost
 from .widgets.job_dock import JobDock
 from .widgets.page_header import PageHeader
-from .widgets.ui import focus_first_input
+from .widgets.ui import ElidedLabel, focus_first_input
 from .widgets.worker import run as run_worker
 
 NAV = [
@@ -53,6 +64,30 @@ NAV_GROUPS = [
     ("资料", ("mine", "systems")),
     ("连接", ("live", "settings")),
 ]
+
+
+class _PageStack(QStackedWidget):
+    """最小尺寸只跟随当前页。
+
+    QStackedWidget 默认取所有页的最大 sizeHint，一个很高的页面（例如星图）
+    会让其它页也被撑出多余的滚动条。这里改为按当前页计算，切页时刷新几何。
+    """
+
+    def sizeHint(self):                                     # noqa: N802 - Qt API
+        page = self.currentWidget()
+        if page is not None:
+            return page.sizeHint()
+        return super().sizeHint()
+
+    def minimumSizeHint(self):                              # noqa: N802 - Qt API
+        page = self.currentWidget()
+        if page is not None:
+            return page.minimumSizeHint()
+        return super().minimumSizeHint()
+
+    def currentChanged(self, index: int) -> None:           # noqa: N802 - Qt 回调
+        super().currentChanged(index)
+        self.updateGeometry()
 
 
 class MainWindow(QMainWindow):
@@ -105,7 +140,7 @@ class MainWindow(QMainWindow):
         rv.setSpacing(0)
         rv.addWidget(self._build_command_bar())
 
-        self.stack = QStackedWidget()
+        self.stack = _PageStack()
         self.pages = {
             "home": HomePage(),
             "search": ShipLabPage(),
@@ -118,7 +153,20 @@ class MainWindow(QMainWindow):
         self.pages["home"].navigate.connect(self.goto)
         for page in self.pages.values():
             self.stack.addWidget(page)
-        rv.addWidget(self.stack, 1)
+
+        # 工作区放进滚动区：窗口压到最小尺寸时，页面保持自身最小高度，
+        # 由工作区滚动，而不是把卡片和文字压扁/裁切。
+        self.workspace = QScrollArea()
+        self.workspace.setObjectName("workspaceScroll")
+        self.workspace.setWidgetResizable(True)
+        self.workspace.setFrameShape(QFrame.NoFrame)
+        self.workspace.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.workspace.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.workspace.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.workspace.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+        self.workspace.viewport().setAutoFillBackground(False)
+        self.workspace.setWidget(self.stack)
+        rv.addWidget(self.workspace, 1)
 
         self.dock = JobDock()
         rv.addWidget(self.dock)
@@ -160,18 +208,22 @@ class MainWindow(QMainWindow):
         rail.setObjectName("navRail")
         rail.setAccessibleName("主导航")
         rail.setToolTip("切换概览、飞船实验室、设计器、船队、星图、游戏内代理与设置")
-        rail.setFixedWidth(190)
+        rail.setFixedWidth(RAIL_WIDTH)
         rv = QVBoxLayout(rail)
-        rv.setContentsMargins(12, 16, 12, 16)
+        rv.setContentsMargins(SPACE_M, SPACE_L, SPACE_M, SPACE_L)
+        rv.setSpacing(SPACE_XS)
         brand = QLabel("STARFORGE")
         brand.setObjectName("brand")
         brand.setAccessibleName("应用名称：STARFORGE")
         rv.addWidget(brand)
         sub = QLabel("无人深空 · 飞船猎人")
         sub.setObjectName("muted")
+        sub.setWordWrap(True)
+        sub.setMinimumWidth(0)
+        sub.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         sub.setAccessibleName("应用副标题：无人深空飞船猎人")
         rv.addWidget(sub)
-        rv.addSpacing(16)
+        rv.addSpacing(SPACE_L)
 
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
@@ -195,6 +247,7 @@ class MainWindow(QMainWindow):
             btn.setToolTip(hint)
             btn.setStatusTip(hint)
             btn.setFocusPolicy(Qt.StrongFocus)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.clicked.connect(lambda _=False, k=key: self.goto(k))
             self._group.addButton(btn)
             self._buttons[key] = btn
@@ -207,6 +260,9 @@ class MainWindow(QMainWindow):
         rv.addWidget(ver)
         self.mode = QLabel("原生窗口 · Qt（PySide6）界面")
         self.mode.setObjectName("muted")
+        self.mode.setWordWrap(True)
+        self.mode.setMinimumWidth(0)
+        self.mode.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.mode.setAccessibleName("运行模式：原生窗口")
         rv.addWidget(self.mode)
         return rail
@@ -217,19 +273,22 @@ class MainWindow(QMainWindow):
         bar.setAccessibleName("命令栏")
         bar.setToolTip("当前页面、命令面板入口与运行状态")
         h = QHBoxLayout(bar)
-        h.setContentsMargins(16, 8, 16, 8)
+        h.setContentsMargins(*COMMAND_BAR_MARGIN)
+        h.setSpacing(SPACE_S)
         self.breadcrumb = QLabel("概览")
         self.breadcrumb.setObjectName("breadcrumb")
         self.breadcrumb.setAccessibleName("当前页面：概览")
         self.breadcrumb.setToolTip("当前所在页面")
+        self.breadcrumb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         h.addWidget(self.breadcrumb)
-        h.addSpacing(10)
+        h.addSpacing(SPACE_S)
         self.palette_btn = QPushButton("命令面板（Ctrl+K）")
         self.palette_btn.setObjectName("ghostButton")
         self.palette_btn.setAccessibleName("打开命令面板")
         self.palette_btn.setToolTip("搜索并执行命令（Ctrl+K）")
         self.palette_btn.setStatusTip("搜索并执行命令（Ctrl+K）")
         self.palette_btn.setFocusPolicy(Qt.StrongFocus)
+        self.palette_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.palette_btn.clicked.connect(self.open_palette)
         h.addWidget(self.palette_btn)
         h.addStretch(1)
@@ -239,12 +298,16 @@ class MainWindow(QMainWindow):
             chip.setObjectName("chip")
             chip.setAccessibleName(f"{CHIP_LABELS[key]}状态：{text}")
             chip.setToolTip(f"{CHIP_LABELS[key]}状态：{text}")
+            chip.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             self.chips[key] = chip
             h.addWidget(chip)
-        self.job_label = QLabel("")
+        # 任务摘要可能很长：用省略号，不要把右侧状态挤出去。
+        self.job_label = ElidedLabel("")
         self.job_label.setObjectName("muted")
         self.job_label.setAccessibleName("当前任务")
         self.job_label.setToolTip("当前后台任务摘要")
+        self.job_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.job_label.setMaximumWidth(220)
         h.addWidget(self.job_label)
         self.progress = QProgressBar()
         self.progress.setAccessibleName("任务进度")

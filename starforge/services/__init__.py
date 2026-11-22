@@ -362,6 +362,46 @@ class Services:
 
         return _ok(path=str(library.default_save_path()))
 
+    # ------------------------------------------------------------ 已发现星球
+
+    def discovered_planets(self, path: str | None = None) -> dict:
+        """只读读取当前存档的已发现行星；失败时返回 ok=False 与 warnings。"""
+        from .. import discoveries
+
+        res = discoveries.discovered_planets(path)
+        _record("scan",
+                "读取已发现星球" if res.get("ok") else "读取已发现星球失败",
+                f"{res.get('count', 0)} 颗 · 原始记录 {res.get('records', 0)} 条",
+                "discoveries", bool(res.get("ok")))
+        return _ok(**res)
+
+    def discovered_filter(self, planets: list[dict] | None = None,
+                          path: str | None = None, **kw: Any) -> dict:
+        """筛选已发现行星；不传 planets 时先读当前存档，参数原样交给数据层。"""
+        from .. import discoveries
+
+        base = None
+        if planets is None:
+            base = discoveries.discovered_planets(path)
+            if not base.get("ok"):
+                _record("scan", "筛选已发现星球失败",
+                        (base.get("warnings") or ["读取存档失败"])[0],
+                        "discoveries", False)
+                return _ok(**base)
+            planets = base["planets"]
+        try:
+            rows = discoveries.filter_discovered(planets, **kw)
+        except ValueError as e:
+            _record("scan", "筛选已发现星球失败", str(e), "discoveries", False)
+            raise BadRequest(str(e)) from e
+        _record("scan", "筛选已发现星球",
+                f"{len(rows)} 颗 · 过滤条件 {len(kw)} 项", "discoveries")
+        out: dict[str, Any] = {"count": len(rows), "planets": rows}
+        if base is not None:
+            out["path"] = base.get("path")
+            out["warnings"] = base.get("warnings") or []
+        return _ok(**out)
+
     def apply_seed(self, path: str, slot: int, source: dict, confirm: bool = False,
                    copy: bool = False) -> dict:
         from ..data.shipref import coerce
@@ -1171,6 +1211,12 @@ class Services:
             raise
         _record("agent", "送进游戏成功", f"{type_} {seed}", "live",
                 bool(res.get("ok", True)))
+        # Qt 信号/JSON 对 int64 有符号上限：种子是 u64（例如 0xA052… > 2^63），
+        # 直接用 int 透传会在 emit(dict) 时抛 OverflowError（实测 game_push.py:110）。
+        for key in ("seed", "before", "after", "address"):
+            value = res.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                res[key] = "0x%016X" % (value & 0xFFFFFFFFFFFFFFFF)
         return _ok(**res)
 
     def live_push_ship(self, ref: dict, confirm: bool = False) -> dict:
@@ -1181,7 +1227,9 @@ class Services:
         可预期的前置失败统一返回 ``{"ok": False, "reason", "error"}``，方便界面原样提示；
         闸门拒绝与真正的写入失败沿用服务的异常/最近活动，不重试、不猜地址。
         成功时额外带上 ``emote``（表情中文标题）与 ``template``（模板 id），
-        界面据此提示"去表情菜单选「星铸 · X」领取"。
+        界面据此提示"去表情菜单选「星铸 · X」领取"。实测（2026-11-22）写入模板槽后
+        **无需重新载入存档**即可在表情菜单领取；``unchanged`` 表示槽里已经是这个种子，
+        界面可直接提示领取。
         """
         from ..data.shipref import ShipRefError, coerce
         from ..live import exml

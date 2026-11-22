@@ -9,10 +9,13 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
 )
 
 from ...services import get_services
+from ..theme import DOCK_BUTTON_HEIGHT, SPACE_M, SPACE_S
+from .ui import ElidedLabel
 from .worker import run as run_worker
 
 STATUS_LABELS = {
@@ -142,30 +145,40 @@ class JobDock(QFrame):
 
     def _build_ui(self) -> None:
         v = QVBoxLayout(self)
-        v.setContentsMargins(12, 6, 12, 8)
+        v.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_S)
+        v.setSpacing(SPACE_S)
         head = QHBoxLayout()
+        head.setSpacing(SPACE_S)
         title = QLabel("任务")
         title.setObjectName("muted")
         head.addWidget(title)
-        self.summary = QLabel("空闲")
+        # 摘要可能因错误信息变长：用省略号，保证右侧按钮始终可见。
+        self.summary = ElidedLabel("空闲")
         self.summary.setObjectName("muted")
-        head.addWidget(self.summary)
-        head.addStretch(1)
+        self.summary.setMinimumWidth(80)
+        self.summary.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        head.addWidget(self.summary, 1)
 
         self.cancel_btn = QPushButton("取消进行中")
-        self.cancel_btn.setFixedHeight(22)
+        self.cancel_btn.setObjectName("dockButton")
+        self.cancel_btn.setMinimumHeight(DOCK_BUTTON_HEIGHT)
+        self.cancel_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.cancel_btn.setToolTip("取消当前选中的进行中任务")
         self.cancel_btn.clicked.connect(self.cancel_selected)
         head.addWidget(self.cancel_btn)
 
         self.clear_btn = QPushButton("清空已完成")
-        self.clear_btn.setFixedHeight(22)
+        self.clear_btn.setObjectName("dockButton")
+        self.clear_btn.setMinimumHeight(DOCK_BUTTON_HEIGHT)
+        self.clear_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.clear_btn.setToolTip("只从任务栏隐藏已结束任务，不删除服务端记录")
         self.clear_btn.clicked.connect(self.clear_finished)
         head.addWidget(self.clear_btn)
 
         self.toggle = QPushButton("展开")
-        self.toggle.setFixedHeight(22)
+        self.toggle.setObjectName("dockButton")
+        self.toggle.setMinimumHeight(DOCK_BUTTON_HEIGHT)
+        self.toggle.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.toggle.clicked.connect(self.toggle_body)
         head.addWidget(self.toggle)
         v.addLayout(head)
@@ -173,6 +186,9 @@ class JobDock(QFrame):
         self.list = QListWidget()
         self.list.setMaximumHeight(110)
         self.list.setMinimumHeight(70)
+        self.list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.list.setTextElideMode(Qt.ElideRight)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list.itemSelectionChanged.connect(self._update_actions)
         v.addWidget(self.list)
         self._update_actions()

@@ -4,6 +4,49 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
+# ---------------------------------------------------------------- 设计 token
+# 统一间距/字号/圆角，全部使用“逻辑像素”；Qt 会随 DPR 自动缩放。
+# 页面与全局组件只引用这些常量，避免各自硬编码 4/8/12/16 与 11.5/13/15px。
+SPACE_XXS = 2
+SPACE_XS = 4
+SPACE_S = 8
+SPACE_M = 12
+SPACE_L = 16
+SPACE_XL = 24
+
+RADIUS_S = 6
+RADIUS_M = 8
+RADIUS_L = 12
+
+FONT_CAPTION = 11.5      # 次要说明、状态标签
+FONT_SMALL = 12.5        # 紧凑按钮、列表行
+FONT_BODY = 13           # 正文 / 表单
+FONT_SECTION = 15        # 区块标题
+FONT_TITLE = 18          # 页面标题
+FONT_BRAND = 15          # 品牌名
+FONT_POINT = 10          # QApplication 默认字体（pt，随 DPI 缩放）
+
+RAIL_WIDTH = 196         # 左侧导航宽度（按最长导航文本留出余量）
+COMMAND_BAR_MARGIN = (SPACE_L, SPACE_S, SPACE_L, SPACE_S)
+PAGE_MARGIN = (SPACE_M, SPACE_M, SPACE_M, SPACE_M)
+PAGE_GAP = SPACE_S
+SCROLL_MARGIN = (SPACE_M, SPACE_M, SPACE_M, SPACE_L)
+DOCK_BUTTON_HEIGHT = 26
+
+
+def scale(widget, value: float) -> int:
+    """把逻辑尺寸换算成设备像素（用于 QPixmap/QPainter，不用于布局尺寸）。"""
+    try:
+        ratio = widget.devicePixelRatioF() or 1.0
+    except Exception:                                        # noqa: BLE001
+        ratio = 1.0
+    return max(1, round(float(value) * float(ratio)))
+
+
+def icon_size(widget, base: int = 16) -> int:
+    """图标设备像素尺寸（高分屏下更大），配合 setDevicePixelRatio 使用。"""
+    return scale(widget, base)
+
 
 def _palette(atmosphere: bool = False) -> QPalette:
     p = QPalette()
@@ -150,6 +193,23 @@ QTabBar::tab:hover { color: #e6ecf5; }
 QSplitter::handle:hover { background: #2a3546; }
 """
 
+# 统一排版规则：全局组件通过 objectName 引用，避免在页面里各写一套字号。
+QSS += f"""
+QLabel#pageTitle {{ font-size: {FONT_TITLE}px; font-weight: 700; color: #e6ecf5; }}
+QLabel#cardTitle {{ font-size: {FONT_SECTION - 1}px; font-weight: 700; color: #e6ecf5; }}
+QLabel#sectionTitle {{ font-size: {FONT_SECTION}px; font-weight: 700; color: #e6ecf5; }}
+QLabel#sectionHint {{ color: #8b95a7; font-size: {FONT_CAPTION}px; }}
+QPushButton#dockButton {{
+  padding: 3px 10px; font-size: {FONT_SMALL}px; border-radius: {RADIUS_S - 1}px;
+}}
+QScrollArea {{ background: transparent; border: 0; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
+QAbstractScrollArea::corner {{ background: transparent; }}
+QToolTip {{ padding: {SPACE_XS}px {SPACE_S}px; }}
+QTabBar::tab {{ min-height: 18px; }}
+QListWidget::item, QTreeWidget::item {{ padding: 3px 5px; }}
+"""
+
 
 def _mix(color_a: str, color_b: str, t: float) -> str:
     a = [int(color_a[i:i + 2], 16) for i in (1, 3, 5)]
@@ -267,8 +327,12 @@ def _font() -> QFont:
     for name in ("Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", "Noto Sans CJK SC"):
         f = QFont(name, 10)
         if f.exactMatch() or QFont(name).family() == name:
+            f.setPointSize(FONT_POINT)
+            f.setStyleStrategy(QFont.PreferAntialias)
             return f
-    return QFont("Sans Serif", 10)
+    fallback = QFont("Sans Serif", FONT_POINT)
+    fallback.setStyleStrategy(QFont.PreferAntialias)
+    return fallback
 
 
 def apply(app: QApplication) -> None:

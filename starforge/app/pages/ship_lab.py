@@ -4,13 +4,14 @@ from __future__ import annotations
 import os
 import sys
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox,
-                               QDialog, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
-                               QInputDialog, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QPushButton, QSpinBox, QStackedWidget,
-                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+                               QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+                               QHeaderView, QInputDialog, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QPushButton, QSizePolicy,
+                               QSpinBox, QStackedWidget, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from ...core import settings as settings_core
 from ...services import favorites, get_services
@@ -22,11 +23,12 @@ from ..dialogs.part_preview import PartPreviewDialog
 from ..dialogs.write_back import WriteBackDialog
 from ..widgets.feedback import EmptyState, ErrorBanner, LoadingOverlay
 from ..widgets.game_push import GamePushButton
+from ..widgets.lab_ui import WrapLabel, fixed_height, stretch_button
 from ..widgets.page import PageSplitter, page_layout, scroll_panel
 from ..widgets.page_header import PageHeader
 from ..widgets.ship_card import install_card_delegate, set_card_accessibility
 from ..widgets.ship_viewer import ShipViewer
-from ..widgets.ui import Card, icon_from_png, muted, placeholder_icon
+from ..widgets.ui import Card, icon_from_png, placeholder_icon
 from ..widgets.worker import run as run_worker
 
 SHIPS = [("sentinel", "拦截机"), ("fighter", "战斗机"), ("hauler", "运输舰"),
@@ -34,6 +36,16 @@ SHIPS = [("sentinel", "拦截机"), ("fighter", "战斗机"), ("hauler", "运输
          ("living", "生物舰"), ("solar", "太阳帆")]
 
 MAX_DEFAULT_WORKERS = 4
+
+# 三栏最小宽度（含卡片内边距）；用 QSplitter 的最小尺寸保证 1180×760 下不重叠。
+LAB_MIN_LEFT = 278
+LAB_MIN_MIDDLE = 318
+LAB_MIN_RIGHT = 336
+# 结果网格：卡片宽度在 138–236 之间自适应，最多 4 列。
+GRID_MIN_WIDTH = 138
+GRID_MAX_WIDTH = 236
+GRID_MAX_COLS = 4
+GRID_GAP = 8
 
 
 def default_workers(cpu_count: int | None = None) -> int:
@@ -128,11 +140,13 @@ class ShipLabPage(QWidget):
         self.header = PageHeader(
             "飞船实验室",
             "条件 → 结果 → 3D：在左侧勾选部件，搜索并挑选飞船，再在右侧查看模型与操作。")
-        refresh = QPushButton("刷新部件")
+        # 换行副标题会让 PageHeader 的 sizeHint 偏高；改为可收缩，避免把整页最小高度撑大。
+        self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        refresh = fixed_height(QPushButton("刷新部件"))
         refresh.setToolTip("重新读取当前船型的部件表")
         refresh.clicked.connect(self._refresh_parts)
         self.header.add_action(refresh)
-        favorites_btn = QPushButton("收藏夹")
+        favorites_btn = fixed_height(QPushButton("收藏夹"))
         favorites_btn.setToolTip("管理已收藏飞船，可载入到实验室")
         favorites_btn.clicked.connect(self._open_favorites)
         self.header.add_action(favorites_btn)
@@ -141,14 +155,32 @@ class ShipLabPage(QWidget):
         split = PageSplitter("ship_lab")
         root.addWidget(split, 1)
 
-        split.addWidget(scroll_panel(self._build_filters()))
-        split.addWidget(self._build_results())
-        split.addWidget(scroll_panel(self._build_inspector()))
+        filters = self._build_filters()
+        filters.setMinimumWidth(LAB_MIN_LEFT)
+        results = self._build_results()
+        results.setMinimumWidth(LAB_MIN_MIDDLE)
+        inspector = scroll_panel(self._build_inspector())
+        inspector.setMinimumWidth(LAB_MIN_RIGHT)
+
+        split.addWidget(filters)
+        split.addWidget(results)
+        split.addWidget(inspector)
+        # 只有中间结果区吸收多余宽度：拖动分栏时左右两侧保持稳定。
+        split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
-        split.set_default_sizes([333, 520, 400])
+        split.setStretchFactor(2, 0)
+        split.set_default_sizes([300, 540, 400])
         split.restore()
+        split.splitterMoved.connect(lambda *_: self._fit_result_grid())
+        QTimer.singleShot(0, self._fit_result_grid)
 
     def _build_filters(self) -> QWidget:
+        """左侧筛选：上部条件卡片可滚动，底部搜索按钮固定可见。"""
+        pane = QWidget()
+        pv = QVBoxLayout(pane)
+        pv.setContentsMargins(0, 0, 0, 0)
+        pv.setSpacing(8)
+
         wrap = Card("条件", "点部件 = 加入当前模式")
         v = wrap.v
 
@@ -160,13 +192,13 @@ class ShipLabPage(QWidget):
         v.addWidget(self.ship)
 
         row = QHBoxLayout()
+        row.setSpacing(6)
         row.addWidget(QLabel("模式"))
         self.mode = QComboBox()
         self.mode.addItem("想要", "want")
         self.mode.addItem("不要", "avoid")
-        row.addWidget(self.mode)
-        row.addStretch(1)
-        clear = QPushButton("清空")
+        row.addWidget(self.mode, 1)
+        clear = fixed_height(QPushButton("清空"))
         clear.clicked.connect(lambda: self._clear_checks(announce=True))
         row.addWidget(clear)
         v.addLayout(row)
@@ -184,6 +216,7 @@ class ShipLabPage(QWidget):
         self.tree.setStyleSheet("QTreeWidget::item { height: 38px; }")
         self.tree.setMouseTracking(True)
         self.tree.setUniformRowHeights(True)
+        self.tree.setMinimumHeight(260)      # 至少 6 行，而不是被压成 3 行
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.itemClicked.connect(self._lazy_part_icon)
         self.tree.currentItemChanged.connect(self._on_part_current)
@@ -193,44 +226,58 @@ class ShipLabPage(QWidget):
         panel.setObjectName("card")
         ph = QHBoxLayout(panel)
         ph.setContentsMargins(8, 8, 8, 8)
+        ph.setSpacing(8)
         self.part_thumb = QLabel()
         self.part_thumb.setFixedSize(72, 72)
         self.part_thumb.setAlignment(Qt.AlignCenter)
-        ph.addWidget(self.part_thumb)
-        self.part_text = QLabel("悬停或点击部件查看预览与详情")
+        ph.addWidget(self.part_thumb, 0, Qt.AlignTop)
+        self.part_text = WrapLabel("悬停或点击部件查看预览与详情")
         self.part_text.setObjectName("muted")
-        self.part_text.setWordWrap(True)
         ph.addWidget(self.part_text, 1)
-        self.part_3d_btn = QPushButton("3D")
+        self.part_3d_btn = fixed_height(QPushButton("3D"))
         self.part_3d_btn.setToolTip("在独立小窗中 3D 预览当前部件")
         self.part_3d_btn.clicked.connect(self._open_part_preview)
-        ph.addWidget(self.part_3d_btn)
+        ph.addWidget(self.part_3d_btn, 0, Qt.AlignTop)
         v.addWidget(panel)
 
-        self.chips = QPushButton("未选择条件")
+        chips_row = QHBoxLayout()
+        chips_row.setSpacing(6)
+        self.chips_detail = WrapLabel("未选择条件")
+        self.chips_detail.setObjectName("muted")
+        chips_row.addWidget(self.chips_detail, 1)
+        self.chips = fixed_height(QPushButton("清除"))
         self.chips.setFlat(True)
         self.chips.setCursor(Qt.PointingHandCursor)
-        self.chips.setToolTip("点击清除已选条件")
+        self.chips.setToolTip("清除已选条件")
         self.chips.setStyleSheet(
             "QPushButton { border:none; background:transparent; color:#8b95a7;"
-            " text-align:left; padding:0; }"
-            "QPushButton:hover { color:#e6ecf5; }")
+            " text-align:left; padding:0 2px; }"
+            "QPushButton:hover { color:#e6ecf5; }"
+            "QPushButton:disabled { color:#4f5a6b; }")
         self.chips.clicked.connect(lambda: self._clear_checks(announce=True))
-        v.addWidget(self.chips)
+        chips_row.addWidget(self.chips, 0, Qt.AlignTop)
+        v.addLayout(chips_row)
 
         paint = QHBoxLayout()
         paint.setSpacing(6)
         self.look_on = QCheckBox("按涂装筛")
         paint.addWidget(self.look_on)
-        self.primary = QPushButton("主色")
-        self.primary.setStyleSheet("border-color:#8a6a2f;")
-        self.primary.clicked.connect(lambda: self._pick_color("primary"))
-        paint.addWidget(self.primary)
-        self.secondary = QPushButton("副色")
-        self.secondary.clicked.connect(lambda: self._pick_color("secondary"))
-        paint.addWidget(self.secondary)
         paint.addStretch(1)
         v.addLayout(paint)
+
+        paint_colors = QHBoxLayout()
+        paint_colors.setSpacing(6)
+        self.primary = fixed_height(QPushButton("主色"))
+        self.primary.setStyleSheet("border-color:#8a6a2f;")
+        self.primary.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.primary.clicked.connect(lambda: self._pick_color("primary"))
+        paint_colors.addWidget(self.primary, 1)
+        self.secondary = fixed_height(QPushButton("副色"))
+        self.secondary.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.secondary.clicked.connect(lambda: self._pick_color("secondary"))
+        paint_colors.addWidget(self.secondary, 1)
+        v.addLayout(paint_colors)
+
         paint2 = QHBoxLayout()
         paint2.setSpacing(6)
         self.secondary_on = QCheckBox("副色也接近")
@@ -241,6 +288,7 @@ class ShipLabPage(QWidget):
                             ("宽松 0.28", 0.28), ("很宽松 0.40", 0.40)):
             self.tol.addItem(text, value)
         self.tol.setCurrentIndex(1)
+        self.tol.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         paint2.addWidget(self.tol, 1)
         v.addLayout(paint2)
         self._colors = {"primary": QColor("#f2c744"), "secondary": QColor("#1c1c22")}
@@ -270,55 +318,68 @@ class ShipLabPage(QWidget):
         workers_row.addWidget(self.workers, 1)
         v.addLayout(workers_row)
 
+        pv.addWidget(scroll_panel(wrap), 1)
+
+        # 底部固定操作区：窗口再矮也能直接点「开始搜索」。
+        foot = QFrame()
+        foot.setObjectName("card")
+        fv = QVBoxLayout(foot)
+        fv.setContentsMargins(12, 10, 12, 10)
+        fv.setSpacing(6)
         row2 = QHBoxLayout()
-        self.search_btn = QPushButton("开始搜索")
+        row2.setSpacing(6)
+        self.search_btn = stretch_button(QPushButton("开始搜索"))
         self.search_btn.setObjectName("primary")
         self.search_btn.clicked.connect(self._start_search)
         row2.addWidget(self.search_btn, 1)
-        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn = fixed_height(QPushButton("取消"))
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self._cancel_search)
         row2.addWidget(self.cancel_btn)
-        demo = QPushButton("示例")
+        demo = fixed_height(QPushButton("示例"))
         demo.clicked.connect(self._demo)
         row2.addWidget(demo)
-        v.addLayout(row2)
-        self.estimate = muted("")
-        self.estimate.setWordWrap(True)
+        fv.addLayout(row2)
+        self.estimate = WrapLabel("")
+        self.estimate.setObjectName("muted")
         self.estimate.setAccessibleName("搜索估算")
-        v.addWidget(self.estimate)
-        self.status = muted("选几个部件，点开始搜索")
-        v.addWidget(self.status)
-        return wrap
+        fv.addWidget(self.estimate)
+        self.status = WrapLabel("选几个部件，点开始搜索")
+        self.status.setObjectName("muted")
+        fv.addWidget(self.status)
+        pv.addWidget(foot)
+        return pane
 
     def _build_results(self) -> QWidget:
         box = QWidget()
         v = QVBoxLayout(box)
         v.setContentsMargins(8, 0, 8, 0)
         bar = QHBoxLayout()
-        self.result_info = QLabel("还没有结果")
+        bar.setSpacing(6)
+        self.result_info = WrapLabel("还没有结果")
         self.result_info.setObjectName("muted")
-        bar.addWidget(self.result_info)
-        bar.addStretch(1)
+        bar.addWidget(self.result_info, 1)
         self.view_mode = QComboBox()
         self.view_mode.addItem("网格", "grid")
         self.view_mode.addItem("列表", "list")
+        self.view_mode.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.view_mode.setMinimumWidth(76)
         self.view_mode.currentIndexChanged.connect(self._apply_view_mode)
-        bar.addWidget(self.view_mode)
+        bar.addWidget(self.view_mode, 0)
         v.addLayout(bar)
 
         actions = QHBoxLayout()
         actions.setSpacing(6)
-        self.add_compare_btn = QPushButton("加入对比")
+        self.add_compare_btn = fixed_height(QPushButton("加入对比"))
         self.add_compare_btn.setToolTip("把选中的 1–3 艘飞船加入对比（Ctrl / Shift 可多选）")
         self.add_compare_btn.clicked.connect(self._add_selected_to_compare)
         actions.addWidget(self.add_compare_btn)
-        self.compare_btn = QPushButton("对比 (0)")
+        self.compare_btn = fixed_height(QPushButton("对比 (0)"))
         self.compare_btn.setToolTip("并排对比 2–3 艘飞船")
         self.compare_btn.setEnabled(False)
         self.compare_btn.clicked.connect(self._open_compare)
         actions.addWidget(self.compare_btn)
-        self.clear_compare_btn = QPushButton("清空对比")
+        self.clear_compare_btn = fixed_height(QPushButton("清空对比"))
         self.clear_compare_btn.setEnabled(False)
         self.clear_compare_btn.clicked.connect(self._clear_compare)
         actions.addWidget(self.clear_compare_btn)
@@ -327,11 +388,11 @@ class ShipLabPage(QWidget):
 
         actions2 = QHBoxLayout()
         actions2.setSpacing(6)
-        self.clear_results_btn = QPushButton("清空结果")
+        self.clear_results_btn = fixed_height(QPushButton("清空结果"))
         self.clear_results_btn.setToolTip("清空当前结果列表（不影响对比）")
         self.clear_results_btn.clicked.connect(self._clear_results)
         actions2.addWidget(self.clear_results_btn)
-        self.reset_conditions_btn = QPushButton("重置条件")
+        self.reset_conditions_btn = fixed_height(QPushButton("重置条件"))
         self.reset_conditions_btn.setToolTip("清除部件选择、涂装筛选与搜索预算")
         self.reset_conditions_btn.clicked.connect(self._reset_conditions)
         actions2.addWidget(self.reset_conditions_btn)
@@ -345,11 +406,14 @@ class ShipLabPage(QWidget):
         self.results.setResizeMode(QListWidget.Adjust)
         self.results.setMovement(QListWidget.Static)
         self.results.setWordWrap(False)
+        self.results.setMinimumHeight(240)
         self.results.setFocusPolicy(Qt.StrongFocus)
         self.results.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.results.setAccessibleName("搜索结果")
         self.results.setAccessibleDescription("飞船卡片列表；Ctrl 或 Shift 可多选")
         self._card_delegate = install_card_delegate(self.results, 110)
+        # 结果区宽度变化（拖分栏/窗口缩放）时重算列数与卡片尺寸。
+        self.results.viewport().installEventFilter(self)
         self.results.itemSelectionChanged.connect(self._select_result)
         self.results.itemDoubleClicked.connect(lambda _i: self._copy_seed())
         self.empty = EmptyState(
@@ -369,71 +433,80 @@ class ShipLabPage(QWidget):
     def _build_inspector(self) -> QWidget:
         wrap = Card("飞船详情")
         v = wrap.v
-        self.title = QLabel("未选择飞船")
+        self.title = WrapLabel("未选择飞船")
         self.title.setStyleSheet("font-size:15px;font-weight:700;")
         v.addWidget(self.title)
         self.viewer = ShipViewer()
-        self.viewer.setMinimumHeight(300)
+        self.viewer.setMinimumHeight(280)
         v.addWidget(self.viewer, 1)
         self.fallback = QLabel()
         self.fallback.setAlignment(Qt.AlignCenter)
-        self.fallback.setMinimumHeight(300)
+        self.fallback.setWordWrap(True)
+        self.fallback.setMinimumHeight(280)
         self.fallback.hide()
         v.addWidget(self.fallback, 1)
-        view_row = QHBoxLayout()
-        for text, mode in (("等轴", "iso"), ("俯视", "top"), ("侧视", "side"), ("正视", "front")):
-            b = QPushButton(text)
+
+        # 视角按钮 3 列 2 行：窄栏不挤压、不用固定宽度。
+        view_grid = QGridLayout()
+        view_grid.setHorizontalSpacing(6)
+        view_grid.setVerticalSpacing(6)
+        view_buttons = [(text, mode) for text, mode in
+                        (("等轴", "iso"), ("俯视", "top"), ("侧视", "side"),
+                         ("正视", "front"))]
+        for index, (text, mode) in enumerate(view_buttons):
+            b = stretch_button(QPushButton(text))
             b.clicked.connect(lambda _=False, m=mode: self.viewer.set_view(m))
-            view_row.addWidget(b)
-        spin = QPushButton("自转")
+            view_grid.addWidget(b, index // 3, index % 3)
+        spin = stretch_button(QPushButton("自转"))
         spin.setCheckable(True)
         spin.toggled.connect(self.viewer.set_spin)
-        view_row.addWidget(spin)
-        shot = QPushButton("截图")
+        view_grid.addWidget(spin, 1, 1)
+        shot = stretch_button(QPushButton("截图"))
         shot.clicked.connect(self._save_snapshot)
-        view_row.addWidget(shot)
-        v.addLayout(view_row)
-        self.detail = muted("选中结果后在这里查看 3D 模型与操作。")
+        view_grid.addWidget(shot, 1, 2)
+        for column in range(3):
+            view_grid.setColumnStretch(column, 1)
+        v.addLayout(view_grid)
+
+        self.detail = WrapLabel("选中结果后在这里查看 3D 模型与操作。")
+        self.detail.setObjectName("muted")
         v.addWidget(self.detail)
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        self.copy_btn = QPushButton("复制种子")
+
+        # 动作 3 列网格：窄栏不会把最右按钮挤出卡片，也给 3D 区留出高度。
+        actions = QGridLayout()
+        actions.setHorizontalSpacing(6)
+        actions.setVerticalSpacing(6)
+        self.copy_btn = stretch_button(QPushButton("复制种子"))
         self.copy_btn.clicked.connect(self._copy_seed)
-        row.addWidget(self.copy_btn)
-        self.fav_btn = QPushButton("收藏")
+        self.fav_btn = stretch_button(QPushButton("收藏"))
         self.fav_btn.clicked.connect(self._toggle_fav)
-        row.addWidget(self.fav_btn)
-        self.share_btn = QPushButton("分享码")
+        self.share_btn = stretch_button(QPushButton("分享码"))
         self.share_btn.setToolTip("复制当前飞船的 nsh1: 分享码")
         self.share_btn.clicked.connect(self._copy_share)
-        row.addWidget(self.share_btn)
-        self.raster_btn = QPushButton("渲染图")
+        self.raster_btn = stretch_button(QPushButton("渲染图"))
         self.raster_btn.clicked.connect(self._show_current_raster)
-        row.addWidget(self.raster_btn)
-        row.addStretch(1)
-        v.addLayout(row)
-        row2 = QHBoxLayout()
-        row2.setSpacing(6)
-        self.locate_btn = QPushButton("查星系")
+        self.locate_btn = stretch_button(QPushButton("查星系"))
         self.locate_btn.setToolTip("反查该种子可能来自的星系；候选需生成器证实，可能欠定")
         self.locate_btn.clicked.connect(self._locate_seed)
-        row2.addWidget(self.locate_btn)
-        self.glb_btn = QPushButton("导出 glb")
+        self.glb_btn = stretch_button(QPushButton("导出 glb"))
         self.glb_btn.clicked.connect(self._export_glb)
-        row2.addWidget(self.glb_btn)
-        self.write_btn = QPushButton("写入存档")
+        self.write_btn = stretch_button(QPushButton("写入存档"))
         self.write_btn.setEnabled(False)
         self.write_btn.setToolTip("写入同型号槽位；先备份，写入后读回校验")
         self.write_btn.clicked.connect(self._open_write)
-        row2.addWidget(self.write_btn)
-        self.push_btn = GamePushButton(self.svc, self)
-        row2.addWidget(self.push_btn)
-        self.import_btn = QPushButton("导入分享")
+        self.push_btn = stretch_button(GamePushButton(self.svc, self))
+        self.import_btn = stretch_button(QPushButton("导入分享"))
         self.import_btn.setToolTip("粘贴他人分享的 nsh1: 分享码")
         self.import_btn.clicked.connect(self._import_share)
-        row2.addWidget(self.import_btn)
-        row2.addStretch(1)
-        v.addLayout(row2)
+        for index, button in enumerate((self.copy_btn, self.fav_btn,
+                                        self.share_btn, self.raster_btn,
+                                        self.locate_btn, self.glb_btn,
+                                        self.write_btn, self.push_btn,
+                                        self.import_btn)):
+            actions.addWidget(button, index // 3, index % 3)
+        for column in range(3):
+            actions.setColumnStretch(column, 1)
+        v.addLayout(actions)
         return wrap
 
     # ---------------------------------------------------------------- 数据
@@ -621,8 +694,9 @@ class ShipLabPage(QWidget):
         if avoid:
             bits.append("不要：" + " ".join(avoid[:6]) + ("…" if len(avoid) > 6 else ""))
         summary = "  ·  ".join(bits)
-        self.chips.setText(f"{summary}  ·  点击清除" if summary else "未选择条件")
-        self.chips.setToolTip("点击清除已选条件" if summary else "还没有选择条件")
+        self.chips_detail.setText(summary or "未选择条件")
+        self.chips.setEnabled(bool(summary))
+        self.chips.setToolTip("清除已选条件" if summary else "还没有选择条件")
 
     def _clear_checks(self, announce: bool = False) -> None:
         want, avoid = self._checked()
@@ -910,11 +984,41 @@ class ShipLabPage(QWidget):
         self.results.setViewMode(QListWidget.IconMode if grid else QListWidget.ListMode)
         if grid:
             self._card_delegate = install_card_delegate(self.results, 110)
+            self._fit_result_grid()
         else:
             from PySide6.QtWidgets import QStyledItemDelegate
             self.results.setItemDelegate(QStyledItemDelegate(self.results))
             self.results.setIconSize(QSize(72, 50))
             self.results.setGridSize(QSize())
+            self.results.setSpacing(4)
+
+    def _fit_result_grid(self) -> None:
+        """按结果区实际宽度决定列数与卡片尺寸，避免窄栏只挤下一列。"""
+        if self.results.viewMode() != QListWidget.IconMode or not hasattr(self, "_card_delegate"):
+            return
+        viewport = self.results.viewport().width()
+        if viewport <= 0:
+            return
+        cols = max(1, min(GRID_MAX_COLS,
+                          (viewport + GRID_GAP) // (GRID_MIN_WIDTH + GRID_GAP)))
+        while cols > 1 and (viewport - GRID_GAP * (cols - 1)) // cols < GRID_MIN_WIDTH:
+            cols -= 1
+        cell = max(GRID_MIN_WIDTH,
+                   min(GRID_MAX_WIDTH, (viewport - GRID_GAP * (cols - 1)) // cols))
+        icon = max(64, min(110, cell - 40))
+        card_h = icon + 68
+        self._card_delegate.icon_size = icon
+        self._card_delegate.size = QSize(cell - GRID_GAP, card_h)
+        self.results.setSpacing(GRID_GAP)
+        self.results.setIconSize(QSize(icon, icon))
+        self.results.setGridSize(QSize(cell, card_h + GRID_GAP))
+
+    def eventFilter(self, obj, event) -> bool:           # noqa: N802 - Qt 回调
+        results = getattr(self, "results", None)
+        if results is not None and obj is results.viewport() and \
+                event.type() in (QEvent.Resize, QEvent.Show):
+            self._fit_result_grid()
+        return super().eventFilter(obj, event)
 
     # ---------------------------------------------------------------- 多选对比
 
@@ -1041,7 +1145,10 @@ class ShipLabPage(QWidget):
 
         def done(data: bytes) -> None:
             pix = QPixmap()
-            pix.loadFromData(data, "PNG")
+            pix.loadFromData(data or b"", "PNG")
+            if not pix.isNull():
+                pix = pix.scaled(360, 360, Qt.KeepAspectRatio,
+                                 Qt.SmoothTransformation)
             self.fallback.setPixmap(pix)
             self.viewer.hide()
             self.fallback.show()

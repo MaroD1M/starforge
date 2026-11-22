@@ -243,16 +243,32 @@ def cmd_live_push(a) -> int:
         print(_json.dumps(result, ensure_ascii=False, indent=1))
         return 0
     if result.get("unchanged"):
-        print(f"{type_} 模板槽已经是这个种子（0x{result['seed']:016X}），无需写入。")
+        print(f"{type_} 模板槽已经是这个种子（{_fmt_seed(result.get('seed'))}），无需写入。")
     else:
         print(f"已写入 {type_} 模板槽。")
-    print(f"  地址：0x{int(result.get('address') or 0):X}")
-    print(f"  种子：0x{int(result.get('seed') or 0):016X}")
+    print(f"  地址：{_fmt_addr(result.get('address'))}")
+    print(f"  种子：{_fmt_seed(result.get('seed'))}")
     if "before" in result and "after" in result:
-        print(f"  回读：0x{int(result['before']):016X} → 0x{int(result['after']):016X}")
+        print(f"  回读：{_fmt_seed(result['before'])} → {_fmt_seed(result['after'])}")
     if result.get("score") is not None:
         print(f"  置信：{float(result['score']):.2f}")
     return 0
+
+
+def _as_int(value) -> int:
+    """服务层把 u64 转成 hex 字符串（避免 Qt int64 溢出），CLI 两种都要能吃。"""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    text = str(value or "0").strip()
+    return int(text, 16) if text.lower().startswith("0x") else int(text or "0")
+
+
+def _fmt_seed(value) -> str:
+    return "0x%016X" % (_as_int(value) & 0xFFFFFFFFFFFFFFFF)
+
+
+def _fmt_addr(value) -> str:
+    return "0x%X" % _as_int(value)
 
 
 def _parse_seed(text) -> int:

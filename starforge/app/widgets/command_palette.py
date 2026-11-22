@@ -1,7 +1,7 @@
 """Ctrl+K 命令面板：按“页面 / 操作”分组，支持键盘选择与即时筛选。"""
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor
@@ -12,9 +12,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
+
+from ..theme import SPACE_M, SPACE_S
 
 ACTION_ROLE = Qt.UserRole
 HEADER_ROLE = Qt.UserRole + 1
@@ -63,16 +66,21 @@ class CommandPalette(QDialog):
         self.setAccessibleName("命令面板")
         self.setToolTip("搜索并执行页面跳转或操作命令（Ctrl+K）")
         self.setModal(True)
+        self.setSizeGripEnabled(True)
         self.resize(520, 360)
         self._actions = self._normalize(actions)
         self._visible_actions = 0
 
         v = QVBoxLayout(self)
-        v.setContentsMargins(12, 12, 12, 12)
+        v.setContentsMargins(SPACE_M, SPACE_M, SPACE_M, SPACE_M)
+        v.setSpacing(SPACE_S)
         hint = QLabel("输入命令筛选；↑/↓ 选择，Enter 执行，Esc 关闭")
         hint.setObjectName("muted")
         hint.setAccessibleName("命令面板提示")
         hint.setToolTip("输入关键词筛选命令；上下键选择，Enter 执行，Esc 关闭")
+        hint.setWordWrap(True)
+        hint.setMinimumWidth(0)
+        hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         v.addWidget(hint)
 
         self.edit = QLineEdit()
@@ -80,17 +88,25 @@ class CommandPalette(QDialog):
         self.edit.setAccessibleName("命令搜索框")
         self.edit.setToolTip("输入关键词筛选命令；↑/↓ 选择，Enter 执行，Esc 关闭")
         self.edit.setClearButtonEnabled(True)
+        self.edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.edit.textChanged.connect(self._filter)
         self.edit.returnPressed.connect(self._run_current)
         self.edit.installEventFilter(self)
         v.addWidget(self.edit)
 
         self.list = _CommandList()
+        self.list.setMinimumHeight(160)
+        self.list.setTextElideMode(Qt.ElideRight)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list.itemActivated.connect(lambda _i: self._run_current())
         v.addWidget(self.list, 1)
         QWidget.setTabOrder(self.edit, self.list)
 
         self._refresh()
+        # 高 DPI / 大字体下 520×360 可能装不下提示与列表，取两者较大值。
+        need = self.sizeHint()
+        self.setMinimumSize(max(460, need.width()), max(320, need.height()))
+        self.resize(max(520, need.width()), max(360, need.height()))
         self.edit.setFocus(Qt.PopupFocusReason)
 
     @staticmethod

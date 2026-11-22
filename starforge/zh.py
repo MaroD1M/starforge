@@ -59,6 +59,8 @@ BIOME_ZH = {
     "Radioactive": "辐射", "Barren": "荒芜", "Dead": "死寂", "Exotic": "奇异",
     "Mega Exotic": "巨型奇异", "Weird": "异象", "Swamp": "沼泽", "Volcanic": "火山",
     "Desert": "沙漠", "Ocean": "海洋", "Gas": "气态", "Ice": "冰原",
+    # 存档 GcBiomeType 的规范名（与 discoveries.BIOMES 对齐；旧别名保留）
+    "Lava": "熔岩", "Waterworld": "水世界", "Gas giant": "气态巨行星", "Test": "测试",
     "Infested": "虫蚀", "Crimson": "深红", "Blue": "蔚蓝", "Red": "赤红",
     "Green": "翠绿", "Yellow": "橙黄", "Moon": "卫星",
 }
