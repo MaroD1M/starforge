@@ -210,7 +210,7 @@ def _make_page(monkeypatch):
     monkeypatch.setattr(page_mod, "get_services", lambda: FakeServices())
     monkeypatch.setattr(page_mod, "run_worker", _sync_worker)
     page = page_mod.GalaxyPage()
-    page.tabs.setCurrentWidget(page.address_page)
+    page.show_section("地址工作台")
     return page
 
 

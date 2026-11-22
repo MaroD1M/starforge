@@ -286,17 +286,21 @@ class PetsView(QWidget):
     """同伴标签页；无数据时不伪造 3D 或缩略图。
 
     ``inline_detail=False`` 时把详情/动作留给外部详情区（船队页右栏），
-    本组件只负责列表、加载状态与选中广播。
+    本组件只负责列表、加载状态与选中广播；``auto_select=False`` 时
+    不自动选中第一行，由外部详情区等用户点选后再展开。
     """
 
     selectionChanged = Signal(dict)
     statusChanged = Signal(str)
 
     def __init__(self, svc: Services | None = None, parent=None,
-                 inline_detail: bool = True):
+                 inline_detail: bool = True, auto_select: bool = True):
         super().__init__(parent)
         self.svc = svc or get_services()
         self._inline_detail = bool(inline_detail)
+        # 船队页把详情放到右栏：默认不自动选中第一行，让「选中后才出现详情」
+        # 与右侧收起按钮保持一致；独立使用时仍自动选中，少点一次。
+        self._auto_select = bool(auto_select)
         self._path = ""
         self._loaded = False
         self._loading = False
@@ -535,7 +539,7 @@ class PetsView(QWidget):
         header.setSortIndicator(
             self._sort_column,
             Qt.DescendingOrder if self._sort_desc else Qt.AscendingOrder)
-        if pairs:
+        if pairs and self._auto_select:
             self.table.selectRow(0)
             self._show_detail(pairs[0][1])
         else:
@@ -580,6 +584,11 @@ class PetsView(QWidget):
 
     def selected_creature(self) -> dict | None:
         return dict(self._detail_creature) if self._detail_creature else None
+
+    def clear_selection(self) -> None:
+        """收起外部详情时清掉选中行；会通过 selectionChanged 通知右栏。"""
+        self.table.clearSelection()
+        self._clear_detail()
 
     def copy_glyph(self) -> bool:
         """供外部详情区复用：复制当前选中同伴的符文。"""

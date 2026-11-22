@@ -470,3 +470,37 @@ python -c "from starforge.live import iconart; print(iconart.generate())"
 
 **证据**：`[实测] 2026-11-22 写入 → 领取 → 存档对比`；`[代码] starforge/live/writer.py`；
 `[参考] NMS-Super-Ship-Hunter 的模板槽写入路径`。
+
+---
+
+## 13. 注入失败的两个真实原因：重复注入 + 选错进程（2026-11-22 复盘）
+
+**现象**：主菜单注入成功、`/hello` 持续 200；约 100 秒后游戏崩溃（`python311.dll+0xC2B87`）；
+再次点「连接游戏」永远显示未连接；之后每次注入都报 `CouldNotOpenProcess`。
+
+**证据**（`~/.starforge/agent/pymhf-*.log`）：
+
+1. `15:16:48` 第一次注入 pid 13172 成功，agent 在 6770 端口正常响应；
+2. `15:17:00` **又注入一次**同一进程 → `OSError 10048`（端口已占用）；
+3. `15:17:13` 崩溃前的游戏派生了一个同名子进程（pid 10840，`ExecutablePath` 为空）；
+4. `15:18` 游戏退出（dump 13172）；`15:24`/`15:28` 的注入都选中了 **10840 僵尸** → 永远打不开。
+
+**根因**：
+
+- `launch(attach=False)` 在游戏已运行时仍走 Steam 启动分支；Steam 把已经运行的实例交给 pymhf，
+  pymhf 于是**对同一进程注入第二次**。一个进程里出现两套 Python 解释器/路由，存档加载时命中
+  野指针 → 崩溃。
+- 第一次注入写入了新 token，第二次注入又写了一份；旧 agent 的内存 token 和新客户端不一致，
+  表现为“注入成功但一直未连接”。
+- `pymem.Pymem("NMS.exe", exact_match=True)` 按**名字**找进程；崩溃残留的同名子进程会被优先选中。
+
+**正确做法**（已落地）：
+
+- 连接前先 `ping`：agent 可达就直接复用，**绝不重复注入**；
+- 按 pid 注入前校验 `QueryFullProcessImageNameW`，跳过无路径/打不开的僵尸；
+- pymhf `injected.py` 打补丁：优先 `Pymem(os.getpid())`，失败才按名字回退；
+- 游戏已在运行时，`launch(attach=False)` 返回 `E_GAME_RUNNING`，由 UI 让用户选
+  「附加注入（可能退出）」或「重启并注入」，不偷偷再拉一个实例。
+
+**给用户的顺序**：启动游戏 → 停在主菜单 → 应用里连接 → 再进存档。
+已进入存档时注入有让游戏退出的风险，必须二次确认。

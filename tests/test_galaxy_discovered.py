@@ -57,12 +57,17 @@ class FakeServices:
         self.warp_calls: list[dict] = []
 
     def discoveries_index(self, path: str | None = None) -> dict:
+        return self.discoveries_index_all()
+
+    def discoveries_index_all(self) -> dict:
         self.index_calls += 1
         if self.index_result is not None:
             return dict(self.index_result)
         rows = self.discovered.get("planets") or []
         return {"ok": True, "count": len(rows), "rebuilt": True, "cached": False,
-                "skipped": 0, "path": "/synthetic/save.hg"}
+                "saves": [{"save_id": "synthetic-save", "name": "save.hg",
+                           "count": len(rows), "rebuilt": True, "cached": False}],
+                "errors": [], "path": "/synthetic/save.hg"}
 
     def discoveries_query(self, **kw) -> dict:
         self.query_calls.append(dict(kw))
@@ -196,7 +201,7 @@ def _make_page(monkeypatch, svc: FakeServices):
     monkeypatch.setattr(page_mod, "get_services", lambda: svc)
     monkeypatch.setattr(page_mod, "run_worker", _sync_worker)
     page = page_mod.GalaxyPage()
-    page.tabs.setCurrentWidget(page.discovered_page)
+    page.view_stack.setCurrentWidget(page.discovered_page)
     return page
 
 
@@ -226,12 +231,17 @@ def _combo_index(combo, value) -> int:
 # ---------------------------------------------------------------- 页签与加载
 
 
-def test_discovered_tab_is_next_to_scan_and_index(qapp, monkeypatch):
+def test_discovered_is_a_separate_view_not_a_tab(qapp, monkeypatch):
     page = _make_page(monkeypatch, FakeServices())
     labels = [page.tabs.tabText(i) for i in range(page.tabs.count())]
-    assert "已发现" in labels
-    assert labels.index("已发现") > labels.index("扫描结果")
-    assert labels.index("已发现") > labels.index("银河索引")
+    assert "已发现" not in labels
+    assert "地址工作台" not in labels
+    assert page.view_stack.indexOf(page.discovered_page) >= 0
+    page.show_section("已发现")
+    assert page.view_stack.currentWidget() is page.discovered_page
+    page.show_section("行星")
+    assert page.view_stack.currentWidget() is page.tabs
+    assert page.tabs.tabText(page.tabs.currentIndex()) == "行星"
 
 
 def test_primary_is_teleport_on_discovered_tab(qapp, monkeypatch):
@@ -267,18 +277,19 @@ def test_load_builds_index_then_queries_it(qapp, monkeypatch):
     assert SYSTEM_COORDS in detail
 
 
-def test_query_is_scoped_to_the_indexed_save(qapp, monkeypatch):
+def test_query_covers_all_saves_and_can_be_narrowed(qapp, monkeypatch):
     rows = [_row(index=3)]
-    svc = FakeServices(_payload(rows), index_result={
-        "ok": True, "count": 1, "rebuilt": True, "cached": False,
-        "save_id": "synthetic-save"})
+    svc = FakeServices(_payload(rows))
     page = _make_page(monkeypatch, svc)
     _load(page, monkeypatch, svc)
 
-    assert svc.query_calls[-1]["save_id"] == "synthetic-save"
+    # 默认汇总全部存档：查询不带 save_id / save_ids。
+    assert "save_id" not in svc.query_calls[-1]
+    assert "save_ids" not in svc.query_calls[-1]
+    assert page.disc_save.count() >= 2          # 全部存档 + save.hg
     svc.query_calls.clear()
-    page.disc_biome.setCurrentIndex(_combo_index(page.disc_biome, "Lush"))
-    assert svc.query_calls[-1]["save_id"] == "synthetic-save"
+    page.disc_save.setCurrentIndex(1)
+    assert svc.query_calls[-1]["save_ids"] == ["synthetic-save"]
 
 
 def test_empty_payload_shows_readable_empty_state(qapp, monkeypatch):
@@ -340,7 +351,7 @@ def test_index_failure_falls_back_to_direct_read(qapp, monkeypatch):
 
 def test_worker_exception_shows_failure_explanation(qapp, monkeypatch):
     class Boom(FakeServices):
-        def discoveries_index(self, path: str | None = None) -> dict:
+        def discoveries_index_all(self) -> dict:
             raise RuntimeError("synthetic read boom")
 
     svc = Boom()
@@ -418,7 +429,7 @@ def test_distance_without_center_does_not_query(qapp, monkeypatch):
     page.disc_distance.setValue(250)
 
     assert len(svc.query_calls) == before
-    assert "以当前星系为中心" in page.disc_stats.text()
+    assert "设为中心" in page.disc_stats.text()
 
 
 def test_filter_failure_shows_readable_empty_state(qapp, monkeypatch):
@@ -538,10 +549,10 @@ def test_csv_export_contains_table_columns_glyphs_and_coords(qapp, monkeypatch, 
     lines = list(csv.DictReader(io.StringIO(text)))
     assert len(lines) == 1
     header = list(csv.DictReader(io.StringIO(text)).fieldnames or [])
-    for column in ("行星序号", "星系", "群系", "虫蚀", "命名", "距离", "符文",
-                   "坐标", "发现者", "发现时间", "来源"):
+    for column in ("行星", "星系", "群系", "虫蚀", "命名", "距离", "符文",
+                   "存档", "坐标", "发现者", "发现时间", "来源"):
         assert column in header
-    assert lines[0]["行星序号"] == "3"
+    assert lines[0]["行星"] == "3"
     assert lines[0]["符文"] == GLYPHS_P3
     assert lines[0]["坐标"] == SYSTEM_COORDS
     assert lines[0]["发现者"] == ""
@@ -558,3 +569,20 @@ def test_csv_export_contains_table_columns_glyphs_and_coords(qapp, monkeypatch, 
     exported = target.read_text("utf-8")
     assert "符文" in exported and GLYPHS_P3 in exported
     assert "坐标" in exported and SYSTEM_COORDS in exported
+
+
+def test_reentering_discovered_within_window_does_not_reload(qapp, monkeypatch):
+    """30 秒内重复点击「已发现」不应重新建立索引。"""
+    import time as _time
+
+    page = _make_page(monkeypatch, FakeServices())
+    calls: list[dict] = []
+    monkeypatch.setattr(page, "_load_discovered",
+                        lambda **kw: calls.append(dict(kw)))
+    page._discovered_loaded = True
+    page._discovered_loaded_at = _time.monotonic()
+    page.show_section("已发现")
+    assert calls == []
+    page._discovered_loaded_at = _time.monotonic() - 60
+    page.show_section("已发现")
+    assert len(calls) == 1

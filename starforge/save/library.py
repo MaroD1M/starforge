@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from ..core import log, paths
@@ -159,7 +160,11 @@ def open_ships(path: str | Path) -> tuple[list[ShipRef], list[str]]:
 
 
 def default_save_path() -> Path:
-    """挑一个玩家存档：优先 save.hg / save2.hg。
+    """挑一个玩家存档：按**最近写入时间**选，而不是死认 save.hg / save2.hg。
+
+    游戏每次保存都会更新时间，因此最近写入的通常就是当前游玩的存档（实测
+    玩家在 save3.hg，而 save.hg/save2.hg 是前一天的旧档）。同时间按文件名自然序，
+    避免同一秒内多次保存时结果不稳定。
 
     这里**不做 probe()**（那会把整个存档解码一遍）——只看文件名和头 4 字节，
     真正能不能读由后面的 open_ships 决定，失败会抛明确的 SaveFormatError。
@@ -168,14 +173,73 @@ def default_save_path() -> Path:
     d = settings.current().saves_dir_resolved()
     if not d:
         raise SaveNotFound("没有找到存档目录")
-    for name in ("save.hg", "save2.hg"):
-        cand = Path(d) / name
-        if cand.exists() and classify(cand) == "player":
-            return cand
-    players = [p for p in Path(d).glob("*.hg") if classify(p) == "player"]
+    players = list_player_saves(d)
     if players:
-        return sorted(players)[0]
-    raise SaveNotFound(f"目录 {d} 里没有玩家存档（只有账号数据/清单文件）")
+        return Path(players[0]["path"])
+    found = []
+    try:
+        for p in sorted(Path(d).glob("*.hg"), key=lambda item: item.name.lower()):
+            try:
+                found.append(f"{p.name}（{_fmt_mtime(p.stat().st_mtime)}）")
+            except OSError:
+                found.append(p.name)
+    except OSError:
+        pass
+    detail = "；".join(found) if found else "目录为空或无法读取"
+    raise SaveNotFound(
+        f"目录 {d} 里没有玩家存档（只有账号数据/清单文件）。找到的文件：{detail}")
+
+
+def _natural_key(name: str) -> list[tuple[int, object]]:
+    """文件名自然序：save2.hg 排在 save10.hg 前面，而不是纯字典序。"""
+    out: list[tuple[int, object]] = []
+    for part in re.split(r"(\d+)", str(name)):
+        if not part:
+            continue
+        if part.isdigit():
+            out.append((0, int(part)))
+        else:
+            out.append((1, part.lower()))
+    return out
+
+
+def _fmt_mtime(value: float) -> str:
+    try:
+        return datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "时间未知"
+
+
+def list_player_saves(folder: str | Path | None = None) -> list[dict]:
+    """列出玩家存档，按最近写入时间倒序（同时间按文件名自然序）。
+
+    返回 ``[{path, name, mtime, size}]``，供 UI/服务复用；这里不写日志，也不
+    probe 解码，只按 ``classify`` 的头 4 字节判断，保证打开选择框足够快。
+    """
+    from ..core import settings
+    d = Path(folder).expanduser() if folder else settings.current().saves_dir_resolved()
+    if not d or not Path(d).exists():
+        return []
+    rows: list[tuple[int, list[tuple[int, object]], dict]] = []
+    try:
+        candidates = list(Path(d).glob("*.hg"))
+    except OSError:
+        return []
+    for p in candidates:
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if classify(p) != "player":
+            continue
+        rows.append((-int(st.st_mtime_ns), _natural_key(p.name), {
+            "path": str(p),
+            "name": p.name,
+            "mtime": float(st.st_mtime),
+            "size": int(st.st_size),
+        }))
+    rows.sort(key=lambda row: (row[0], row[1]))
+    return [row[2] for row in rows]
 
 
 def resolve(path: str | None = None) -> Path:
@@ -184,6 +248,6 @@ def resolve(path: str | None = None) -> Path:
         if not p.exists():
             raise BadRequest(f"存档路径不存在：{p}")
         if p.is_dir():
-            raise BadRequest(f"这是目录，不是存档文件：{p}（请选择 save.hg 或 save2.hg）")
+            raise BadRequest(f"这是目录，不是存档文件：{p}（请选择 save*.hg 玩家存档）")
         return p
     return default_save_path()

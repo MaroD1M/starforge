@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -187,6 +188,25 @@ def run(q: SearchQuery, job=None) -> list[dict]:
     budget = int((q.look or {}).get("max_candidates") or 4000) if rgb_mode else None
     candidates = 0
     colour_checked = 0
+
+    # 上游只在批次之间更新 stats；没有命中时 UI 会一直显示“已测 0”。
+    # 这里用一个小看门狗把 stats 定时抄给 job，进度和 ETA 才是活的。
+    done = threading.Event()
+
+    def _watch() -> None:
+        while not done.wait(0.5):
+            if job is None:
+                continue
+            try:
+                _progress(int(stats.get("tested") or 0),
+                          float(stats.get("seconds") or (time.time() - started)))
+            except Exception:                            # noqa: BLE001
+                pass
+
+    watcher = threading.Thread(target=_watch, daemon=True,
+                               name="search-progress") if job is not None else None
+    if watcher is not None:
+        watcher.start()
     try:
         for seed, parts in fast_search(
                 q.ship, q.want, q.avoid,
@@ -220,6 +240,7 @@ def run(q: SearchQuery, job=None) -> list[dict]:
             if job is not None and job.should_stop():
                 break
     finally:
+        done.set()
         _progress(stats.get("tested", 0), stats.get("seconds", time.time() - started))
         if rgb_mode:
             log.info("涂装后置过滤：候选 %d，验色 %d，命中 %d", candidates, colour_checked, len(out))
@@ -236,9 +257,19 @@ def explain(q: SearchQuery) -> dict:
     from nms_procgen.fastsearch import measure  # 上游的概率估算
     q = validate(q)
     try:
-        odds = measure(q.ship, q.want, q.avoid, q.look or None)  # 1 in N
+        sample = measure(q.ship, q.want, q.avoid, q.look or None)
     except Exception:                                            # noqa: BLE001
-        odds = None
+        sample = None
+    # 上游版本差异：旧版 measure 返回「1 in N」的数字，新版返回
+    # {"tested":..., "hits":...}。两种都接住，避免 dict > int 的 TypeError。
+    odds = None
+    if isinstance(sample, dict):
+        tested = int(sample.get("tested") or 0)
+        hits = int(sample.get("hits") or 0)
+        if tested and hits:
+            odds = tested / hits
+    elif isinstance(sample, (int, float)) and sample > 0:
+        odds = float(sample)
     est_seconds = None
     if odds and odds > 0:
         est_seconds = round(odds / 13_000_000, 1)                # 实测单核 13 M/s

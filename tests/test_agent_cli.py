@@ -319,3 +319,175 @@ def test_live_push_argparse_rejects_unknown_type(capsys):
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "invalid choice" in err and "sentinel" in err
+
+
+# ---------------------------------------------------------------- 启动/注入闸门
+
+
+def _patch_launch_prereqs(monkeypatch):
+    """把 launch 的运行时/游戏目录/端口都钉住，确保测试绝不启动子进程。"""
+    monkeypatch.setattr(agent_install.mem, "IS_WINDOWS", True)
+    monkeypatch.setattr(agent_install, "install_mod", lambda: {"ok": True})
+    monkeypatch.setattr(agent_install, "_runtime_info", lambda: {"http_api": True})
+    monkeypatch.setattr(agent_install, "port_available", lambda *_a, **_k: True)
+    monkeypatch.setattr(agent_install, "read_state", lambda: {})
+    monkeypatch.setattr(agent_install, "_apply_own_pid_patch",
+                        lambda *_a, **_k: {"ok": True})
+    monkeypatch.setattr(agent_install.settings, "current",
+                        lambda: types.SimpleNamespace(game_dir="C:/FakeGame"))
+    monkeypatch.setattr(agent_install.build, "fingerprint", lambda: {})
+    monkeypatch.setattr(agent_install.build, "build_id", lambda _fp=None: "TEST")
+
+
+def test_launch_refuses_second_instance_when_game_already_running(monkeypatch):
+    """游戏已在运行时不能再让 Steam 拉起第二个实例；返回 E_GAME_RUNNING。"""
+    _patch_launch_prereqs(monkeypatch)
+    monkeypatch.setattr(agent_install.mem, "find_pid", lambda *_a, **_k: 4321)
+
+    def _no_popen(*_a, **_k):
+        raise AssertionError("游戏已在运行，不应调用 Popen 再拉起一个实例")
+
+    monkeypatch.setattr(agent_install.subprocess, "Popen", _no_popen)
+    res = agent_install.launch(attach=False)
+
+    assert res["ok"] is False
+    assert res["code"] == "E_GAME_RUNNING"
+    assert res["pid"] == 4321
+
+
+def test_launch_allow_attach_explicitly_bypasses_env_gate(monkeypatch):
+    """默认拒绝附加注入；显式 allow_attach=True 时越过闸门（后续失败由运行时报告）。"""
+    monkeypatch.delenv("STARFORGE_ALLOW_ATTACH_INJECT", raising=False)
+    monkeypatch.setattr(agent_install.mem, "IS_WINDOWS", True)
+    monkeypatch.setattr(agent_install, "install_mod", lambda: {"ok": True})
+    monkeypatch.setattr(agent_install, "_runtime_info", lambda: {"http_api": False})
+
+    with pytest.raises(RuntimeError) as exc:
+        agent_install.launch(attach=True)
+    assert "附加到已运行的游戏" in str(exc.value)
+
+    with pytest.raises(RuntimeError) as exc:
+        agent_install.launch(attach=True, allow_attach=True)
+    assert "pymhf[http_api]" in str(exc.value)      # 已经越过 attach 闸门
+
+
+def test_injected_game_alive_checks_only_given_pid(monkeypatch):
+    monkeypatch.setattr(agent_install.mem, "iter_pids",
+                        lambda _name="NMS.exe": iter([111, 222]))
+
+    def _no_find(*_a, **_k):
+        raise AssertionError("指定 pid 时不应再按名字找任意 NMS.exe")
+
+    monkeypatch.setattr(agent_install.mem, "find_pid", _no_find)
+    assert agent_install.injected_game_alive(0, pid=222) is True
+    assert agent_install.injected_game_alive(0, pid=999) is False
+
+
+def test_patch_runtime_own_pid_is_idempotent(tmp_path):
+    site = tmp_path / "Lib" / "site-packages" / "pymhf"
+    site.mkdir(parents=True)
+    py = tmp_path / "python.exe"
+    py.write_bytes(b"")
+    injected = site / "injected.py"
+    injected.write_text(
+        "import os\n"
+        "import pymem\n\n"
+        "def load():\n"
+        "    binary = pymem.Pymem(_internal.EXE_NAME, exact_match=True)\n"
+        "    return binary\n",
+        encoding="utf-8")
+
+    first = agent_install.patch_runtime_own_pid(py)
+    assert first["ok"] is True and first["patched"] is True
+    text = injected.read_text("utf-8")
+    assert "# STARFORGE_OWN_PID_PATCH" in text
+    assert "pymem.Pymem(os.getpid())" in text
+
+    second = agent_install.patch_runtime_own_pid(py)
+    assert second["ok"] is True and second["patched"] is False
+    assert injected.read_text("utf-8").count("# STARFORGE_OWN_PID_PATCH") == 1
+
+
+# ---------------------------------------------------------------- token 持久化
+
+
+def _patch_launch_for_token(monkeypatch, tmp_path):
+    """让 launch 只做 token/state 逻辑：不启动子进程、不写真实 ~/.starforge。"""
+    _patch_launch_prereqs(monkeypatch)
+    agent_home = tmp_path / "agent"
+    agent_home.mkdir()
+    monkeypatch.setattr(agent_install, "agent_dir", lambda: agent_home)
+    monkeypatch.setattr(agent_install, "runtime_python", lambda: tmp_path / "python.exe")
+    monkeypatch.setattr(agent_install.mem, "find_pid", lambda *_a, **_k: None)
+    monkeypatch.setattr(agent_install, "injected_game_alive", lambda *_a, **_k: True)
+
+    seen = {"env": [], "state": []}
+
+    def fake_write_state(data):
+        seen["state"].append(dict(data))
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            self.pid = 9000 + len(seen["env"])
+            seen["env"].append(dict(kwargs.get("env") or {}))
+
+    monkeypatch.setattr(agent_install, "write_state", fake_write_state)
+    monkeypatch.setattr(agent_install.subprocess, "Popen", FakePopen)
+    return agent_home, seen
+
+
+def test_load_or_create_token_keeps_existing_file(tmp_path):
+    path = tmp_path / "token"
+    path.write_text("existing-token", encoding="utf-8")
+    assert agent_install._load_or_create_token(path) == "existing-token"
+    assert path.read_text("utf-8") == "existing-token"
+
+
+def test_launch_does_not_rewrite_existing_token(tmp_path, monkeypatch):
+    agent_home, seen = _patch_launch_for_token(monkeypatch, tmp_path)
+    token_path = agent_home / "token"
+    token_path.write_text("existing-token", encoding="utf-8")
+
+    res = agent_install.launch(attach=False)
+
+    assert res["ok"] is True
+    assert token_path.read_text("utf-8") == "existing-token"
+    assert seen["env"][0]["STARFORGE_AGENT_TOKEN"] == "existing-token"
+    assert seen["state"][0]["token"] == "existing-token"
+
+
+def test_launch_generates_token_once_and_reuses_it(tmp_path, monkeypatch):
+    agent_home, seen = _patch_launch_for_token(monkeypatch, tmp_path)
+
+    assert agent_install.launch(attach=False)["ok"] is True
+    token_path = agent_home / "token"
+    first = token_path.read_text("utf-8")
+    assert first
+
+    assert agent_install.launch(attach=False)["ok"] is True
+    assert token_path.read_text("utf-8") == first
+    assert [row["token"] for row in seen["state"]] == [first, first]
+    assert [env["STARFORGE_AGENT_TOKEN"] for env in seen["env"]] == [first, first]
+
+
+def test_patch_runtime_own_pid_patches_memutils_hooks(tmp_path):
+    """只补 injected.py 不够：建 hook 的 memutils 也会按名字找进程。"""
+    site = tmp_path / "Lib" / "site-packages" / "pymhf" / "core"
+    site.mkdir(parents=True)
+    py = tmp_path / "python.exe"
+    py.write_bytes(b"")
+    target = site / "memutils.py"
+    target.write_text(
+        "import ctypes\n\n"
+        "def _get_binary_info(binary):\n"
+        "    pm_process = pymem.Pymem(_internal.EXE_NAME, exact_match=True)\n"
+        "    return pm_process\n",
+        encoding="utf-8")
+
+    result = agent_install.patch_runtime_own_pid(py)
+    assert result["ok"] is True and result["patched"] is True
+    text = target.read_text("utf-8")
+    assert "# STARFORGE_OWN_PID_PATCH" in text
+    assert "pymem.Pymem(os.getpid())" in text
+    assert "import os" in text
+    assert agent_install.patch_runtime_own_pid(py)["patched"] is False

@@ -1,4 +1,4 @@
-"""联动页：三步状态机（运行时 → 连接 → 模板 Mod）+ 高级只读区。"""
+"""联动页：三步状态机（运行时 → 连接 → 模板 Mod）+ 高级 / 诊断折叠区。"""
 from __future__ import annotations
 
 import json
@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QBoxLayout,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -43,7 +45,7 @@ from ..widgets.live_assets import (
     LiveAssetsCard,
     live_asset_error_text,
 )
-from ..widgets.page import PAGE_SPACING, SCROLL_MARGINS
+from ..widgets.page import PAGE_SPACING, SCROLL_MARGINS, reveal_widget
 from ..widgets.page_header import PageHeader
 from ..widgets.planet_dossier import (
     MISSING,
@@ -52,7 +54,7 @@ from ..widgets.planet_dossier import (
     format_planet_text,
 )
 from ..widgets.settings_flow import FoldSection
-from ..widgets.ui import Card, elide_label, muted
+from ..widgets.ui import Card, ElidedLabel, elide_label, muted
 from ..widgets.worker import run as run_worker
 
 _READ_LABELS = {"player": "玩家位置", "system": "当前星系",
@@ -95,6 +97,189 @@ def _risk_tag(text: str, state: str = "warn") -> QLabel:
     return lab
 
 
+def _live_game_pids() -> list[int]:
+    """当前同名 NMS.exe 的 PID 列表（只读；失败按没有游戏处理）。"""
+    try:
+        from ...live import mem
+
+        return [int(pid) for pid in mem.iter_pids("NMS.exe")]
+    except Exception:                                       # noqa: BLE001
+        return []
+
+
+def _post_wm_close(pids: list[int]) -> None:
+    """给目标进程的可见窗口发 WM_CLOSE，走游戏的正常退出流程。"""
+    if os.name != "nt" or not pids:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    target = {int(pid) for pid in pids}
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.GetWindowThreadProcessId.argtypes = [
+        wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.PostMessageW.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+
+    def _enum(hwnd, _lparam):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if int(pid.value) in target:
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)          # WM_CLOSE
+        return True
+
+    user32.EnumWindows(callback_type(_enum), 0)
+
+
+def _wait_pids_gone(pids: list[int], timeout: float, interval: float = 0.25) -> list[int]:
+    """等待 PID 退出；返回仍存活的 PID（超时也返回，不在这里强杀）。"""
+    import time
+
+    want = {int(pid) for pid in pids}
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while True:
+        alive = want & set(_live_game_pids())
+        if not alive or time.monotonic() >= deadline:
+            return sorted(alive)
+        time.sleep(max(0.05, float(interval)))
+
+
+def _close_game_worker(pids: list[int], timeout: float = 15.0) -> list[int]:
+    """worker：先友好关闭，再等最多 timeout 秒；返回仍未退出的 PID。"""
+    try:
+        _post_wm_close(pids)
+    except Exception:                                       # noqa: BLE001 - 关窗失败仍继续等
+        pass
+    return _wait_pids_gone(pids, timeout)
+
+
+def _force_close_worker(pids: list[int]) -> list[int]:
+    """worker：仅在用户二次确认后终止指定 PID；返回仍未退出的 PID。"""
+    if os.name != "nt":
+        return list(pids)
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    for pid in pids:
+        handle = k32.OpenProcess(0x0001, False, int(pid))    # PROCESS_TERMINATE
+        if not handle:
+            continue
+        try:
+            k32.TerminateProcess(handle, 1)
+        finally:
+            k32.CloseHandle(handle)
+    return _wait_pids_gone(pids, 3.0)
+
+
+_STEP_ROW_QSS = """
+QFrame#stepPanel {
+    background: #0f141d;
+    border: 1px solid #1e2432;
+    border-radius: 8px;
+}
+QFrame#stepPanel[state="done"] { border-color: #1d4a38; background: #0e1c17; }
+QFrame#stepPanel[state="current"] { border-color: #2f6fd0; background: #101a2b; }
+QFrame#stepPanel[state="error"] { border-color: #4d2a22; background: #1d1210; }
+QLabel#stepDot { color: #4a5464; font-size: 12px; }
+QFrame#stepPanel[state="done"] QLabel#stepDot { color: #a8e8c9; }
+QFrame#stepPanel[state="current"] QLabel#stepDot { color: #7fb6ff; }
+QFrame#stepPanel[state="error"] QLabel#stepDot { color: #f3b6a7; }
+QLabel#stepIndex { color: #8b95a7; font-size: 13px; font-weight: 700; }
+QFrame#stepPanel[state="done"] QLabel#stepIndex { color: #a8e8c9; }
+QFrame#stepPanel[state="current"] QLabel#stepIndex { color: #7fb6ff; }
+QFrame#stepPanel[state="error"] QLabel#stepIndex { color: #f3b6a7; }
+QLabel#stepTitle { color: #e6ecf5; font-size: 13px; font-weight: 700; }
+"""
+
+
+def _repolish(widget: QWidget) -> None:
+    style = widget.style()
+    if style is not None:
+        style.unpolish(widget)
+        style.polish(widget)
+    widget.update()
+
+
+class _StepRow(StepPanel):
+    """一步一行：状态点 + 序号 + 步骤名 | 一行状态 | 按钮。
+
+    仍继承 ``StepPanel``，保留 ``chip/status/action/alt`` 等公开属性，
+    这样外壳和旧测试不需要跟着改；只是把默认竖排卡片改成横向行。
+    """
+
+    def __init__(self, index: int, title: str, parent: QWidget | None = None):
+        super().__init__(index, title, parent)
+        self.setStyleSheet(_STEP_ROW_QSS)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        box = self.layout()
+        if isinstance(box, QBoxLayout):
+            box.setDirection(QBoxLayout.LeftToRight)
+            box.setContentsMargins(10, 6, 10, 6)
+            box.setSpacing(8)
+            top = box.itemAt(0).layout()
+            if top is not None:
+                self.dot = QLabel("●")
+                self.dot.setObjectName("stepDot")
+                self.dot.setFixedWidth(14)
+                self.dot.setToolTip("状态点：绿=完成 · 蓝=进行中 · 灰=待完成 · 红=需处理")
+                top.insertWidget(0, self.dot)
+            self.index_label.setText("①②③④⑤⑥⑦⑧⑨"[max(0, index - 1)])
+            self.index_label.setFixedWidth(16)
+            self.title_label.setWordWrap(False)
+            self.title_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+            self.title_label.setMinimumWidth(110)
+            self.chip.setVisible(False)
+            old = self.status
+            box.removeWidget(old)
+            old.deleteLater()
+            self.status = ElidedLabel("")
+            self.status.setObjectName("muted")
+            self.status.setMinimumWidth(0)
+            box.insertWidget(1, self.status, 1)
+            for btn in (self.action, self.alt):
+                btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            box.setStretch(0, 0)
+            box.setStretch(1, 1)
+            box.setStretch(2, 0)
+            box.setStretch(3, 0)
+
+    def set_state(self, state: str, status: str = "",
+                  action_text: str | None = None,
+                  action_tooltip: str = "", hint: str = "") -> None:
+        # 行内只保留一行短状态；完整解释放 tooltip，避免首屏堆文字。
+        super().set_state(state, status, action_text, action_tooltip)
+        self.status.setToolTip(str(hint or status or ""))
+
+
+class _AdvancedCard(Card):
+    """高级区里的卡片：被外壳定位时先展开父级「更多」折叠区。
+
+    外壳的「联动 → 传送 / 实时资产」入口仍按卡片标题查找并 ``set_spotlight``，
+    这里顺带展开折叠区、再滚到卡片，避免高亮了却看不到内容。
+    """
+
+    def __init__(self, title: str, subtitle: str = "", expander=None, parent=None):
+        super().__init__(title, subtitle, parent)
+        self._expander = expander
+
+    def set_spotlight(self, on: bool = True) -> None:
+        if on and callable(self._expander):
+            try:
+                self._expander()
+            except RuntimeError:
+                pass
+            QTimer.singleShot(0, lambda: reveal_widget(self))
+        super().set_spotlight(on)
+
+
 class GameLinkPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -105,6 +290,8 @@ class GameLinkPage(QWidget):
         self._runtime_error = ""
         self._reachable = False
         self._in_game = False
+        self._game_running = False
+        self._game_pid: int | None = None
         self._build_verified = False
         self._multiplayer = False
         self._caps: dict = {}
@@ -123,7 +310,7 @@ class GameLinkPage(QWidget):
         self._mod_files = 0
         self._template_mod_installed = False
         self._poll_timer = QTimer(self)
-        self._poll_timer.setInterval(1500)
+        self._poll_timer.setInterval(3000)
         self._poll_timer.timeout.connect(self._poll_hello)
         self._poll_busy = False
         self._build_ui()
@@ -145,8 +332,7 @@ class GameLinkPage(QWidget):
 
         self.header = PageHeader(
             "联动",
-            "按顺序完成三步：准备运行时 → 连接游戏 → 安装模板 Mod；"
-            "传送、实时资产与诊断收在下方「高级」。")
+            "运行时 → 连接游戏 → 模板 Mod；高级内容在「更多」。")
         self.refresh_btn = QPushButton("刷新状态")
         self.refresh_btn.setObjectName("ghostButton")
         self.refresh_btn.setToolTip("重新检查运行时、连接与模板 Mod；不会写任何文件")
@@ -159,20 +345,18 @@ class GameLinkPage(QWidget):
         outer.addWidget(self.error_banner)
 
         # ------------------------------------------------------------ 三步状态机
-        status = Card("连接状态", "按 ① → ② → ③ 顺序完成；未完成的步骤也可以点，会提示缺什么。")
+        status = Card("连接状态")
         sv = status.v
-        steps = QGridLayout()
-        steps.setHorizontalSpacing(PAGE_SPACING)
-        steps.setVerticalSpacing(PAGE_SPACING)
-        self.step1 = StepPanel(1, "运行时 / 组件")
-        self.step2 = StepPanel(2, "游戏连接")
-        self.step3 = StepPanel(3, "模板 Mod")
-        for col, panel in enumerate((self.step1, self.step2, self.step3)):
-            steps.addWidget(panel, 0, col)
-            steps.setColumnStretch(col, 1)
+        steps = QVBoxLayout()
+        steps.setSpacing(6)
+        self.step1 = _StepRow(1, "运行时")
+        self.step2 = _StepRow(2, "游戏连接")
+        self.step3 = _StepRow(3, "模板 Mod")
+        for panel in (self.step1, self.step2, self.step3):
+            steps.addWidget(panel)
         sv.addLayout(steps)
 
-        # 兼容旧状态标签（外部只读引用），实际显示由步骤面板负责。
+        # 兼容旧状态标签（外部只读引用），实际显示由步骤行负责。
         self.step_runtime = self.step1.chip
         self.step_mod = self.step2.chip
         self.step_agent = self.step3.chip
@@ -184,22 +368,16 @@ class GameLinkPage(QWidget):
         self.repair_btn = self.step1.action
         self.step1.action.clicked.connect(self._step1_action)
         self.connect_btn = self.step2.action
-        self.connect_btn.clicked.connect(self._connect)
+        self.connect_btn.clicked.connect(self._step2_action)
         self.install_mod_btn = self.step3.action
         self.install_mod_btn.clicked.connect(self._install_template_mod)
-        self.step3.set_alt("打开 Mod 目录", "只打开目录，不写文件", self._open_mods_dir)
-        self.open_mods_btn = self.step3.alt
 
+        # 次按钮只在“游戏在运行但代理不可达”时显示；可达时隐藏，避免重复注入。
         self.step2.set_alt(
-            "启动游戏并注入",
-            "启动游戏并注入游戏内代理；也可以先手动进游戏再点「连接游戏」",
-            lambda: self._connect(start_game=True))
+            "重启并注入",
+            "先友好关闭游戏，再由应用重新启动并注入；不会强杀，除非再次确认",
+            self._restart_and_inject)
         self.start_btn = self.step2.alt
-        self.step1.set_alt(
-            "重写代理文件（安装）",
-            "把当前版本的 starforge_agent.py 写入 ~/.starforge/agent；不碰存档",
-            self._install_agent_file)
-        self.install_agent_btn = self.step1.alt
 
         meta = QHBoxLayout()
         meta.setSpacing(6)
@@ -214,13 +392,16 @@ class GameLinkPage(QWidget):
         meta.addStretch(1)
         sv.addLayout(meta)
 
-        self.status = muted("正在检查运行时与连接状态…")
+        self.status = elide_label("正在检查运行时与连接状态…")
         self.status.setObjectName("muted")
         sv.addWidget(self.status)
         outer.addWidget(status)
 
         # ------------------------------------------------------------ 传送（高风险）
-        safety = Card("安全区 · 传送", "写玩家位置；需要二次确认，只支持单人模式。")
+        safety = _AdvancedCard(
+            "安全区 · 传送",
+            "写玩家位置；需要二次确认，只支持单人模式。",
+            self._show_advanced)
         fv = safety.v
         safety_tags = QHBoxLayout()
         safety_tags.setSpacing(6)
@@ -291,18 +472,27 @@ class GameLinkPage(QWidget):
         self.unverified_state.setToolTip(
             "实验写操作由游戏版本闸门与「设置 → 安全」共同控制；本页不再重复放开关。")
         fv.addWidget(self.unverified_state)
-        outer.addWidget(safety)
 
         # ------------------------------------------------------------ 高级（折叠）
         self.advanced = FoldSection(
-            "实时资产 / 传送记录 / 诊断（高级）",
-            "只读资产、遥测、行星档案、传送记录与日志；默认收起，不占首屏。",
-            summary="实时资产和遥测在连接游戏后自动读取；传送记录只读，还原需二次确认。",
+            "更多 · 高级 / 诊断",
+            summary="实时资产、遥测、行星档案、传送、连接工具与日志；默认收起。",
             expanded=False)
         adv = self.advanced.body_layout
 
         self.live_assets = LiveAssetsCard()
         self.live_assets_card = self.live_assets
+
+        # 外壳「实时资产」入口按卡片标题定位；折叠时先展开「更多」再滚过去。
+        _assets_spotlight = self.live_assets.set_spotlight
+
+        def _assets_spot(on: bool = True, _orig=_assets_spotlight) -> None:
+            if on:
+                self._show_advanced()
+                QTimer.singleShot(0, lambda: reveal_widget(self.live_assets))
+            _orig(on)
+
+        self.live_assets.set_spotlight = _assets_spot
         adv.addWidget(self.live_assets)
 
         tele = QWidget()
@@ -449,6 +639,8 @@ class GameLinkPage(QWidget):
         ov.addWidget(self.poi_result)
         adv.addWidget(poi)
 
+        adv.addWidget(safety)
+
         tools = QWidget()
         tv2 = QVBoxLayout(tools)
         tv2.setContentsMargins(0, 0, 0, 0)
@@ -467,11 +659,20 @@ class GameLinkPage(QWidget):
         self.probe_btn = QPushButton("外部内存只读探测")
         self.probe_btn.clicked.connect(self._external_probe)
         tool_grid.addWidget(self.probe_btn, 0, 1)
+        self.install_agent_btn = QPushButton("重写代理文件（安装）")
+        self.install_agent_btn.setToolTip(
+            "把当前版本的 starforge_agent.py 写入 ~/.starforge/agent；不碰存档")
+        self.install_agent_btn.clicked.connect(self._install_agent_file)
+        tool_grid.addWidget(self.install_agent_btn, 1, 0)
         self.uninstall_agent_btn = QPushButton("卸载组件（卸载）")
         self.uninstall_agent_btn.setToolTip(
             "删除 ~/.starforge/agent/starforge_agent.py；不动运行时、存档或游戏目录")
         self.uninstall_agent_btn.clicked.connect(self._uninstall_agent_file)
-        tool_grid.addWidget(self.uninstall_agent_btn, 1, 0)
+        tool_grid.addWidget(self.uninstall_agent_btn, 1, 1)
+        self.open_mods_btn = QPushButton("打开 Mod 目录")
+        self.open_mods_btn.setToolTip("只打开 GAMEDATA/MODS，不写文件")
+        self.open_mods_btn.clicked.connect(self._open_mods_dir)
+        tool_grid.addWidget(self.open_mods_btn, 2, 0)
         tool_grid.setColumnStretch(0, 1)
         tool_grid.setColumnStretch(1, 1)
         tv2.addLayout(tool_grid)
@@ -528,6 +729,20 @@ class GameLinkPage(QWidget):
         self.refresh()
         self._load_snapshots()
 
+    def hideEvent(self, event) -> None:
+        # 页面隐藏（切换工作区）后不再每 3 秒 hello，避免后台无意义请求。
+        self._poll_timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._reachable and not self._in_game and not self._poll_timer.isActive():
+            self._poll_timer.start()
+
+    def closeEvent(self, event) -> None:
+        self._poll_timer.stop()
+        super().closeEvent(event)
+
     def _chip(self, label: QLabel, text: str, ok: bool) -> None:
         label.setText(f"{text}")
         label.setProperty("state", "ok" if ok else "warn")
@@ -578,6 +793,11 @@ class GameLinkPage(QWidget):
         self._supported = bool(st.get("supported"))
         self._agent_installed = bool(st.get("mod_installed"))
         self._reachable = bool(st.get("reachable"))
+        self._game_running = bool(st.get("game_running", st.get("pid")))
+        try:
+            self._game_pid = int(st.get("pid") or 0) or None
+        except (TypeError, ValueError):
+            self._game_pid = None
         hello = st.get("hello") or {}
         self._in_game = bool(hello.get("in_game"))
         self._multiplayer = bool(cap.get("multiplayer", hello.get("multiplayer")))
@@ -648,7 +868,7 @@ class GameLinkPage(QWidget):
             self._refresh_live_assets()
         else:
             self._reset_live_assets()
-        if self._reachable and not self._in_game:
+        if self._reachable and not self._in_game and not self.isHidden():
             if not self._poll_timer.isActive():
                 self._poll_timer.start()
         else:
@@ -721,71 +941,111 @@ class GameLinkPage(QWidget):
             self.runtime_action_note.setText(
                 "安装/修复只影响本机 ~/.starforge/agent，不会写存档或改游戏 GAMEDATA。")
 
+    def _set_button_role(self, button: QPushButton, role: str) -> None:
+        if button.objectName() != role:
+            button.setObjectName(role)
+            _repolish(button)
+
+    def _apply_primary(self, supported: bool, ready: bool, reachable: bool) -> None:
+        """首屏只留一个 primary：未就绪→准备运行时；未连接→连接；已连接→刷新。"""
+        for button in (self.refresh_btn, self.step1.action, self.step2.action,
+                       self.step3.action, self.step2.alt):
+            self._set_button_role(button, "ghostButton")
+        if not supported:
+            primary = self.refresh_btn
+        elif not ready:
+            primary = self.step1.action
+        elif not reachable:
+            primary = self.step2.action
+        else:
+            primary = self.refresh_btn
+        self._set_button_role(primary, "primary")
+
     def _sync_steps(self) -> None:
-        """三步状态机：只有前一步完成才把下一步标成「进行中」。"""
+        """三步状态机：只有第一个未完成步骤高亮，后续步骤仍可点。"""
         supported = getattr(self, "_supported", True)
         ready = self._runtime_ready
         mod = self._template_mod_installed
         runtime_files = self._runtime_files
         reachable = self._reachable
         in_game = self._in_game
+        game_running = bool(getattr(self, "_game_running", False))
 
-        # ① 运行时 / 组件
+        # 只有第一个未完成步骤高亮；后面两步保持可点。
+        done1 = ready
+        done2 = ready and reachable and in_game
+        done3 = mod
+        first_open = 0 if (done1 and done2 and done3) else (
+            1 if not done1 else (2 if not done2 else 3))
+
+        # ① 运行时 / 组件：行内只写短状态，版本清单放 tooltip。
         if not supported:
-            s1_state, s1_line = "error", "不可用：游戏内通道仅支持 Windows"
+            s1_state, s1_line = "error", "不可用 · 仅支持 Windows"
             s1_action = "准备运行时"
         elif not runtime_files:
-            s1_state, s1_line = "current", getattr(self, "_runtime_line", "运行时缺失")
+            s1_state, s1_line = "current", "缺失"
             s1_action = "准备运行时"
         elif not ready:
-            s1_state, s1_line = "error", getattr(self, "_runtime_line", "组件缺失")
+            s1_state = "error"
+            s1_line = getattr(self, "_runtime_line", "组件缺失")
             s1_action = "安装 / 修复组件"
         else:
-            s1_state, s1_line = "done", getattr(self, "_runtime_line", "已就绪")
+            s1_state, s1_line = "done", "已就绪"
             s1_action = "修复组件"
         self.step1.set_state(
             s1_state, s1_line, s1_action,
-            getattr(self, "_runtime_tip", "准备运行时或修复组件；不会写存档。"))
+            "准备运行时或修复组件；只写本机 ~/.starforge/agent，不写存档。",
+            hint=getattr(self, "_runtime_tip", "准备运行时或修复组件；不写存档。"))
 
-        # ② 游戏连接
-        if ready and reachable and in_game:
-            s2_state, s2_line, s2_action = "done", "已连接 · 存档已载入", "刷新状态"
-        elif ready and reachable:
+        # ② 游戏连接：按钮文案/次按钮随“已连接 / 游戏在跑 / 没跑”三态变化。
+        if ready and reachable:
+            if in_game:
+                s2_state, s2_line, s2_action = "done", "已连接 · 存档已载入", "刷新状态"
+            else:
+                s2_state, s2_line, s2_action = "current", "已连接 · 待载入存档", "刷新状态"
+            s2_tip = "已连接；点「刷新状态」只会重新读状态，不会重复注入。"
+            alt_text, alt_tip = "", ""
+        elif ready and game_running:
             s2_state = "current"
-            s2_line = "已注入 · 等待载入存档"
-            s2_action = "刷新状态"
+            s2_line = "游戏在运行 · 代理不可达"
+            s2_action = "附加注入"
+            s2_tip = ("先确认已回主菜单；已进入存档时附加注入可能让游戏退出。"
+                      "也可以先关闭游戏，再点「重启并注入」。")
+            alt_text = "重启并注入"
+            alt_tip = "先友好关闭游戏，再由应用启动并注入；不会强杀，除非再次确认"
         elif ready:
             s2_state = "current"
-            s2_line = "未连接 · 进入游戏并载入存档后点「连接游戏」"
-            s2_action = "连接游戏"
+            s2_line = "未连接 · 主菜单注入"
+            s2_action = "启动游戏并注入"
+            s2_tip = "由应用启动游戏并注入；请先确认存档已备份。"
+            alt_text, alt_tip = "", ""
         else:
             s2_state = "waiting"
-            s2_line = "等待第 1 步完成"
+            s2_line = "未连接 · 等待第 1 步"
             s2_action = "连接游戏"
-        self.step2.set_state(
-            s2_state, s2_line, s2_action,
-            "连接已运行的游戏；缺少运行时时会提示先完成第 1 步。")
+            s2_tip = "连接已运行的游戏；缺少运行时时会提示先完成第 1 步。"
+            alt_text, alt_tip = "", ""
+        self.step2.set_state(s2_state, s2_line, s2_action, s2_tip)
+        self.step2.set_alt(alt_text, alt_tip,
+                           self._restart_and_inject if alt_text else None)
 
         # ③ 模板 Mod
         if mod:
             s3_state = "done"
-            s3_line = f"已安装 {self._mod_files} 个文件 · 重启游戏后生效"
-            if not self._mod_files:
-                s3_line = "已安装 · 重启游戏后生效"
+            s3_line = "已安装 · 重启后生效"
             s3_action = "重新安装模板 Mod"
-        elif ready and reachable and in_game:
-            s3_state = "current"
-            s3_line = "未安装 · 只写 GAMEDATA/MODS，装完重启游戏"
-            s3_action = "安装 / 更新模板 Mod"
         else:
-            s3_state = "waiting"
-            s3_line = "等待第 2 步完成；也可提前安装"
+            s3_state = "current" if first_open == 3 else "waiting"
+            s3_line = "未安装" if (ready and reachable and in_game) else "未安装 · 可提前安装"
             s3_action = "安装 / 更新模板 Mod"
         self.step3.set_state(
             s3_state, s3_line, s3_action,
-            "安装后游戏表情菜单会出现 8 个可领取模板；不修改游戏原始文件。")
+            "安装后游戏表情菜单会出现 8 个可领取模板；不修改游戏原始文件。",
+            hint=(f"已安装 {self._mod_files} 个文件；重启游戏后生效。"
+                  if mod else "只写 GAMEDATA/MODS；不修改游戏原始文件。"))
         self.install_mod_btn.setEnabled(True)
 
+        self._apply_primary(supported, ready, reachable)
         self._update_next_hint(supported, ready, runtime_files,
                                reachable, in_game, mod)
 
@@ -797,17 +1057,21 @@ class GameLinkPage(QWidget):
             text = "下一步：游戏内通道仅支持 Windows；离线抓船、看图等功能不受影响。"
         elif not runtime_files:
             err = f"（{self._runtime_error}）" if self._runtime_error else ""
-            text = (f"下一步：点第 1 步「准备运行时」{err}；正常安装包已内置，不需要联网。")
+            text = f"下一步：点第 1 步「准备运行时」{err}；安装包已内置，不需要联网。"
         elif not ready:
             text = "下一步：点第 1 步「安装 / 修复组件」，补齐 NMSpy / pymhf。"
         elif not reachable:
-            text = "下一步：进入游戏并载入存档，然后点第 2 步「连接游戏」。"
+            if getattr(self, "_game_running", False):
+                text = ("下一步：先退回主菜单，再点第 2 步「附加注入」；"
+                        "若已进存档，可点「重启并注入」。")
+            else:
+                text = "下一步：点第 2 步「启动游戏并注入」，由应用启动游戏并注入代理。"
         elif not in_game:
-            text = "下一步：在游戏里载入存档，页面会自动刷新。"
+            text = "下一步：已连接但未绑定存档——回主菜单再进一次存档，本页会自动刷新。"
         elif not mod:
             text = "下一步：点第 3 步「安装 / 更新模板 Mod」，装完重启游戏。"
         else:
-            text = ("三步已完成：实时资产会自动读取；传送与诊断已收进下方「高级」。")
+            text = "三步已完成：实时资产会自动读取；传送与诊断收在「更多」。"
         self.status.setText(text)
         self.status.setToolTip(text)
 
@@ -1133,6 +1397,10 @@ class GameLinkPage(QWidget):
         else:
             self._repair()
 
+    def _show_advanced(self) -> None:
+        """外壳定位到高级区里的卡片时，先展开「更多」。"""
+        self.advanced.set_expanded(True)
+
     def _poll_hello(self) -> None:
         if self._poll_busy:
             return
@@ -1142,6 +1410,8 @@ class GameLinkPage(QWidget):
             self._poll_busy = False
             if res.get("in_game"):
                 self._poll_timer.stop()
+                if not self._in_game:
+                    notify.success("已绑定存档。")
                 self.refresh()
 
         def fail(_msg: str) -> None:
@@ -1169,26 +1439,79 @@ class GameLinkPage(QWidget):
 
     # ---------------------------------------------------------------- 连接
 
-    def _connect(self, start_game: bool = False) -> None:
-        if not self._runtime_ready:
-            detail = f"：{self._runtime_error}" if self._runtime_error else ""
-            text = (f"游戏内组件未就绪{detail}；请先点「准备运行时」和"
-                    "「安装 / 修复组件」，或重新解压完整包。")
-            notify.warn(text)
-            self.error_banner.show_error(text)
-            return
-        self.connect_btn.setEnabled(False)
-        self.start_btn.setEnabled(False)
-        text = "启动游戏并注入…" if start_game else "注入中…"
-        self._log(text)
-        self.loading_overlay.start("正在启动游戏并注入…" if start_game else "正在连接游戏内代理…")
-        notify.toast(text)
+    def _ensure_runtime_ready(self) -> bool:
+        if self._runtime_ready:
+            return True
+        detail = f"：{self._runtime_error}" if self._runtime_error else ""
+        text = (f"游戏内组件未就绪{detail}；请先点「准备运行时」和"
+                "「安装 / 修复组件」，或重新解压完整包。")
+        notify.warn(text)
+        self.error_banner.show_error(text)
+        return False
 
-        def launched(res: dict) -> None:
-            self._log(json.dumps(res, ensure_ascii=False, indent=1))
-            self.loading_overlay.set_text("等待游戏内代理响应…")
-            notify.toast("游戏内组件已启动，等待游戏内代理响应…")
-            run_worker(self.svc.agent_wait, self._after_wait, wait_fail, 25.0)
+    def _step2_action(self) -> None:
+        """第 2 步主按钮：已连接只刷新；游戏在跑先附加；游戏没跑才启动并注入。"""
+        if self._reachable:
+            self.refresh()
+        elif self._game_running:
+            self._attach_inject()
+        else:
+            self._start_game_inject()
+
+    def _connect(self, start_game: bool = False) -> None:
+        """兼容旧入口：start_game=True 启动并注入，否则附加到已运行的游戏。"""
+        if start_game:
+            self._start_game_inject()
+        else:
+            self._attach_inject()
+
+    def _confirm_attach_inject(self) -> bool:
+        answer = QMessageBox.warning(
+            self, "附加注入到已运行的游戏",
+            "将向正在运行的 NMS.exe 注入游戏内代理。\n\n"
+            "实测：如果游戏已经进入存档，注入可能被识别为模组冲突并导致游戏退出。\n"
+            "建议先退回主菜单，再点「附加注入」。\n\n"
+            "仍要现在注入吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            notify.toast("已取消附加注入；可先回主菜单再连接")
+            return False
+        return True
+
+    def _attach_inject(self) -> None:
+        """附加到已运行的游戏：先用 agent_connect 的 ping 快路径避免重复注入。"""
+        if not self._ensure_runtime_ready():
+            return
+        if self._reachable:
+            notify.toast("游戏内代理已连接；只刷新状态（未重复注入）")
+            self.refresh()
+            return
+        self.loading_overlay.start("正在确认游戏与代理状态…")
+
+        def done(res: dict) -> None:
+            res = res if isinstance(res, dict) else {}
+            if res.get("already_connected") or res.get("already_running"):
+                self.loading_overlay.stop()
+                self._log("游戏内代理已在运行；未重复注入。")
+                notify.toast("游戏内代理已在运行，直接刷新状态（未重复注入）")
+                self.refresh()
+                return
+            if res.get("code") == "E_GAME_RUNNING":
+                self.loading_overlay.stop()
+                if self._confirm_attach_inject():
+                    self._launch_attach()
+                return
+            if res.get("ok", False):
+                self.loading_overlay.set_text("等待游戏内代理响应…")
+                notify.toast("游戏内代理已启动，等待响应…")
+                run_worker(self.svc.agent_wait, self._after_wait, wait_fail, 25.0)
+                return
+            text = f"无法附加注入：{self._cn(str(res.get('error') or res.get('code') or '未知错误'))}"
+            self._log(text)
+            self.loading_overlay.stop()
+            self.error_banner.show_error(text)
+            notify.error(text)
 
         def wait_fail(msg: str) -> None:
             text = f"等待游戏内代理失败：{self._cn(msg)}"
@@ -1198,26 +1521,159 @@ class GameLinkPage(QWidget):
             notify.error(text)
 
         def fail(msg: str) -> None:
-            self.connect_btn.setEnabled(True)
-            self.start_btn.setEnabled(True)
-            text = f"注入失败：{self._cn(msg)}"
+            text = f"确认游戏状态失败：{self._cn(msg)}"
             self._log(text)
             self.loading_overlay.stop()
             self.error_banner.show_error(text)
             notify.error(text)
 
-        if start_game:
-            run_worker(self.svc.agent_launch, launched, fail, attach=False)
-        else:
-            # 已运行的游戏：走 agent_connect（内部用 attach=False，pymhf 会发现已运行实例）。
-            # 不能再用 attach=True——实测那条路会让游戏以访问冲突退出。
-            run_worker(self.svc.agent_connect, launched, fail)
+        run_worker(self.svc.agent_connect, done, fail)
+
+    def _launch_attach(self) -> None:
+        """用户二次确认后的显式附加注入（allow_attach=True）。"""
+        from ...live import agent_install
+
+        def worker() -> dict:
+            return agent_install.launch(attach=True, allow_attach=True)
+
+        self._run_launch(worker, "正在附加注入游戏内代理…")
+
+    def _start_game_inject(self) -> None:
+        self._run_launch(lambda: self.svc.agent_launch(attach=False),
+                         "正在启动游戏并注入…")
+
+    def _run_launch(self, worker, text: str) -> None:
+        self.connect_btn.setEnabled(False)
+        self.start_btn.setEnabled(False)
+        self._log(text)
+        self.loading_overlay.start(text)
+        notify.toast(text)
+
+        def launched(res: dict) -> None:
+            res = res if isinstance(res, dict) else {}
+            self._log(json.dumps(res, ensure_ascii=False, indent=1))
+            if res.get("code") == "E_GAME_RUNNING":
+                self._game_running = True
+                self.connect_btn.setEnabled(True)
+                self.start_btn.setEnabled(True)
+                message = self._cn(str(res.get("error") or "游戏已在运行"))
+                self.loading_overlay.stop()
+                self.error_banner.show_error(message)
+                notify.warn(message)
+                self.refresh()
+                return
+            if res.get("already_connected") or res.get("already_running"):
+                self.loading_overlay.stop()
+                notify.toast("游戏内代理已在运行，直接刷新状态（未重复注入）")
+                self.refresh()
+                return
+            if res.get("ok") is False:
+                self.connect_btn.setEnabled(True)
+                self.start_btn.setEnabled(True)
+                message = self._cn(str(res.get("error") or res.get("code") or "注入失败"))
+                self._log(message)
+                self.loading_overlay.stop()
+                self.error_banner.show_error(message)
+                notify.error(message)
+                return
+            self.loading_overlay.set_text("等待游戏内代理响应…")
+            notify.toast("游戏内组件已启动，等待游戏内代理响应…")
+            run_worker(self.svc.agent_wait, self._after_wait, wait_fail, 25.0)
+
+        def wait_fail(msg: str) -> None:
+            self.connect_btn.setEnabled(True)
+            self.start_btn.setEnabled(True)
+            message = f"等待游戏内代理失败：{self._cn(msg)}"
+            self._log(message)
+            self.loading_overlay.stop()
+            self.error_banner.show_error(message)
+            notify.error(message)
+
+        def fail(msg: str) -> None:
+            self.connect_btn.setEnabled(True)
+            self.start_btn.setEnabled(True)
+            message = f"注入失败：{self._cn(msg)}"
+            self._log(message)
+            self.loading_overlay.stop()
+            self.error_banner.show_error(message)
+            notify.error(message)
+
+        run_worker(worker, launched, fail)
+
+    def _restart_and_inject(self) -> None:
+        """先友好关闭 NMS，再走启动并注入；只有用户再次确认才强制结束。"""
+        if not self._ensure_runtime_ready():
+            return
+        if self._reachable:
+            notify.toast("游戏内代理已连接；无需重启注入。")
+            self.refresh()
+            return
+        pids = _live_game_pids()
+        if not pids:
+            self._start_game_inject()
+            return
+        if not ask_write(
+                self, "重启并注入",
+                "将先请求游戏正常退出（WM_CLOSE），再由应用重新启动并注入。\n"
+                "请确认已保存进度；不会修改存档文件。继续？"):
+            notify.toast("已取消重启注入。")
+            return
+        self._log("正在请求关闭 NMS.exe…")
+        self.loading_overlay.start("正在请求关闭游戏…")
+
+        def closed(remaining: list) -> None:
+            self.loading_overlay.stop()
+            remaining = [int(pid) for pid in (remaining or [])]
+            if not remaining:
+                notify.toast("游戏已退出，正在重新启动并注入…")
+                self._start_game_inject()
+                return
+            answer = QMessageBox.question(
+                self, "游戏未退出",
+                f"游戏在 15 秒内没有退出（PID：{', '.join(map(str, remaining))}）。\n"
+                "是否强制结束 NMS.exe？强制结束可能丢失未保存进度。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                notify.warn("游戏未退出，已取消重启注入；请手动退出后重试。")
+                return
+            self._log("用户再次确认：强制结束 NMS.exe。")
+            self.loading_overlay.start("正在强制结束游戏…")
+
+            def forced(left: list) -> None:
+                self.loading_overlay.stop()
+                left = [int(pid) for pid in (left or [])]
+                if left:
+                    text = f"仍有 NMS.exe 未退出（PID {', '.join(map(str, left))}）"
+                    self._log(text)
+                    self.error_banner.show_error(text)
+                    notify.error(text + "；请手动关闭后重试。")
+                    return
+                self._start_game_inject()
+
+            def force_failed(msg: str) -> None:
+                text = f"强制结束失败：{self._cn(msg)}"
+                self._log(text)
+                self.loading_overlay.stop()
+                self.error_banner.show_error(text)
+                notify.error(text)
+
+            run_worker(_force_close_worker, forced, force_failed, remaining)
+
+        def close_failed(msg: str) -> None:
+            text = f"请求关闭游戏失败：{self._cn(msg)}"
+            self._log(text)
+            self.loading_overlay.stop()
+            self.error_banner.show_error(text)
+            notify.error(text)
+
+        run_worker(_close_game_worker, closed, close_failed, pids, 15.0)
 
     def _after_wait(self, res: dict) -> None:
         self._log(json.dumps(res, ensure_ascii=False, indent=1))
         self.loading_overlay.stop()
         if res.get("in_game"):
-            notify.success("游戏内代理已连接。")
+            notify.success("游戏内代理已连接，已绑定存档。")
         else:
             notify.warn("游戏内代理已连接，但还未进入存档；请载入存档。")
         self.refresh()
@@ -1571,6 +2027,15 @@ class GameLinkPage(QWidget):
         self._planet_scan()
 
     def _install_template_mod(self) -> None:
+        missing = []
+        if not self._runtime_ready:
+            missing.append("第 1 步运行时未就绪")
+        elif not self._reachable:
+            missing.append("第 2 步游戏未连接")
+        elif not self._in_game:
+            missing.append("游戏尚未载入存档")
+        if missing:
+            notify.warn("仍可提前安装模板 Mod；建议先完成：" + "、".join(missing) + "。")
         answer = QMessageBox.question(
             self, "安装模板 Mod",
             "将把 starforge-templates 写入游戏目录的 GAMEDATA/MODS/。\n"
@@ -1586,7 +2051,9 @@ class GameLinkPage(QWidget):
             if not res.get("ok", True):
                 text = (f"安装失败：{res.get('error') or res.get('code') or '未知错误'}"
                         "；请到「设置 → 路径」确认游戏目录。")
-                self.step3.set_state("error", text, "重试安装模板 Mod", text)
+                self.step3.set_state("error", text, "重试安装模板 Mod", text, hint=text)
+                self._apply_primary(getattr(self, "_supported", True),
+                                    self._runtime_ready, self._reachable)
                 notify.error(text)
                 return
             files = len(res.get("files") or [])
@@ -1598,7 +2065,9 @@ class GameLinkPage(QWidget):
         def fail(msg: str) -> None:
             self.install_mod_btn.setEnabled(True)
             text = f"安装失败：{msg}；请检查游戏目录与 GAMEDATA/MODS 权限。"
-            self.step3.set_state("error", text, "重试安装模板 Mod", text)
+            self.step3.set_state("error", text, "重试安装模板 Mod", text, hint=text)
+            self._apply_primary(getattr(self, "_supported", True),
+                                self._runtime_ready, self._reachable)
             self.error_banner.show_error(text)
             notify.error(text)
 

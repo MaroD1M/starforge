@@ -40,6 +40,7 @@ from ..widgets.page import PageSplitter, page_layout, scroll_panel
 from ..widgets.page_header import PageHeader
 from ..widgets.ship_viewer import ShipViewer
 from ..widgets.ui import Card, icon_from_png, placeholder_icon
+from ..widgets.ux import TaskFlow
 from ..widgets.worker import run as run_worker
 
 SHIPS = [("sentinel", "拦截机"), ("fighter", "战斗机"), ("hauler", "运输舰"),
@@ -277,6 +278,7 @@ class ShipDesignerPage(QWidget):
         self._mesh_token = 0
         self._render_token = 0
         self._updating_tree = False
+        self._pending_focus_part: str | None = None
         self._search_job = None
         self._pending_design: dict | None = None
         self._summary_open = False
@@ -285,6 +287,10 @@ class ShipDesignerPage(QWidget):
         self._icon_timer.setSingleShot(True)
         self._icon_timer.setInterval(20)
         self._icon_timer.timeout.connect(self._next_icon)
+        self._rebuild_timer = QTimer(self)
+        self._rebuild_timer.setSingleShot(True)
+        self._rebuild_timer.setInterval(0)
+        self._rebuild_timer.timeout.connect(self._rebuild_tree_after_check)
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(220)
@@ -304,10 +310,11 @@ class ShipDesignerPage(QWidget):
     def _build_ui(self) -> None:
         root = page_layout(self)
         self.header = PageHeader(
-            "设计器",
-            "选部件、看 3D，最后写入存档；保存/载入收在「设计文件」菜单。")
+            "设计器", "选部件 → 看 3D → 写入存档；保存/载入在「设计文件」。")
         self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         root.addWidget(self.header)
+        self.flow = TaskFlow(["选部件", "看 3D", "写入存档"])
+        root.addWidget(self.flow)
         split = PageSplitter("ship_designer")
         root.addWidget(split, 1)
 
@@ -329,7 +336,7 @@ class ShipDesignerPage(QWidget):
         self._sync_write_state()
 
     def _build_parts(self) -> QWidget:
-        wrap = Card("船型与部件", "搜索后点部件；已选与可选分开显示")
+        wrap = Card("船型与部件")
         v = wrap.v
 
         v.addWidget(QLabel("船型"))
@@ -448,11 +455,7 @@ class ShipDesignerPage(QWidget):
         self.summary.setVisible(False)
         v.addWidget(self.summary)
 
-        self.summary_count = WrapLabel("尚未选择部件（空选也可以预览默认外形）")
-        self.summary_count.setObjectName("muted")
-        v.addWidget(self.summary_count)
-
-        v.addWidget(QLabel("预览 / 写入种子"))
+        v.addWidget(QLabel("种子"))
         seed_row = QHBoxLayout()
         seed_row.setSpacing(6)
         self.seed_edit = QLineEdit(EXAMPLE_SEED)
@@ -472,7 +475,7 @@ class ShipDesignerPage(QWidget):
         self.search_btn.clicked.connect(self._start_search)
         v.addWidget(self.search_btn)
 
-        self.search_status = WrapLabel("点「搜索种子」用当前部件找种子。")
+        self.search_status = WrapLabel("")
         self.search_status.setObjectName("muted")
         v.addWidget(self.search_status)
 
@@ -512,11 +515,45 @@ class ShipDesignerPage(QWidget):
         child.setToolTip(0, f"{part}\n组：{gid}")
         return child
 
+    @staticmethod
+    def _item_alive(item: QTreeWidgetItem | None) -> bool:
+        """Qt 里的 QTreeWidgetItem 由 C++ 持有；树被清空后旧包装会失效。
+
+        访问任何数据都会抛 ``RuntimeError: Internal C++ object already deleted``，
+        所以定时器/回调在使用前必须先用这里探测，不能只看 ``item is not None``。
+        """
+        if item is None:
+            return False
+        try:
+            item.data(0, Qt.UserRole)
+            return True
+        except RuntimeError:
+            return False
+
+    def _clear_tree(self) -> None:
+        """清空部件树，同时取消仍可能持有旧节点的详情/重建定时器。"""
+        self._detail_timer.stop()
+        self._detail_item = None
+        self._rebuild_timer.stop()
+        self._pending_focus_part = None
+        self._icon_queue.clear()
+        self.tree.blockSignals(True)
+        try:
+            self.tree.clear()
+        finally:
+            self.tree.blockSignals(False)
+
     def _populate_tree(self) -> None:
+        # 先停详情定时器并丢掉旧节点：tree.clear() 会销毁 C++ 对象，之后任何
+        # childCount()/data() 都会抛 RuntimeError（实测每秒一次，导致树点不动）。
+        self._detail_timer.stop()
+        self._detail_item = None
+        self._rebuild_timer.stop()
         self._updating_tree = True
         self._icon_queue.clear()
         total = 0
         chosen_count = 0
+        self.tree.blockSignals(True)
         try:
             self.tree.clear()
             selected_root = self._tree_group("已选")
@@ -552,6 +589,7 @@ class ShipDesignerPage(QWidget):
             selected_root.setExpanded(True)
             available_root.setExpanded(True)
         finally:
+            self.tree.blockSignals(False)
             self._updating_tree = False
         self._filter_tree(self.part_filter.text())
         if self._icon_queue:
@@ -622,19 +660,33 @@ class ShipDesignerPage(QWidget):
         run_worker(self.svc.part_icon, done, lambda _m: None, ship, part, 48)
 
     def _on_detail_current(self, item: QTreeWidgetItem | None, *_args) -> None:
-        if item is None or item.childCount():
+        if not self._item_alive(item):
+            self._detail_item = None
+            return
+        if item.childCount():
+            # 分组节点只负责展开/折叠，不触发详情，也不重建树。
+            self._detail_timer.stop()
+            self._detail_item = None
             return
         self._detail_item = item
         self._detail_timer.start()
 
     def _refresh_detail(self) -> None:
         item = self._detail_item
-        if item is not None:
-            self._show_part_detail(item, 0)
+        if item is None:
+            return
+        if not self._item_alive(item):
+            self._detail_item = None
+            return
+        self._show_part_detail(item, 0)
 
     def _open_part_preview(self) -> None:
         item = self.tree.currentItem() or self._detail_item
-        if item is None or item.childCount():
+        if not self._item_alive(item):
+            self._detail_item = None
+            notify.warn("先选择一个部件")
+            return
+        if item.childCount():
             notify.warn("先选择一个部件")
             return
         part = str(item.data(0, Qt.UserRole) or "")
@@ -644,6 +696,9 @@ class ShipDesignerPage(QWidget):
         PartPreviewDialog(str(self.ship.currentData() or ""), part, self).exec()
 
     def _show_part_detail(self, item: QTreeWidgetItem, _column: int) -> None:
+        if not self._item_alive(item):
+            self._detail_item = None
+            return
         if item.childCount():
             return
         part = item.data(0, Qt.UserRole)
@@ -654,17 +709,27 @@ class ShipDesignerPage(QWidget):
         self.part_detail.setText(f"{part}  ·  组 {gid}\n读取预览…")
 
         def done(data: bytes | None) -> None:
-            if data:
-                pix = QPixmap()
-                pix.loadFromData(data, "PNG")
-                if not pix.isNull():
-                    self.part_detail.setPixmap(pix)
-                    self.part_detail.setToolTip(f"{part} / {gid}")
-                    return
-            self.part_detail.setText(f"{part}  ·  组 {gid}\n该部件没有可渲染的几何（结构件/空槽）")
+            # 后台任务返回时页面/控件可能已经销毁；只吞 RuntimeError，不掩盖数据错误。
+            try:
+                if data:
+                    pix = QPixmap()
+                    pix.loadFromData(data, "PNG")
+                    if not pix.isNull():
+                        self.part_detail.setPixmap(pix)
+                        self.part_detail.setToolTip(f"{part} / {gid}")
+                        return
+                self.part_detail.setText(
+                    f"{part}  ·  组 {gid}\n该部件没有可渲染的几何（结构件/空槽）")
+            except RuntimeError:
+                pass
 
-        run_worker(self.svc.part_icon, done,
-                   lambda m: self.part_detail.setText(f"{part} 预览失败：{m}"),
+        def fail(msg: str) -> None:
+            try:
+                self.part_detail.setText(f"{part} 预览失败：{msg}")
+            except RuntimeError:
+                pass
+
+        run_worker(self.svc.part_icon, done, fail,
                    self.ship.currentData(), part, 96)
 
     # ------------------------------------------------------------ 数据
@@ -681,7 +746,7 @@ class ShipDesignerPage(QWidget):
         token = self._catalog_token
         self._groups = []
         self._selection = {}
-        self.tree.clear()
+        self._clear_tree()
         self.parts_status.setText("读取部件表…")
         self._update_summary()
         self._schedule_preview()
@@ -706,7 +771,7 @@ class ShipDesignerPage(QWidget):
                 return
             self._groups = []
             self._selection = {}
-            self.tree.clear()
+            self._clear_tree()
             self.parts_status.setText(f"读不到部件表：{msg}")
             self._update_summary()
             self._show_placeholder(f"部件表不可用：{msg}")
@@ -730,16 +795,24 @@ class ShipDesignerPage(QWidget):
             self._selection = single_choice(self._selection, gid, part)
         elif self._selection.get(gid) == part:
             self._selection = single_choice(self._selection, gid, None)
-        self._populate_tree()
         self._update_summary()
         self._schedule_preview()
-        if selected:
-            QTimer.singleShot(0, lambda p=str(part): self._focus_part(p))
+        # 不能在 itemChanged 信号里同步 tree.clear()：Qt 还在使用刚刚 emit 的 item，
+        # 立刻销毁它会触发访问冲突/已删除对象。延到下一轮事件循环再重填树。
+        self._pending_focus_part = str(part) if selected else None
+        self._rebuild_timer.start(0)
+
+    def _rebuild_tree_after_check(self) -> None:
+        part = self._pending_focus_part
+        self._pending_focus_part = None
+        self._populate_tree()
+        if part:
+            self._focus_part(part)
 
     def _toggle_summary(self, on: bool) -> None:
         self._summary_open = bool(on)
         self.summary.setVisible(self._summary_open)
-        self.summary_toggle.setText("已选摘要 ▾" if self._summary_open else "已选摘要 ▸")
+        self._refresh_summary_label()
 
     def _clear_parts(self) -> None:
         self._selection = {}
@@ -855,6 +928,18 @@ class ShipDesignerPage(QWidget):
         else:
             self.write_design_btn.setToolTip(
                 "把当前种子写入新船槽或替换现有槽；先备份，可写入副本")
+        self._sync_flow()
+
+    def _sync_flow(self) -> None:
+        """① 选部件 → ② 看 3D（有种子）→ ③ 写入存档。"""
+        parts = selected_parts(self._selection, self._groups)
+        reason = write_block_reason(parts, self._seed_candidates())
+        if not parts:
+            self.flow.set_active(0)
+        elif reason:
+            self.flow.set_active(1, done=(0,))
+        else:
+            self.flow.set_active(2, done=(0, 1))
 
     def _write_design(self) -> None:
         reason = write_block_reason(selected_parts(self._selection, self._groups),
@@ -883,13 +968,16 @@ class ShipDesignerPage(QWidget):
             item = QListWidgetItem(f"{row['group_label']}：{row['part_label']}")
             item.setToolTip(f"{row['group']} / {row['part']}")
             self.summary.addItem(item)
-        count = len(rows)
-        if count:
-            self.summary_count.setText(f"已选 {count} 个组；点部件可换或取消")
-        else:
-            self.summary_count.setText("尚未选择部件（空选也可以预览默认外形）")
+        self._refresh_summary_label()
         self.search_btn.setEnabled(bool(rows) and self._search_job is None)
         self._sync_write_state()
+
+    def _refresh_summary_label(self) -> None:
+        count = len(selection_rows(self._selection, self._groups))
+        arrow = "▾" if self._summary_open else "▸"
+        text = f"已选摘要（{count}） {arrow}" if count else f"已选摘要 {arrow}"
+        self.summary_toggle.setText(text)
+        self.summary_toggle.setToolTip("展开或收起已选部件摘要")
 
     # ------------------------------------------------------------ 预览
 

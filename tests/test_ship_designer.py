@@ -179,6 +179,30 @@ def test_designer_primary_is_write_and_reason_sits_next_to_it(qapp):
         page.close()
 
 
+def _flow_states(page) -> list[str]:
+    return [wrap.property("state") for wrap, _number, _label in page.flow._items]
+
+
+def test_designer_task_flow_tracks_parts_and_seed(qapp):
+    """① 选部件 → ② 看 3D → ③ 写入存档。"""
+    page = _designer_with_groups(qapp)
+    try:
+        assert _flow_states(page) == ["active", "pending", "pending"]
+
+        page._selection = {"_PIT_": "_PIT_A"}
+        page.seed_edit.setText("bad")
+        page._update_summary()
+        assert _flow_states(page) == ["done", "active", "pending"]
+        assert not page.write_design_btn.isEnabled()
+
+        page.seed_edit.setText(EXAMPLE_SEED)
+        page._update_summary()
+        assert _flow_states(page) == ["done", "done", "active"]
+        assert page.write_design_btn.isEnabled()
+    finally:
+        page.close()
+
+
 def test_designer_parts_tree_has_search_and_selected_available_groups(qapp):
     from PySide6.QtCore import Qt
 
@@ -193,6 +217,7 @@ def test_designer_parts_tree_has_search_and_selected_available_groups(qapp):
         available = page.tree.topLevelItem(1)
         leaf = available.child(0).child(0)
         leaf.setCheckState(0, Qt.Checked)
+        qapp.processEvents()                 # 勾选后树在下一轮事件循环重填
         assert page._selection == {"_PIT_": "_PIT_A"}
         assert page.tree.topLevelItem(0).text(0) == "已选（1）"
         assert page.tree.topLevelItem(1).text(0) == "可选（3）"
@@ -230,4 +255,82 @@ def test_designer_summary_collapsible_and_files_menu_is_secondary(qapp):
             "保存设计…", "载入设计…"]
         assert page.files_btn.menu() is page.files_menu
     finally:
+        page.close()
+
+
+# ---------------------------------------------------------------- 树/详情定时器回归
+
+
+def _first_available_leaf(page):
+    """返回「可选」根下第一个分组里的第一个叶子节点。"""
+    available = page.tree.topLevelItem(1)
+    node = available.child(0)
+    return node.child(0) if node.childCount() else node
+
+
+def test_designer_stale_detail_item_after_repopulate_does_not_crash(qapp):
+    """选中部件后切换船型/重填树：旧 QTreeWidgetItem 已删，定时器不能再碰它。"""
+    page = _designer_with_groups(qapp)
+    try:
+        leaf = _first_available_leaf(page)
+        page._on_detail_current(leaf, None)
+        assert page._detail_item is leaf
+        assert page._detail_timer.isActive()
+
+        # 模拟切换船型后的重新填充（_populate_tree / _clear_tree 都会销毁旧节点）。
+        page._populate_tree()
+
+        assert page._detail_item is None
+        assert not page._detail_timer.isActive()
+        # 即使事件循环里仍排着一个 timeout，也不能再访问已删除的 C++ 对象。
+        page._detail_timer.timeout.emit()
+        page._refresh_detail()
+        assert not page._item_alive(leaf)
+    finally:
+        page.close()
+
+
+def test_designer_expanding_group_keeps_children_visible_and_no_rebuild(qapp):
+    from PySide6.QtCore import Qt
+
+    page = _designer_with_groups(qapp)
+    try:
+        available = page.tree.topLevelItem(1)
+        node = available.child(0)
+        node.setExpanded(False)
+        node.setExpanded(True)
+        assert node.isExpanded()
+        assert not node.child(0).isHidden()
+        assert page.tree.topLevelItemCount() == 2
+
+        # 点分组节点只负责展开/折叠：详情保持为空，树不重建。
+        page._show_part_detail(node, 0)
+        assert page._detail_item is None
+        assert page.tree.topLevelItem(1) is available
+        assert node.child(0).checkState(0) == Qt.Unchecked
+    finally:
+        page.close()
+
+
+def test_designer_twenty_quick_checks_do_not_raise(qapp):
+    """连续勾选/取消 20 次：每次都会重填树，旧节点不能残留到下一次回调。"""
+    from PySide6.QtCore import Qt
+
+    page = _designer_with_groups(qapp)
+    try:
+        for index in range(20):
+            available = page.tree.topLevelItem(1)
+            node = available.child(0)
+            leaf = node.child(index % max(1, node.childCount()))
+            part = str(leaf.data(0, Qt.UserRole))
+            leaf.setCheckState(0, Qt.Checked)
+            qapp.processEvents()
+            assert page._selection.get("_PIT_") == part
+            # 勾选后树已重填；再取消，确保「已选」分支的节点也被销毁/重建。
+            selected_root = page.tree.topLevelItem(0)
+            chosen = selected_root.child(0)
+            chosen.setCheckState(0, Qt.Unchecked)
+            qapp.processEvents()
+    finally:
+        page._icon_timer.stop()
         page.close()

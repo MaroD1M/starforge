@@ -8,13 +8,14 @@
 
 | 文档 | 一句话 | 最后核对 |
 |---|---|---|
-| [MANUAL.md](MANUAL.md) | 用户手册：安装、7 个页面、CLI、存档写入与备份/回滚、模板 Mod 一键安装、传送到星球、实时资产 | 2026-11-22 / 0.15.0 |
+| [MANUAL.md](MANUAL.md) | 用户手册：安装、4 个工作区（旧 7 页兼容）、CLI、存档写入与备份/回滚、模板 Mod 一键安装、传送到星球、实时资产 | 2026-11-22 / 0.15.0 |
 
 ## 开发
 
 | 文档 | 一句话 | 最后核对 |
 |---|---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | as-built 架构：目录职责、调用链、体量、依赖违规与技术债（不是重构提案） | 2026-11-22 / 0.15.0 |
+| [UX-DESIGN.md](UX-DESIGN.md) | 界面规范：一屏一任务、结果优先、渐进披露、组件（TaskFlow/FilterChips/FilterPanel）、审计清单与开源参考 | 2026-11-22 / 0.15.0 |
 | [AGENT.md](AGENT.md) | 游戏内通道：pymhf Python Mod 形态、15 个 HTTP 端点、认证、build 闸门、`SaveToData` 只读解析 | 2026-11-22 / 0.15.0 |
 | [LESSONS.md](LESSONS.md) | 经验与踩坑：注入三次崩溃与二分、`/ships` 两套结构、portal 三档、token 三源、热重载、图标、写闸门、文档漂移 | 2026-11-22 / 0.15.0 |
 | [DEV-GUIDE.md](DEV-GUIDE.md) | 开发/测试/打包：环境、fixture、约定、PyInstaller 与 vendor、自检、新增页面/端点 | 2026-11-22 / 0.15.0 |

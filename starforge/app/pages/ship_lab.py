@@ -38,6 +38,7 @@ from ..widgets.page_header import PageHeader
 from ..widgets.ship_card import set_card_accessibility
 from ..widgets.ship_viewer import ShipViewer
 from ..widgets.ui import Card, ElidedLabel, icon_from_png, placeholder_icon
+from ..widgets.ux import TaskFlow
 from ..widgets.worker import run as run_worker
 
 SHIPS = [("sentinel", "拦截机"), ("fighter", "战斗机"), ("hauler", "运输舰"),
@@ -174,6 +175,8 @@ class ShipLabPage(QWidget):
             "先选船型、涂装和关键词；需要部件组合时展开「更多筛选」。")
         self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         root.addWidget(self.header)
+        self.flow = TaskFlow(["选条件", "搜索", "送进游戏"])
+        root.addWidget(self.flow)
 
         root.addWidget(self._build_filters())
 
@@ -186,6 +189,8 @@ class ShipLabPage(QWidget):
         results.setMinimumWidth(LAB_MIN_RESULTS)
         self.detail_card = self._build_detail()
         self.detail_card.setMinimumWidth(LAB_MIN_DETAIL)
+        # 结果优先：没选中时不占右侧空间；选中后由「看详情 / 选中结果」打开。
+        self.detail_card.setVisible(False)
         split.addWidget(results)
         split.addWidget(self.detail_card)
         split.setStretchFactor(0, 1)
@@ -437,7 +442,7 @@ class ShipLabPage(QWidget):
         self.results.itemClicked.connect(self._on_result_clicked)
         self.empty = EmptyState(
             "还没有搜索结果",
-            "先在「更多筛选」里选部件，或直接按涂装搜；结果会显示在这里。",
+            "按涂装或部件搜索；结果会显示在这里。",
             icon="◇", button_text="试试示例", parent=box)
         self._empty_action = "demo"
         self.empty.actionTriggered.connect(self._on_empty_action)
@@ -452,9 +457,19 @@ class ShipLabPage(QWidget):
     def _build_detail(self) -> Card:
         wrap = Card("详情")
         v = wrap.v
+        title_row = QHBoxLayout()
+        title_row.setSpacing(6)
         self.title = WrapLabel("未选择飞船")
         self.title.setStyleSheet("font-size:15px;font-weight:700;")
-        v.addWidget(self.title)
+        title_row.addWidget(self.title, 1)
+        self.detail_close = fixed_height(QPushButton("×"))
+        self.detail_close.setObjectName("uxIconButton")
+        self.detail_close.setFixedSize(22, 22)
+        self.detail_close.setToolTip("收起详情，把空间还给结果区")
+        self.detail_close.setAccessibleName("收起详情")
+        self.detail_close.clicked.connect(self._close_detail)
+        title_row.addWidget(self.detail_close)
+        v.addLayout(title_row)
 
         self.viewer = ShipViewer()
         self.viewer.setMinimumHeight(220)
@@ -524,9 +539,9 @@ class ShipLabPage(QWidget):
 
     def _build_action_bar(self) -> QWidget:
         bar = QFrame()
-        bar.setObjectName("card")
+        bar.setObjectName("uxToolbar")
         h = QHBoxLayout(bar)
-        h.setContentsMargins(12, 8, 12, 8)
+        h.setContentsMargins(10, 6, 10, 6)
         h.setSpacing(8)
 
         info = QVBoxLayout()
@@ -569,18 +584,26 @@ class ShipLabPage(QWidget):
             self.primary_btn.setText("搜索中…")
             self.primary_btn.setEnabled(False)
             self.secondary_btn.setVisible(False)
+            self.flow.set_active(1, done=(0,))
             return
         row = self._current_row()
+        has_results = bool(self.results.count())
         self.primary_btn.setEnabled(True)
         if not row:
             self._primary_mode = "search"
             self.primary_btn.setText("开始搜索")
             self.primary_btn.setToolTip("按当前条件搜索（Ctrl+Enter）")
             self.secondary_btn.setVisible(False)
+            self.detail_card.setVisible(False)
+            if has_results:
+                self.flow.set_active(1, done=(0,))
+            else:
+                self.flow.set_active(0)
             return
 
         can_push = has_template(str(row.get("type") or ""))
         self.secondary_btn.setVisible(True)
+        self.flow.set_active(2, done=(0, 1))
         if can_push:
             self._primary_mode = "push"
             self.primary_btn.setText("送进游戏")
@@ -611,6 +634,7 @@ class ShipLabPage(QWidget):
             self._reveal_detail()
 
     def _reveal_detail(self) -> None:
+        self.detail_card.setVisible(True)
         reveal_widget(self.detail_card, 12)
         try:
             self.detail_card.set_spotlight(True)
@@ -619,6 +643,15 @@ class ShipLabPage(QWidget):
             pass
         self.viewer.setFocus(Qt.ShortcutFocusReason)
         self.status.setText("详情已展开：3D、视角与操作都在右侧")
+
+    def _close_detail(self) -> None:
+        try:
+            self.results.clearSelection()
+        except RuntimeError:
+            pass
+        self.detail_card.setVisible(False)
+        self._sync_primary()
+        self.status.setText("详情已收起；点结果可再次打开")
 
     def _toggle_advanced(self, on: bool) -> None:
         self._advanced_open = bool(on)
@@ -974,6 +1007,10 @@ class ShipLabPage(QWidget):
             float(self.tol.currentData() or 0.18))
 
     def _start_search(self) -> None:
+        if self._busy:
+            self.status.setText("搜索正在进行；先点「取消」，再重新开始。")
+            notify.warn("搜索正在进行；先点「取消」")
+            return
         want, avoid = self._checked()
         look = self._look_payload()
         if not want and not avoid and not look:
@@ -1021,16 +1058,28 @@ class ShipLabPage(QWidget):
             self.primary_btn.setText("搜索中…")
             self.primary_btn.setEnabled(False)
             self.secondary_btn.setVisible(False)
+            self.flow.set_active(1, done=(0,))
         else:
             self.primary_btn.setEnabled(True)
             self._sync_primary()
 
     def _cancel_search(self) -> None:
-        if self._job and self._job.status == "running":
-            self._job.cancel()
-            self.status.setText("正在取消…")
-        else:
-            self.status.setText("当前没有正在进行的搜索")
+        """取消不依赖 worker 是否响应：先立即收起 UI，再通知 job 停止。"""
+        job = self._job
+        if job is not None:
+            try:
+                job.cancel()
+            except Exception:                                # noqa: BLE001
+                pass
+        self._job = None
+        self._job_timer.stop()
+        self._set_busy(False)
+        self.loading.stop()
+        self.result_info.setText("搜索已取消")
+        self.status.setText("搜索已取消；可以调整条件后重新搜索")
+        self._show_empty("搜索已取消", "可以调整条件后重新搜索。",
+                         "重新搜索", "search")
+        notify.toast("已取消搜索")
 
     def _poll_job(self) -> None:
         job = self._job
@@ -1251,6 +1300,7 @@ class ShipLabPage(QWidget):
         if item is None or not item.isSelected():
             item = items[0]
         row = item.data(Qt.UserRole) or {}
+        self.detail_card.setVisible(True)
         self.title.setText(f"{row.get('type_label') or row.get('type')}  {row.get('seed')}")
         self.detail.setText("生成 3D 几何…")
         self.write_btn.setEnabled(bool(row))

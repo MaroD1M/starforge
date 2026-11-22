@@ -133,7 +133,8 @@ def test_fleet_tabs_and_single_primary_action(qapp, monkeypatch):
         assert page.write_btn.objectName() == "dangerButton"
         assert page.write_btn.isEnabled() is True
         assert page.push_btn.objectName() == "ghostButton"
-        assert "主操作：写回存档" in page.action_note.text()
+        # 主操作只用颜色表达；没有可写槽等情况才显示 action_note。
+        assert page.action_note.isHidden()
         preview = page.write_preview.text()
         assert "写回前：未知 级 · 伤害 10" in preview
         assert "写回后：在「船级/属性…」对话框里确认 before → after" in preview
@@ -146,7 +147,76 @@ def test_fleet_tabs_and_single_primary_action(qapp, monkeypatch):
         qapp.processEvents()
         assert page.write_btn.isEnabled() is False
         assert page.push_btn.objectName() == "primaryButton"
-        assert "主操作：送进游戏" in page.action_note.text()
+        assert page.action_note.isHidden()
+    finally:
+        page.close()
+
+
+def _flow_states(page) -> list[str]:
+    return [wrap.property("state") for wrap, _number, _label in page.flow._items]
+
+
+def test_fleet_task_flow_detail_hidden_until_selected(qapp, monkeypatch):
+    """船队：① 读存档 → ② 选一项 → ③ 执行；详情默认收起，× 收起。"""
+    from starforge.app.pages import fleet as fleet_mod
+    from starforge.app.widgets import fleet_companion as companion_mod
+    from starforge.app.widgets import pets_view as pets_mod
+
+    monkeypatch.setattr(fleet_mod, "run_worker", lambda *a, **k: None)
+    monkeypatch.setattr(pets_mod, "run_worker", lambda *a, **k: None)
+    monkeypatch.setattr(companion_mod, "run_worker", lambda *a, **k: None)
+    page = fleet_mod.FleetPage()
+    try:
+        # 初始：只显示「读存档」，详情与同伴面板都不占右侧。
+        assert _flow_states(page) == ["active", "pending", "pending"]
+        assert page.detail_card.isHidden() is True
+        assert page.companion.isHidden() is True
+        assert page.load_btn.objectName() == "primary"
+        assert page.browse_btn.objectName() == "ghostButton"
+        assert page.more_btn.menu() is page.more_menu
+        assert page.backup_btn in page.more_menu.actions()
+
+        # 已读、未选中：第 2 步 active；自动选中已取消，表格占满。
+        page._loaded_path = "C:/saves/save.hg"
+        page._set_save_path(page._loaded_path)
+        page._ships = [{"type": "fighter", "type_label": "战斗机", "seed": "0xA",
+                        "slot": 3, "procedural": False}]
+        page._rebuild_ship_list()
+        page._update_ship_empty()
+        page._sync_flow()
+        assert _flow_states(page) == ["done", "active", "pending"]
+        assert page.detail_card.isHidden() is True
+        assert page.list.selectedItems() == []
+
+        # 选中一行：第 3 步 active，详情出现，右上角 × 是统一图标按钮。
+        page.list.setCurrentRow(0)
+        qapp.processEvents()
+        assert _flow_states(page) == ["done", "done", "active"]
+        assert page.detail_card.isHidden() is False
+        assert page.detail_close.objectName() == "uxIconButton"
+
+        page.detail_close.click()
+        qapp.processEvents()
+        assert page.detail_card.isHidden() is True
+        assert page.list.selectedItems() == []
+        assert _flow_states(page) == ["done", "active", "pending"]
+
+        # 同伴标签：没有选中同伴时不显示右栏；选中后才出现，× 可收起。
+        page.tabs.setCurrentWidget(page.pets)
+        assert page.detail_card.isHidden() is True
+        assert page.companion.isHidden() is True
+        page.pets._render({"creatures": [{"name": "小蓝", "creature": "BIRD",
+                                         "seeds": {"creature": "0x12"}}],
+                           "_roles": {"count": 1}})
+        assert page.pets.selected_creature() is None
+        page.pets.table.selectRow(0)
+        qapp.processEvents()
+        assert page.detail_card.isHidden() is False
+        assert page.companion.isHidden() is False
+        page.detail_close.click()
+        qapp.processEvents()
+        assert page.detail_card.isHidden() is True
+        assert page.companion.isHidden() is True
     finally:
         page.close()
 
@@ -161,7 +231,7 @@ def test_ship_viewer_demo_mesh(qapp):
 
 
 def test_link_steps_and_settings_groups(qapp, monkeypatch):
-    """联动是三步链路，设置是四个默认折叠的问题分组。"""
+    """联动是三步纵向行，设置是四个默认折叠的问题分组。"""
     from starforge.app.pages import game_link as link_mod
     from starforge.app.pages import settings as settings_mod
     from starforge.app.widgets.game_flow import StepPanel
@@ -174,11 +244,14 @@ def test_link_steps_and_settings_groups(qapp, monkeypatch):
     try:
         steps = link.findChildren(StepPanel)
         assert [panel.title_label.text() for panel in steps] == [
-            "运行时 / 组件", "游戏连接", "模板 Mod"]
+            "运行时", "游戏连接", "模板 Mod"]
         assert all(panel.action.text() for panel in steps)
+        # 行式布局：状态点 + 一行状态都还在，只是不再竖排大卡。
+        assert all(getattr(panel, "dot", None) is not None for panel in steps)
         assert link.advanced.is_expanded() is False
         assert link.live_assets.isVisibleTo(link.advanced) is False
-        assert "实时资产" in link.advanced.title_label.text()
+        assert "高级" in link.advanced.title_label.text()
+        assert "更多" in link.advanced.title_label.text()
     finally:
         link.close()
 
@@ -189,8 +262,50 @@ def test_link_steps_and_settings_groups(qapp, monkeypatch):
             "路径与自动检测", "安全与性能", "版本与代理", "诊断"]
         assert all(group.is_expanded() is False for group in groups)
         assert settings.run_health_btn.objectName() == "primary"
+        # 行式设置：左侧标签统一固定 120，三行目录控件一致。
+        from PySide6.QtWidgets import QLabel
+
+        labels = {lab.text(): lab for lab in settings.findChildren(QLabel)}
+        for name in ("游戏目录", "存档目录", "数据目录"):
+            assert labels[name].minimumWidth() == 120
+        assert settings.paths_group.chip.text() in ("已定位", "需设置")
     finally:
         settings.close()
+
+
+def test_link_step2_buttons_follow_connection_state(qapp, monkeypatch):
+    """第 2 步三态：已连接→刷新；游戏在跑→附加注入+重启；没跑→启动并注入。"""
+    from starforge.app.pages import game_link as link_mod
+
+    monkeypatch.setattr(link_mod, "run_worker", lambda *a, **k: None)
+    page = link_mod.GameLinkPage()
+    try:
+        page._supported = True
+        page._runtime_ready = True
+        page._in_game = False
+
+        # 已连接：主按钮只刷新，次按钮隐藏（绝不重复注入）。
+        page._reachable = True
+        page._game_running = True
+        page._sync_steps()
+        assert page.step2.action.text() == "刷新状态"
+        assert page.step2.alt.isHidden()
+
+        # 游戏在跑但不可达：主按钮附加注入，次按钮重启并注入可见。
+        page._reachable = False
+        page._game_running = True
+        page._sync_steps()
+        assert page.step2.action.text() == "附加注入"
+        assert not page.step2.alt.isHidden()
+        assert page.step2.alt.text() == "重启并注入"
+
+        # 游戏没跑：主按钮启动游戏并注入，次按钮隐藏。
+        page._game_running = False
+        page._sync_steps()
+        assert page.step2.action.text() == "启动游戏并注入"
+        assert page.step2.alt.isHidden()
+    finally:
+        page.close()
 
 
 def test_workspace_pages_keep_exactly_one_primary(qapp):

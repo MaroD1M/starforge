@@ -283,3 +283,29 @@ def test_ship_lab_compare_has_single_menu_entry(qapp):
         assert page.open_compare_action.isEnabled()
     finally:
         page.close()
+
+
+def test_cancel_search_resets_ui_even_if_job_is_not_running(qapp):
+    """取消不应依赖 worker 状态：点下去就要立刻收起“搜索中”。"""
+    from starforge.app.pages import ship_lab as mod
+
+    class FakeJob:
+        status = "failed"
+        cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+    page = mod.ShipLabPage()
+    try:
+        job = FakeJob()
+        page._job = job
+        page._set_busy(True)
+        page._cancel_search()
+        assert job.cancelled is True
+        assert page._busy is False
+        assert page.cancel_btn.isHidden() is True
+        assert page.primary_btn.isEnabled() is True
+        assert "已取消" in page.status.text()
+    finally:
+        page.close()

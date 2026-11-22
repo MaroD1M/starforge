@@ -70,6 +70,39 @@ def installed_mod() -> Path:
     return agent_dir() / "starforge_agent.py"
 
 
+TOKEN_FILE_NAME = "token"
+
+
+def _load_or_create_token(path: Path | None = None) -> str:
+    """读取持久化 token；不存在/为空才生成一次并写盘（尽量 0600）。
+
+    为什么不能每次启动都换 token：游戏里已经运行的 agent 只在启动时读一次 token，
+    第二次注入/重启 launcher 后若覆盖文件，客户端拿新 token 会一直 401。这里沿用
+    已有 token，``state.json`` 与文件保持一致。不要把这个值写进日志。
+    """
+    target = Path(path) if path else agent_dir() / TOKEN_FILE_NAME
+    try:
+        token = target.read_text("utf-8").strip()
+    except FileNotFoundError:
+        token = ""
+    except OSError as e:
+        log.warning("无法读取 agent token 文件：%s", e)
+        token = ""
+    if token:
+        return token
+    token = secrets.token_urlsafe(32)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(token, encoding="utf-8")
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        log.warning("无法写入 agent token 文件；Steam 启动时认证会退化为 disabled")
+    return token
+
+
 # 构建 runtime（packaging/build_agent_runtime.py）与应用安装器共用这份版本矩阵。
 # 版本不再散落在两个文件里：修改时同步改这里；tests/test_agent_runtime.py 会
 # 校验构建脚本常量与下面一致，status() 也会报告实际 runtime 与矩阵的偏差。
@@ -157,6 +190,96 @@ def _has_agent_packages(py: Path) -> bool:
     base = py.parent
     site = base / "Lib" / "site-packages"
     return (site / "nmspy").is_dir() and (site / "pymhf").is_dir()
+
+
+_OWN_PID_MARKER = "# STARFORGE_OWN_PID_PATCH"
+_OWN_PID_ORIGINAL = "binary = pymem.Pymem(_internal.EXE_NAME, exact_match=True)"
+
+
+def patch_runtime_own_pid(py: Path | None = None) -> dict:
+    """给 pymhf 里所有「按进程名打开 NMS.exe」的地方打幂等补丁。
+
+    为什么需要：pymhf 注入时原本按 ``_internal.EXE_NAME``（NMS.exe）找进程，
+    游戏崩溃留下同名僵尸/多个实例时会打开错误的 PID。补丁先 ``Pymem(os.getpid())``，
+    失败再回退原名。除了 ``injected.py``，``core/memutils.py`` 在建 hook 时也会
+    按名字找进程——漏掉它就会出现「注入成功但 0 hooks、代理不可用」。
+    """
+    try:
+        py = Path(py) if py else (runtime_python() or bare_runtime_python())
+        if not py:
+            return {"ok": False, "patched": False, "reason": "没有可用的运行时"}
+        site = py.parent / "Lib" / "site-packages" / "pymhf"
+        if not site.is_dir():
+            return {"ok": False, "patched": False, "path": str(site),
+                    "reason": "找不到 pymhf 目录"}
+        patched: list[str] = []
+        skipped: list[str] = []
+        for target in sorted(site.rglob("*.py")):
+            changed, reason = _patch_own_pid_file(target)
+            if changed:
+                patched.append(str(target))
+            elif reason != "missing":
+                skipped.append(f"{target.name}:{reason}")
+        if patched:
+            log.info("已为 pymhf 注入自身 PID 补丁：%s", ", ".join(
+                Path(p).name for p in patched))
+            return {"ok": True, "patched": True, "files": patched,
+                    "path": patched[0]}
+        return {"ok": True, "patched": False,
+                "path": str(site / "injected.py"),
+                "reason": "已经打过补丁" if not skipped else "没有可补丁的行",
+                "skipped": skipped}
+    except Exception as e:                              # noqa: BLE001 - 补丁失败不能影响启动
+        return {"ok": False, "patched": False,
+                "error": f"{type(e).__name__}: {e}"}
+
+
+def _patch_own_pid_file(target: Path) -> tuple[bool, str]:
+    """把单个文件里的 ``x = pymem.Pymem(_internal.EXE_NAME, ...)`` 包成自身 PID 优先。"""
+    try:
+        text = target.read_text("utf-8")
+    except OSError:
+        return False, "unreadable"
+    if _OWN_PID_MARKER in text:
+        return False, "patched"
+    original = "pymem.Pymem(_internal.EXE_NAME, exact_match=True)"
+    if original not in text:
+        return False, "missing"
+    out: list[str] = []
+    changed = False
+    for line in text.splitlines(keepends=True):
+        if original in line and "=" in line:
+            lhs = line.split("=", 1)[0].strip()
+            indent = line[: len(line) - len(line.lstrip())]
+            if lhs and lhs.isidentifier():
+                out.append(f"{indent}{_OWN_PID_MARKER}: 先用本进程 PID 打开自身，"
+                           "失败再回退按进程名\n")
+                out.append(f"{indent}try:\n")
+                out.append(f"{indent}    {lhs} = pymem.Pymem(os.getpid())\n")
+                out.append(f"{indent}except Exception:\n")
+                out.append(f"{indent}    {line.lstrip()}")
+                changed = True
+                continue
+        out.append(line)
+    if not changed:
+        return False, "unsupported"
+    if not any(line.strip() == "import os" for line in out):
+        insert_at = 0
+        for index, line in enumerate(out):
+            if line.startswith("import ") or line.startswith("from "):
+                insert_at = index + 1
+        out.insert(insert_at, "import os\n")
+    target.write_text("".join(out), "utf-8")
+    return True, "patched"
+
+
+def _apply_own_pid_patch(py: Path | None = None) -> dict:
+    """调用补丁并只记日志；任何失败都不向 launch 抛异常。"""
+    result = patch_runtime_own_pid(py)
+    if not result.get("ok"):
+        log.warning("pymhf 自身 PID 补丁未应用（不影响启动）：%s",
+                    result.get("error") or result.get("reason") or "未知原因")
+    return result
 
 
 def _runtime_candidates() -> list[Path]:
@@ -538,6 +661,7 @@ def install_deps(version: str | None = None, timeout: int = 600,
         info = _runtime_info()
         report = runtime_report(info, version)
         if report["ok"] and not force:
+            _apply_own_pid_patch(rt)
             return {"ok": True, "note": "运行时已内置且版本匹配，无需安装/更新",
                     "python": str(rt), "versions": report}
         if any(item.startswith("Python ") for item in report["mismatches"]):
@@ -568,8 +692,11 @@ def install_deps(version: str | None = None, timeout: int = 600,
     except OSError as e:
         return {"ok": False, "cmd": cmd,
                 "error": f"无法运行内置 runtime 的 pip（可能是只读安装目录）：{e}"}
-    return {"ok": proc.returncode == 0, "cmd": cmd, "code": proc.returncode,
-            "output": (proc.stdout or "") + (proc.stderr or "")}
+    res = {"ok": proc.returncode == 0, "cmd": cmd, "code": proc.returncode,
+           "output": (proc.stdout or "") + (proc.stderr or "")}
+    if res["ok"]:
+        _apply_own_pid_patch(py)
+    return res
 
 
 _LAUNCH: subprocess.Popen | None = None
@@ -588,7 +715,7 @@ def _existing_agent(port: int, state: dict) -> dict | None:
     return None
 
 
-def launch(attach: bool = True) -> dict:
+def launch(attach: bool = True, *, allow_attach: bool = False) -> dict:
     """启动 pymhf 并注入 agent；attach=True 连正在运行的游戏，否则启动游戏。
 
     每次启动生成一次性 token 写入私有 state.json，并注入 agent 子进程环境；
@@ -597,19 +724,21 @@ def launch(attach: bool = True) -> dict:
 
     **attach 默认被拒绝**：实测在 build 185034 上，对已初始化的游戏进程做注入会让
     NMS.exe 在 ``python311.dll`` 里访问冲突闪退（0xC0000005）。pymhf 的受支持路径是
-    “先创建进程、再注入”，所以请用 ``attach=False`` 由应用启动游戏。调试时可用
-    环境变量 ``STARFORGE_ALLOW_ATTACH_INJECT=1`` 强制打开（风险自负）。
+    “先创建进程、再注入”，所以请用 ``attach=False`` 由应用启动游戏。调试/用户在
+    UI 二次确认后可传 ``allow_attach=True``；环境变量
+    ``STARFORGE_ALLOW_ATTACH_INJECT=1`` 仍可强制打开（风险自负）。
+
+    ``attach=False`` 时如果游戏已经在运行，**不会**再让 Steam 拉起第二个实例：
+    直接返回 ``E_GAME_RUNNING``，由 UI 决定「附加注入」或「重启并注入」。
     """
     if not mem.IS_WINDOWS:
         raise RuntimeError("游戏内通道仅支持 Windows")
-    if attach and os.environ.get("STARFORGE_ALLOW_ATTACH_INJECT") != "1":
+    if attach and not allow_attach and os.environ.get("STARFORGE_ALLOW_ATTACH_INJECT") != "1":
         raise RuntimeError(
             "不支持“附加到已运行的游戏”注入：pymhf 在游戏初始化后注入会与游戏线程竞争，"
             "实测在 build 185034 上会导致 NMS.exe 访问冲突闪退（python311.dll 0xC0000005）。"
             "请改用“由应用启动游戏”的方式（会先创建进程再注入）。"
             "仅调试时可用环境变量 STARFORGE_ALLOW_ATTACH_INJECT=1 强制。")
-    if not mem.IS_WINDOWS:
-        raise RuntimeError("游戏内通道仅支持 Windows")
     install_mod()
     info = _runtime_info()
     if not info.get("http_api"):
@@ -640,9 +769,24 @@ def launch(attach: bool = True) -> dict:
         raise RuntimeError(
             f"agent 端口 {port} 已被其它进程占用。pymhf 当前只支持固定端口；"
             "请关闭占用进程，或设置 STARFORGE_AGENT_PORT（需要 pymhf/runtime 支持）")
-    pid = mem.find_pid("NMS.exe")
-    if attach and not pid:
-        raise RuntimeError("游戏没有运行：请先进存档，或取消「只连接已运行的游戏」让应用启动游戏")
+    pid = mem.find_pid("NMS.exe", require_exe=True)
+    if not attach and pid:
+        # 游戏已在运行：绝不再让 Steam 拉起第二个实例（会抢占存档/端口并导致崩溃）。
+        return {"ok": False, "code": "E_GAME_RUNNING", "pid": pid,
+                "game_running": True, "attach": False,
+                "error": ("游戏已在运行；请选择「附加注入」或先关闭游戏后「重启并注入」。"
+                          "已进入存档时附加注入可能让游戏退出，建议先回主菜单。")}
+    if attach:
+        if not pid:
+            raise RuntimeError("游戏没有运行：请先启动游戏并停在主菜单，再点「附加注入」")
+        # Steam 启动瞬间会出现没有主窗口的同名子进程；注入到它只会得到
+        # “0 hooks、代理不可达”。等真正带窗口的游戏进程出现再注入。
+        window_pid = mem.find_pid("NMS.exe", require_exe=True, require_window=True)
+        if not window_pid:
+            raise RuntimeError(
+                "游戏进程还在启动/加载（没有主窗口）。等主菜单画面出现后，"
+                "再点「附加注入」；不要在这一步重复点击。")
+        pid = window_pid
     if not attach and not exe:
         raise RuntimeError("没有配置游戏目录（设置页选择游戏根目录）")
     overrides = {
@@ -670,18 +814,10 @@ def launch(attach: bool = True) -> dict:
         "cfg={k:v for k,v in cfg.items() if v is not None}\n"
         "load_mod_file(sys.argv[1], config_overrides=cfg)\n"
     )
-    token = secrets.token_urlsafe(32)
-    # 游戏若由 Steam 拉起就不会继承这里的环境变量，所以同时落盘一份 token，
-    # 供 agent 在进程内按“环境变量 → 文件”顺序读取（见 starforge_agent._resolve_agent_token）。
-    try:
-        tok_path = agent_dir() / "token"
-        tok_path.write_text(token, encoding="utf-8")
-        try:
-            os.chmod(tok_path, 0o600)
-        except OSError:
-            pass
-    except OSError:
-        log.warning("无法写入 agent token 文件；Steam 启动时认证会退化为 disabled")
+    token = _load_or_create_token()
+    # 游戏若由 Steam 拉起就不会继承这里的环境变量；持久化 token 文件是 agent 的
+    # 第二来源（见 starforge_agent._resolve_agent_token）。这里绝不每次换 token，
+    # 否则已经注入的 agent 仍用旧 token，客户端会一直 401。
     env = dict(os.environ)
     env["PYTHONUTF8"] = "1"
     # agent 端读取并在每个 endpoint 校验；客户端通过 ?token= 传入。
@@ -697,6 +833,7 @@ def launch(attach: bool = True) -> dict:
     if not py:
         log_file.close()
         raise RuntimeError("没有可用的 Python 运行时；请先点「准备游戏内运行时」")
+    _apply_own_pid_patch(py)
     with _LAUNCH_LOCK:
         try:
             _LAUNCH = subprocess.Popen(
@@ -727,7 +864,8 @@ def launch(attach: bool = True) -> dict:
            "token_auth": "query",
            "build_id": build.build_id(fp), "attach": attach}
     # 不要只看 Popen 成功：NMS 可能因为检测到注入而自行退出。
-    if not injected_game_alive():
+    alive = injected_game_alive(pid=pid) if attach else injected_game_alive()
+    if not alive:
         out.update({
             "ok": False, "code": "E_GAME_EXITED",
             "error": ("注入后游戏进程已退出：NMS 会把注入的 Python/ctypes 识别为模组冲突并关闭游戏"
@@ -737,15 +875,20 @@ def launch(attach: bool = True) -> dict:
     return out
 
 
-def injected_game_alive(wait: float = 6.0) -> bool:
+def injected_game_alive(wait: float = 6.0, pid: int | None = None) -> bool:
     """注入后短暂观察游戏是否还活着。
 
     实测 build 185034：NMS 会把注入的 Python/ctypes 识别成"模组冲突"，
     弹出“是否禁用所有模组”后主动退出（无崩溃转储、不写 DISABLEMODS.TXT）。
     所以 launch() 不能只因为 Popen 成功就报告成功。
+
+    传入 ``pid`` 时只检查该 PID 是否还在同名进程列表里，避免游戏崩溃后留下的
+    另一个 NMS.exe 僵尸让结果看起来“还活着”。
     """
     time.sleep(max(0.0, wait))
     try:
+        if pid is not None:
+            return int(pid) in {int(x) for x in mem.iter_pids("NMS.exe")}
         return bool(mem.find_pid("NMS.exe"))
     except Exception:                                      # noqa: BLE001
         return False

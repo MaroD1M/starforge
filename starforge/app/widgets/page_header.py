@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
 
 from ..theme import SPACE_S, SPACE_XS
-from .ui import ElidedLabel, fit_label
+from .ui import ElidedLabel
 
 
 class PageHeader(QWidget):
@@ -22,11 +22,12 @@ class PageHeader(QWidget):
         self.title.setObjectName("pageTitle")
         self.title.setAccessibleName("页面标题")
         left.addWidget(self.title)
-        self.subtitle = fit_label(QLabel(subtitle))
-        self.subtitle.setObjectName("muted")
+        self.subtitle = ElidedLabel(subtitle)
+        self.subtitle.setObjectName("pageSubtitle")
         self.subtitle.setAccessibleName("页面说明")
         self.subtitle.setToolTip(subtitle)
         self.subtitle.setVisible(bool(subtitle))
+        self.subtitle.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         left.addWidget(self.subtitle)
         h.addLayout(left, 1)
         self.actions = QHBoxLayout()
@@ -44,14 +45,3 @@ class PageHeader(QWidget):
     def add_action(self, widget: QWidget) -> QWidget:
         self.actions.addWidget(widget)
         return widget
-
-    def resizeEvent(self, event) -> None:                   # noqa: N802 - Qt 回调
-        super().resizeEvent(event)
-        # 高 DPI / 窄窗口下 QLabel 的 wordWrap 可能按旧宽度估算高度，
-        # 这里按实际宽度补足，防止说明文字底部被裁掉。
-        try:
-            need = self.subtitle.heightForWidth(max(1, self.subtitle.width()))
-            if need > self.subtitle.minimumHeight():
-                self.subtitle.setMinimumHeight(need)
-        except Exception:                                    # noqa: BLE001
-            pass

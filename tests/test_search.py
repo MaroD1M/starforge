@@ -19,3 +19,20 @@ def test_different_groups_accepted(game_env):
     b = tree[1]["options"][0]["part"]
     q = search.validate(search.SearchQuery(ship="sentinel", want=[a, b]))
     assert len(q.want) == 2
+
+
+def test_explain_handles_measure_dict(game_env, monkeypatch):
+    """上游 measure 返回 dict（tested/hits）时不能再拿它和 int 比较。"""
+    from starforge import search
+    from nms_procgen import fastsearch
+
+    monkeypatch.setattr(fastsearch, "measure",
+                        lambda *a, **k: {"tested": 1000, "hits": 2,
+                                         "parts": 0, "colouring": False})
+    from starforge import parts
+    tree = parts.tree("sentinel")
+    group = next(g for g in tree if g["options"])
+    q = search.SearchQuery(ship="sentinel", want=[group["options"][0]["part"]])
+    res = search.explain(q)
+    assert res["one_in"] == 500.0
+    assert res["estimate_seconds"] is not None

@@ -119,16 +119,18 @@ web/                                 ← 可选 JSON API（兼容层）
 
 ## 4. 可扩展方向（按投入产出）
 
-### P0（后端已落地，UI 接入中）
+### P0（已完成）
 
 1. **地址工作台：坐标 ↔ 符文互转**（`XXXX:YYYY:ZZZZ:SSSS`）
-   - 改 `glyphs.py` + `address.py`；验收：1 万随机地址往返一致、银河中心 `000000000000 ↔ 07FF:007F:007F`
+   - ✅ `starforge/address.py`：10,000 组随机地址往返一致；银河中心 `000000000000 ↔ 07FF:007F:07FF`；`planet=0` 返回 None
+   - ✅ UI：独立「符文」视图，符文 / 坐标 / UA 三形态互转，结果可复制
    - `[参考]` Coordinate-Converter 的交互（**GPL-3.0，只重写数学，不复制代码**）
-2. **发现索引 SQLite 化**（`~/.starforge/cache/discoveries.db`）
-   - schema 见 `research/OSS-SAVE-INDEX.md`：saves/systems/planets/creatures/companions/ships/tools/frigates/bases/teleports
-   - 增量：`size+mtime_ns` 快路径 → `sha256` 慢路径；`extractor_ver` 变更强制重建
+2. **发现索引 SQLite 化 + 多存档**（`~/.starforge/cache/discoveries.db`）
+   - ✅ `starforge/discoveries_index.py`：mtime 快路径 → sha256 → 单事务重建；坏记录计数
+   - ✅ `index_saves()` 汇总存档目录下全部 `save*.hg`；跨存档按行星地址去重
+   - ✅ UI：独立「已发现」视图，筛选 = 存档 / 关键词 / 群系 / 虫蚀 / 命名 / 距离 / 排序 / 上限
 3. **同伴 → 行星 → 动物联查**（“我的同伴来自哪颗星，那颗星还有什么生物”）
-   - 复用 `discoveries` + `creature.companions`
+   - ✅ `Services.companion_planet` / `planet_fauna`；船队页同伴右栏三态 + 传送
 
 ### P1（需要实机校准或数据验证）
 
@@ -162,13 +164,16 @@ web/                                 ← 可选 JSON API（兼容层）
 
 ---
 
-## 6. UI/UX 规范（已落地，后续遵守）
+## 6. UI/UX 规范（v0.16 重构，详见 `docs/UX-DESIGN.md`）
 
+- **一屏一个任务**：页头（标题 + 一行说明 + 主操作）→ 任务步骤（`TaskFlow`）→ 工具条（常用筛选 + 「筛选」）
+  → 结果 → 按需详情（默认隐藏，选中才出现）。
+- **结果优先**：详情不常驻；未选中时结果区占满；关闭按钮把空间还回去。
+- **渐进披露**：常用筛选 ≤3 个；其余进 `FilterPanel`；已选条件用 `FilterChips` 显示，可单个删除。
+- **一个主操作**：每页恰好 1 个 primary；危险操作独立配色 + 二次确认。
+- **文字只留一句**：页头说明 ≤1 行；解释进 tooltip；同一状态不在三处重复。
 - **布局审计指标**（可量化）：控件越界 = 0、同级几何重叠 = 0、文本截断 = 0、隐藏横向溢出 = 0；
-  1280×800 与 1180×760 两档 + 1.5× DPI 必测。
-- **页面结构**：页头（标题/说明/操作）→ 筛选 → 内容 → 详情；长内容一律滚动，不靠固定高度。
-- **风险标签**：只读 / 写存档 / 写内存 / 改世界状态；高风险按钮带二次确认与“回滚”提示。
-- **空态**：说明 + 下一步按钮，不显示伪造数据。
+  1280×800、1180×760 + 1.25× DPI 必测。
 - **快捷键**：`Ctrl+K` 命令面板、`Ctrl+1..7` 页面、`F5` 刷新、`Ctrl+Shift+T` 任务栏。
 - **可访问性**：所有交互控件有 accessibleName/tooltip；Tab 顺序不跳栏。
 

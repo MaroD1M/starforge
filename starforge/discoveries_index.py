@@ -291,17 +291,77 @@ def index_save(path: str | None = None, *, db_file: str | None = None) -> dict:
             conn.close()
 
 
+def player_save_paths(folder: str | Path | None = None) -> list[Path]:
+    """列出可读玩家存档（``save*.hg``），与「我的 → 存档」使用同一套判定。"""
+    from .save import library
+
+    try:
+        scan = library.scan_dir(folder)
+    except Exception as e:                                # noqa: BLE001
+        log.debug("列出存档失败：%s", e)
+        return []
+    return [Path(p) for p in (scan.get("usable") or [])]
+
+
+def index_saves(paths: list[str | Path] | None = None, *,
+                db_file: str | None = None) -> dict:
+    """索引**全部**玩家存档；默认扫描存档目录。
+
+    返回 ``{"ok","count","saves":[{save_id,name,count,rebuilt,cached}],...}``。
+    单档失败不会拖垮其它存档：失败项放进 ``errors``，能读的仍然入库。
+    """
+    targets = [Path(p) for p in (paths or player_save_paths())]
+    results: list[dict] = []
+    errors: list[dict] = []
+    for path in targets:
+        res = index_save(str(path), db_file=db_file)
+        if res.get("ok"):
+            results.append({"save_id": res.get("save_id"), "path": str(path),
+                            "name": path.name, "count": int(res.get("count") or 0),
+                            "rebuilt": bool(res.get("rebuilt")),
+                            "cached": bool(res.get("cached"))})
+        else:
+            errors.append({"path": str(path), "name": path.name,
+                           "error": res.get("error") or "读取失败"})
+    total = sum(item["count"] for item in results)
+    try:
+        st = stats(db_file=db_file)
+        unique = int(st.get("unique_planets") or total)
+    except Exception:                                     # noqa: BLE001
+        unique = total
+    return {
+        "ok": bool(results) or not targets,
+        "count": unique,
+        "raw_count": total,
+        "saves": results,
+        "errors": errors,
+        "rebuilt": any(item["rebuilt"] for item in results),
+        "cached": bool(results) and all(item["cached"] for item in results),
+    }
+
+
 # ---------------------------------------------------------------- 查询
 
 
-def _db_rows(conn: sqlite3.Connection, save_id: str | None) -> list[dict]:
-    sql = ("SELECT save_id, system_ua, planet_index, planet_ua, biome, infested, "
-           "named, name, discovered_at, system_name, glyphs, coords FROM planets")
-    args: tuple = ()
+def _db_rows(conn: sqlite3.Connection, save_id: str | None = None,
+             save_ids: list[str] | None = None) -> list[dict]:
+    sql = ("SELECT p.save_id, p.system_ua, p.planet_index, p.planet_ua, p.biome, "
+           "p.infested, p.named, p.name, p.discovered_at, p.system_name, p.glyphs, "
+           "p.coords, s.path AS save_path "
+           "FROM planets p LEFT JOIN saves s ON s.save_id = p.save_id")
+    clauses: list[str] = []
+    args: list = []
     if save_id:
-        sql += " WHERE save_id=?"
-        args = (save_id,)
-    sql += " ORDER BY system_ua, planet_index"
+        clauses.append("p.save_id=?")
+        args.append(save_id)
+    if save_ids:
+        ids = [str(x) for x in save_ids if str(x or "").strip()]
+        if ids:
+            clauses.append("p.save_id IN (%s)" % ",".join("?" * len(ids)))
+            args.extend(ids)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY p.system_ua, p.planet_index"
     out: list[dict] = []
     for row in conn.execute(sql, args):
         item = dict(row)
@@ -309,8 +369,20 @@ def _db_rows(conn: sqlite3.Connection, save_id: str | None) -> list[dict]:
         item["named"] = bool(item.get("named"))
         item["infested"] = (None if item.get("infested") is None
                             else bool(item["infested"]))
+        path = item.get("save_path") or ""
+        item["save_name"] = Path(path).name if path else ""
         out.append(item)
     return out
+
+
+def _filter_keyword(rows: list[dict], keyword: Any) -> list[dict]:
+    """按关键词过滤：行星名 / 星系名 / 坐标 / 符文 / 发现者。"""
+    needle = str(keyword or "").strip().casefold()
+    if not needle:
+        return rows
+    keys = ("name", "system_name", "coords", "glyphs", "discoverer", "save_name")
+    return [row for row in rows
+            if any(needle in str(row.get(key) or "").casefold() for key in keys)]
 
 
 def _center_distance_ly(ua: Any) -> float | None:
@@ -336,6 +408,7 @@ def _distance_key(row: dict) -> tuple:
 def query(biome: Any = None, infested: Any = None, named: Any = None,
           limit: int | None = 500, order: str = "distance", *,
           near_ua: Any = None, save_id: str | None = None,
+          save_ids: list[str] | None = None, keyword: Any = None,
           db_file: str | None = None) -> list[dict]:
     """按群系/感染/命名筛选索引里的行星。
 
@@ -345,11 +418,11 @@ def query(biome: Any = None, infested: Any = None, named: Any = None,
     一致；参数非法时抛 ``ValueError``。
     """
     mode = str(order or "distance").strip().casefold()
-    if mode not in ("distance", "biome", "discovered", "order"):
-        raise ValueError(f"不支持的排序方式：{order!r}（可用 distance / biome）")
+    if mode not in ("distance", "biome", "discovered", "order", "name"):
+        raise ValueError(f"不支持的排序方式：{order!r}（可用 distance / biome / discovered / name）")
     conn = _connect(db_file)
     try:
-        rows = _db_rows(conn, save_id)
+        rows = _filter_keyword(_db_rows(conn, save_id, save_ids), keyword)
     finally:
         conn.close()
 
@@ -362,6 +435,15 @@ def query(biome: Any = None, infested: Any = None, named: Any = None,
     if mode == "order":
         return discoveries.filter_discovered(rows, biome=biome, infested=infested,
                                              named=named, limit=limit, sort="order")
+    if mode == "name":
+        filtered = discoveries.filter_discovered(rows, biome=biome, infested=infested,
+                                                 named=named, limit=None, sort="order")
+        filtered.sort(key=lambda row: (str(row.get("name") or "").casefold(),
+                                       str(row.get("system_name") or "").casefold(),
+                                       str(row.get("system_ua") or "")))
+        if limit:
+            filtered = filtered[: max(0, min(int(limit), _MAX_LIMIT))]
+        return filtered
 
     origin = None if near_ua in (None, "") else near_ua
     if origin is not None:
@@ -389,6 +471,9 @@ def stats(db_file: str | None = None) -> dict:
     try:
         saves = conn.execute("SELECT COUNT(*) n FROM saves").fetchone()["n"]
         planets = conn.execute("SELECT COUNT(*) n FROM planets").fetchone()["n"]
+        unique = conn.execute(
+            "SELECT COUNT(*) n FROM (SELECT DISTINCT system_ua, planet_index, "
+            "planet_ua FROM planets)").fetchone()["n"]
         infested = conn.execute(
             "SELECT COUNT(*) n FROM planets WHERE infested=1").fetchone()["n"]
         named = conn.execute(
@@ -398,9 +483,21 @@ def stats(db_file: str | None = None) -> dict:
             "GROUP BY biome ORDER BY n DESC, biome")}
         updated = conn.execute("SELECT MAX(indexed_at) t FROM saves").fetchone()["t"]
         meta = {row["k"]: row["v"] for row in conn.execute("SELECT k, v FROM meta")}
+        save_files = []
+        for row in conn.execute("SELECT save_id, path, size, mtime_ns, indexed_at "
+                                "FROM saves ORDER BY path"):
+            save_files.append({
+                "save_id": row["save_id"],
+                "name": Path(row["path"]).name,
+                "size": int(row["size"] or 0),
+                "mtime_ns": int(row["mtime_ns"] or 0),
+                "indexed_at": int(row["indexed_at"] or 0),
+            })
         return {"ok": True, "db": conn.execute("PRAGMA database_list").fetchone()["file"],
                 "saves": int(saves), "planets": int(planets),
+                "unique_planets": int(unique),
                 "biomes": biomes, "infested": int(infested), "named": int(named),
+                "save_files": save_files,
                 "updated": updated, "extractor_ver": EXTRACTOR_VER,
                 "active_extractor_ver": _int_or_none(meta.get("extractor_ver")),
                 "schema_version": SCHEMA_VERSION}

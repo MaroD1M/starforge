@@ -5,18 +5,19 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QFileSystemWatcher, QSize, Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QPixmap
+from PySide6.QtGui import QAction, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QStyledItemDelegate,
@@ -43,7 +44,15 @@ from ..widgets.page_header import PageHeader
 from ..widgets.pets_view import PetsView
 from ..widgets.ship_card import install_card_delegate
 from ..widgets.ship_viewer import ShipViewer
-from ..widgets.ui import Card, danger_button, ghost_button, icon_from_png, muted
+from ..widgets.ui import (
+    Card,
+    ElidedLabel,
+    danger_button,
+    ghost_button,
+    icon_from_png,
+    muted,
+)
+from ..widgets.ux import TaskFlow
 from ..widgets.worker import run as run_worker
 
 STAT_LABELS = {"damage": "伤害", "shield": "护盾", "hyperdrive": "超空间驱动",
@@ -70,7 +79,9 @@ class _FitPixmapLabel(QLabel):
 
     def _apply(self) -> None:
         if self._source.isNull():
-            QLabel.setPixmap(self, QPixmap())
+            # 没有图片时保留现有文字（固定模型说明）；setPixmap 会清空 QLabel 文本。
+            if not self.text().strip():
+                QLabel.setPixmap(self, QPixmap())
             return
         width = max(160, self.width() - 8)
         pix = self._source
@@ -200,6 +211,7 @@ class FleetPage(QWidget):
         super().__init__(parent)
         self.svc = get_services()
         self._loaded = False
+        self._save_path = ""
         self._loaded_path = ""
         self._exporting = False
         self._loading = False
@@ -235,8 +247,7 @@ class FleetPage(QWidget):
         root = page_layout(self)
 
         self.header = PageHeader(
-            "我的船队",
-            "监视存档变化，随时备份恢复或批量导出，并查看飞船属性与 3D 模型。")
+            "我的船队", "读存档 → 选一项 → 执行；写回会先自动备份。")
         # PageHeader 默认垂直策略是 Minimum（sizeHint 即最小高度），
         # 会把整页最小高度抬到页头 sizeHint；这里允许压缩，矮窗口才不被裁。
         self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -245,70 +256,17 @@ class FleetPage(QWidget):
         self.header.subtitle.setToolTip(self.header.subtitle.text())
         root.addWidget(self.header)
 
-        outer = PageSplitter("fleet-v2")
-        root.addWidget(outer, 1)
+        # 一屏一条路径：① 读存档 → ② 选一项 → ③ 执行。
+        self.flow = TaskFlow(["读存档", "选一项", "执行"])
+        root.addWidget(self.flow)
 
-        # 「存档」工作区入口只回答两件事：当前是哪个存档、怎么换一个文件。
-        # 目录扫描/批量文件管理留在设置页「存档目录与文件」，这里不重复。
-        left = Card("存档", "当前存档与切换文件")
-        left.setMinimumWidth(210)
-        v = left.v
-        self.save_current = muted("当前存档：未选择")
-        v.addWidget(self.save_current)
-        self.path = QLineEdit()
-        self.path.setPlaceholderText("save.hg")
-        self.path.setReadOnly(True)
-        self.path.setToolTip("当前存档的完整路径；点「浏览…」切换文件")
-        # 主题字体（尤其 1.25 DPI / 中文回退字体）下按 sizeHint 补足高度，
-        # 避免 QLineEdit 被压 2px 后文字底边被裁。
-        self.path.ensurePolished()
-        self.path.setMinimumHeight(max(36, self.path.minimumSizeHint().height()))
-        v.addWidget(self.path)
-        row = QHBoxLayout()
-        self.browse_btn = QPushButton("浏览…")
-        self.browse_btn.setToolTip("选择另一个 save.hg 并读取（不改存档内容）")
-        self.browse_btn.clicked.connect(self._browse)
-        row.addWidget(self.browse_btn)
-        row.addStretch(1)
-        v.addLayout(row)
-        self.info = muted("选择存档后读取")
-        v.addWidget(self.info)
-        v.addStretch(1)
-        outer.addWidget(left)
+        root.addWidget(self._build_toolbar())
 
-        # 主从表：左边列表/标签页，右边详情；两者各自可拖拽，详情不被挤压。
+        # 主从表：左边列表/标签页，右边详情；详情默认收起，选中行后才出现。
         split = PageSplitter("fleet-main-v2")
+        self.split = split
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 0)
-
-        self.load_btn = QPushButton("读取存档")
-        self.load_btn.setObjectName("primary")
-        self.load_btn.setToolTip("读取当前存档中的飞船与同伴")
-        self.load_btn.clicked.connect(self._load)
-        self.header.add_action(self.load_btn)
-
-        self.backup_btn = QPushButton("备份恢复")
-        self.backup_btn.setToolTip("查看已有备份，或从备份恢复当前存档")
-        self.backup_btn.clicked.connect(self._open_backups)
-        self.header.add_action(self.backup_btn)
-
-        self.save_edit_btn = QPushButton("存档编辑…")
-        self.save_edit_btn.setEnabled(False)
-        self.save_edit_btn.setToolTip("修改存档中的货币与飞船名称/涂装；先备份，可写入副本")
-        self.save_edit_btn.clicked.connect(self._open_save_edit)
-        self.header.add_action(self.save_edit_btn)
-
-        self.extras_btn = QPushButton("扩展编辑…")
-        self.extras_btn.setEnabled(False)
-        self.extras_btn.setToolTip("编辑库存、词语/知识、任务与奖励；先备份，可写入副本")
-        self.extras_btn.clicked.connect(self._open_save_extras)
-        self.header.add_action(self.extras_btn)
-
-        self.export_btn = QPushButton("批量导出")
-        self.export_btn.setEnabled(False)
-        self.export_btn.setToolTip("把当前存档中的飞船导出为压缩包（ZIP；含 3D 模型文件 glb、预览图 png 与清单）")
-        self.export_btn.clicked.connect(self._export_all)
-        self.header.add_action(self.export_btn)
 
         mid = QWidget()
         mid.setMinimumWidth(340)
@@ -321,27 +279,30 @@ class FleetPage(QWidget):
         sv = QVBoxLayout(ship_tab)
         sv.setContentsMargins(0, 0, 0, 0)
         bar = QHBoxLayout()
-        self.result_info = QLabel("还没有飞船")
+        self.result_info = ElidedLabel("还没有飞船")
         self.result_info.setObjectName("muted")
-        bar.addWidget(self.result_info)
-        bar.addStretch(1)
+        self.result_info.setToolTip("读取存档后显示飞船数量")
+        bar.addWidget(self.result_info, 1)
 
         self.sort_mode = QComboBox()
         self.sort_mode.addItem("按类型", "type")
         self.sort_mode.addItem("按等级", "class")
         self.sort_mode.addItem("按种子", "seed")
+        self.sort_mode.setToolTip("排序方式")
         self.sort_mode.currentIndexChanged.connect(self._apply_sort)
         bar.addWidget(self.sort_mode)
 
         self.sort_order = QComboBox()
         self.sort_order.addItem("升序", False)
         self.sort_order.addItem("降序", True)
+        self.sort_order.setToolTip("排序方向")
         self.sort_order.currentIndexChanged.connect(self._apply_sort)
         bar.addWidget(self.sort_order)
 
         self.view_mode = QComboBox()
         self.view_mode.addItem("卡片", "grid")
         self.view_mode.addItem("列表", "list")
+        self.view_mode.setToolTip("卡片或列表；列表一屏能看更多")
         self.view_mode.currentIndexChanged.connect(self._apply_view_mode)
         bar.addWidget(self.view_mode)
 
@@ -360,8 +321,7 @@ class FleetPage(QWidget):
         sv.addWidget(self.list, 1)
 
         self.empty_state = EmptyState(
-            "没有存档",
-            "选择 save.hg 后点「读取存档」；监视到存档变化会自动刷新。",
+            "没有存档", "先选择 save.hg，再点「读取存档」。",
             icon="◇", button_text="读取存档")
         self.empty_state.set_action("读取存档", self._load)
         for label in (self.empty_state.title_label, self.empty_state.description_label):
@@ -370,35 +330,46 @@ class FleetPage(QWidget):
         sv.addWidget(self.empty_state, 1)
         self.tabs.addTab(ship_tab, "飞船")
 
-        # 同伴详情统一放到右侧详情区（来源、符文、动物联查与动作），
-        # 列表行内不再堆按钮，保持一屏一个主操作。
-        self.pets = PetsView(self.svc, inline_detail=False)
+        # 同伴详情统一放到右侧详情区（来源、符文、动物联查与动作）。
+        self.pets = PetsView(self.svc, inline_detail=False, auto_select=False)
         self.tabs.addTab(self.pets, "同伴")
 
         self.frigates_table = self._extra_table(FRIGATE_HEADERS)
-        self.frigates_page = self._extra_page(
-            self.frigates_table, "护卫舰只读：名称、类型、等级、属性与种子。")
+        self.frigates_page = self._extra_page(self.frigates_table)
         self.tabs.addTab(self.frigates_page, "护卫舰")
+        self.tabs.setTabToolTip(self.tabs.count() - 1, "护卫舰（只读）")
         self.multitools_table = self._extra_table(MULTITOOL_HEADERS)
-        self.multitools_page = self._extra_page(
-            self.multitools_table, "多用途工具只读：名称、等级、型号、槽位与种子。")
+        self.multitools_page = self._extra_page(self.multitools_table)
         self.tabs.addTab(self.multitools_page, "工具")
-        self.tabs.setTabToolTip(self.tabs.count() - 1, "多用途工具")
+        self.tabs.setTabToolTip(self.tabs.count() - 1, "多用途工具（只读）")
         self.freighter_table = self._extra_table(FREIGHTER_HEADERS)
-        self.freighter_page = self._extra_page(
-            self.freighter_table, "货船只读：当前货船型号、种子与母星系种子。")
+        self.freighter_page = self._extra_page(self.freighter_table)
         self.tabs.addTab(self.freighter_page, "货船")
+        self.tabs.setTabToolTip(self.tabs.count() - 1, "货船（只读）")
+        for table in (self.frigates_table, self.multitools_table, self.freighter_table):
+            table.itemSelectionChanged.connect(self._extra_selected)
         self.tabs.currentChanged.connect(self._tab_changed)
         split.addWidget(mid)
 
-        right = Card("飞船详情")
+        # 详情卡没有常驻标题：标题行就是选中项名称 + 右上角收起按钮。
+        right = Card()
         self.detail_card = right
         right.setMinimumWidth(320)
         rv = right.v
+        head = QHBoxLayout()
+        head.setSpacing(6)
         self.title = QLabel("未选择飞船")
         self.title.setStyleSheet("font-size:15px;font-weight:700;")
         self.title.setWordWrap(True)
-        rv.addWidget(self.title)
+        head.addWidget(self.title, 1)
+        self.detail_close = QPushButton("×")
+        self.detail_close.setObjectName("uxIconButton")
+        self.detail_close.setFixedSize(24, 24)
+        self.detail_close.setToolTip("收起详情，把空间还给列表")
+        self.detail_close.setAccessibleName("收起详情")
+        self.detail_close.clicked.connect(self._close_detail)
+        head.addWidget(self.detail_close, 0, Qt.AlignTop)
+        rv.addLayout(head)
 
         # 预览区（3D / 静态图 / 固定模型说明）单独成块并保留最小高度，
         # 矮窗口时优先压缩下方属性文字，不把预览压扁。
@@ -426,8 +397,7 @@ class FleetPage(QWidget):
         self.preview_pane = preview
         rv.addWidget(preview, 1)
 
-        # 同伴选中后，右栏整体切换为来源行星 + 符文 + 动物联查，动作也只有
-        # 「复制符文 / 传送到来源星球」，不再和飞船动作混在同一屏。
+        # 同伴选中后，右栏整体切换为来源行星 + 符文 + 动物联查。
         self.companion = FleetCompanionPanel(self.svc)
         self.companion.bind_pets(self.pets)
         self.companion.hide()
@@ -435,12 +405,11 @@ class FleetPage(QWidget):
         self.pets.selectionChanged.connect(self._companion_selected)
 
         self.detail = muted("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
+        self.detail.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         rv.addWidget(self.detail)
         self.write_preview = muted(EMPTY_WRITE_PREVIEW)
         rv.addWidget(self.write_preview)
-        self.action_note = muted(
-            "选中飞船后，详情区只显示一个主操作；写回存档会改等级/属性并自动备份，"
-            "送进游戏只写模板种子、不动存档。")
+        self.action_note = muted("")
         rv.addWidget(self.action_note)
         buttons = FleetFlowBar()
         self.copy_btn = ghost_button("复制种子", "复制选中飞船的种子")
@@ -456,16 +425,81 @@ class FleetPage(QWidget):
         self.push_btn.setObjectName("ghostButton")
         buttons.addWidget(self.push_btn)
         rv.addWidget(buttons)
-        split.addWidget(mid)
+        # 只读扩展没有预览/动作时，用一个弹性空白把标题与内容顶到上方，
+        # 避免 QVBoxLayout 把标题行和正文拉开。
+        self.card_spacer = QWidget()
+        self.card_spacer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.card_spacer.hide()
+        rv.addWidget(self.card_spacer, 1)
         split.addWidget(right)
-        split.set_default_sizes([480, 320])
+        split.set_default_sizes([760, 360])
         split.restore()
+        right.setVisible(False)
 
-        outer.addWidget(split)
-        outer.setStretchFactor(0, 0)
-        outer.setStretchFactor(1, 1)
-        outer.set_default_sizes([230, 860])
-        outer.restore()
+        root.addWidget(split, 1)
+
+        # 状态消息只在窗口状态栏显示；没有状态栏时（单独构造页面）写到这里，
+        # 不占页面高度。
+        self.info = muted("")
+        self.info.setParent(self)
+        self.info.hide()
+        self._update_actions()
+        self._sync_flow()
+
+    def _build_toolbar(self) -> QWidget:
+        """顶部只回答两件事：当前是哪个存档、怎么换一个文件。"""
+        bar = QFrame()
+        bar.setObjectName("uxToolbar")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(10, 6, 10, 6)
+        h.setSpacing(8)
+
+        self.save_current = ElidedLabel("尚未读取存档")
+        self.save_current.setObjectName("muted")
+        self.save_current.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.save_current.setToolTip("点「浏览…」选择 save.hg")
+        self.save_current.setAccessibleName("当前存档：未选择")
+        h.addWidget(self.save_current, 1)
+
+        self.load_btn = QPushButton("读取存档")
+        self.load_btn.setObjectName("primary")
+        self.load_btn.setToolTip("读取当前存档中的飞船与同伴")
+        self.load_btn.clicked.connect(self._load)
+        h.addWidget(self.load_btn)
+
+        self.browse_btn = QPushButton("浏览…")
+        self.browse_btn.setObjectName("ghostButton")
+        self.browse_btn.setToolTip("选择另一个 save.hg 并读取（不改存档内容）")
+        self.browse_btn.clicked.connect(self._browse)
+        h.addWidget(self.browse_btn)
+
+        self.more_btn = QPushButton("更多 ▾")
+        self.more_btn.setObjectName("ghostButton")
+        self.more_btn.setToolTip("备份恢复、存档编辑、扩展编辑与批量导出")
+        self.more_menu = QMenu(self.more_btn)
+        self.backup_btn = QAction("备份恢复…", self)
+        self.backup_btn.triggered.connect(self._open_backups)
+        self.more_menu.addAction(self.backup_btn)
+        self.save_edit_btn = QAction("存档编辑…", self)
+        self.save_edit_btn.setEnabled(False)
+        self.save_edit_btn.setToolTip("修改存档中的货币与飞船名称/涂装；先备份，可写入副本")
+        self.save_edit_btn.triggered.connect(self._open_save_edit)
+        self.more_menu.addAction(self.save_edit_btn)
+        self.extras_btn = QAction("扩展编辑…", self)
+        self.extras_btn.setEnabled(False)
+        self.extras_btn.setToolTip("编辑库存、词语/知识、任务与奖励；先备份，可写入副本")
+        self.extras_btn.triggered.connect(self._open_save_extras)
+        self.more_menu.addAction(self.extras_btn)
+        self.more_menu.addSeparator()
+        self.export_btn = QAction("批量导出…", self)
+        self.export_btn.setEnabled(False)
+        self.export_btn.setToolTip(
+            "把当前存档中的飞船导出为 ZIP（含 3D glb、预览图与清单）")
+        self.export_btn.triggered.connect(self._export_all)
+        self.more_menu.addAction(self.export_btn)
+        self.more_btn.setMenu(self.more_menu)
+        h.addWidget(self.more_btn)
+        return bar
 
     # ---------------------------------------------------------------- 数据
 
@@ -475,49 +509,110 @@ class FleetPage(QWidget):
         self._loaded = True
         self._auto()
 
+    def _set_save_path(self, path: str) -> None:
+        """工具栏只显示文件名；完整路径放在 tooltip。"""
+        self._save_path = str(path or "").strip()
+        name = Path(self._save_path).name if self._save_path else ""
+        self.save_current.setText(name or "尚未读取存档")
+        self.save_current.setToolTip(self._save_path or "点「浏览…」选择 save.hg")
+        self.save_current.setAccessibleName(f"当前存档：{name or '未选择'}")
+
+    # ---------------------------------------------------------------- 任务步骤
+
+    def _current_extra_table(self) -> QTableWidget | None:
+        widget = self.tabs.currentWidget()
+        for page, table in ((self.frigates_page, self.frigates_table),
+                            (self.multitools_page, self.multitools_table),
+                            (self.freighter_page, self.freighter_table)):
+            if widget is page:
+                return table
+        return None
+
+    def _has_selection(self) -> bool:
+        if self.tabs.currentWidget() is self.pets:
+            return bool(self.pets.selected_creature())
+        table = self._current_extra_table()
+        if table is not None:
+            return bool(table.selectionModel().selectedRows())
+        return bool(self.list.selectedItems())
+
+    def _sync_flow(self) -> None:
+        """① 读存档 → ② 选一项 → ③ 执行；只表达当前位置。"""
+        if not self._loaded_path:
+            self.flow.set_active(0)
+        elif self._has_selection():
+            self.flow.set_active(2, done=(0, 1))
+        else:
+            self.flow.set_active(1, done=(0,))
+
+    def _show_detail_card(self) -> None:
+        # 详情默认隐藏；展开时把分栏宽度还给右栏，列表仍然可读。
+        if not self.detail_card.isVisible():
+            total = max(1, self.split.width() - self.split.handleWidth())
+            right = min(400, max(320, total // 3))
+            self.detail_card.setVisible(True)
+            self.split.setSizes([max(320, total - right), right])
+
+    def _hide_detail_card(self) -> None:
+        self.detail_card.setVisible(False)
+
+    def _close_detail(self) -> None:
+        if self.tabs.currentWidget() is self.pets:
+            self.pets.clear_selection()
+            self.companion.set_creature({})
+            self.companion.hide()
+        else:
+            table = self._current_extra_table()
+            if table is not None:
+                table.clearSelection()
+            else:
+                self.list.clearSelection()
+                self.list.setCurrentItem(None)
+        self._hide_detail_card()
+        self._sync_flow()
+
     def _auto(self) -> None:
-        if self.path.text().strip():
+        if self._save_path:
             self._load()
             return
 
         def done(res: dict) -> None:
             p = res.get("path") or ""
             if p:
-                self.path.setText(p)
-                self.path.setCursorPosition(0)
+                self._set_save_path(p)
                 self._load()
             else:
-                self.save_current.setText("当前存档：未选择")
-                self.info.setText("没有自动找到存档；请点「浏览…」选择 save.hg")
-                self._show_ship_empty("没有存档", "没有自动找到存档；请点「浏览…」选择 save.hg。")
+                self._set_save_path("")
+                text = "没有自动找到存档；点「浏览…」选择 save.hg。"
+                self._status(text)
+                self._show_ship_empty("没有存档", text)
 
         def fail(msg: str) -> None:
-            text = "未自动找到存档；请点「浏览…」选择 save.hg。"
-            self.save_current.setText("当前存档：未选择")
-            self.info.setText(text)
+            text = "未自动找到存档；点「浏览…」选择 save.hg。"
+            self._set_save_path("")
+            self._status(text)
             self.info.setToolTip(msg)
             self._show_ship_empty("没有存档", text)
 
         run_worker(self.svc.default_save, done, fail)
 
     def _browse(self) -> None:
-        start = self.path.text()
+        start = self._save_path
         if start and not Path(start).is_file():
             start = str(Path(start).parent) if Path(start).parent.exists() else ""
         p, _ = QFileDialog.getOpenFileName(self, "选择存档", start, "存档 (*.hg);;所有文件 (*)")
         if p:
-            self.path.setText(p)
-            self.path.setCursorPosition(0)
+            self._set_save_path(p)
             self._load()
 
     def open_backups(self) -> None:
         self._open_backups()
 
     def _open_backups(self) -> None:
-        path = self.path.text().strip()
+        path = self._save_path or self._loaded_path
         if not path:
-            self.info.setText("请先选择或读取存档，再查看备份")
-            self._show_ship_empty("没有存档", "请先选择或读取存档，再查看备份。")
+            self._status("请先选择或读取存档，再查看备份")
+            self._show_ship_empty("没有存档", "先选择 save.hg，再查看备份。")
             notify.warn("请先选择或读取存档")
             return
         dlg = BackupDialog(path, self)
@@ -556,7 +651,7 @@ class FleetPage(QWidget):
     def _on_watch_timeout(self) -> None:
         if self._is_busy() or time.monotonic() < self._watch_ignore_until:
             return
-        path = self.path.text().strip() or self._loaded_path
+        path = self._save_path or self._loaded_path
         if not path or not Path(path).is_file():
             return
         self._load(notice="存档已变化，已刷新")
@@ -576,11 +671,10 @@ class FleetPage(QWidget):
         return table
 
     @staticmethod
-    def _extra_page(table: QTableWidget, note: str) -> QWidget:
+    def _extra_page(table: QTableWidget) -> QWidget:
         page = QWidget()
         v = QVBoxLayout(page)
         v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(muted(note))
         v.addWidget(table, 1)
         return page
 
@@ -596,50 +690,77 @@ class FleetPage(QWidget):
     def _tab_changed(self, index: int) -> None:
         widget = self.tabs.widget(index)
         if widget is self.pets:
-            self.detail_card.set_title("同伴详情")
-            self.title.setText("同伴")
+            self.title.setText("同伴详情")
             self._set_ship_actions_visible(False)
             self.detail.hide()
             self.viewer.hide()
             self.fallback.hide()
             self.preview_pane.hide()
             self.pets_note.hide()
-            self.companion.show()
+            self.card_spacer.hide()
             self.companion.set_path(self._loaded_path)
             if self._loaded_path:
                 self.pets.set_save_path(self._loaded_path)
                 self.pets.ensure_loaded()
             selected = self.pets.selected_creature()
             self.companion.set_creature(selected or {})
+            self.companion.setVisible(bool(selected))
+            if selected:
+                name = _text(selected.get("name") or selected.get("creature"), "同伴")
+                self.title.setText(f"同伴  {name}")
+                self._show_detail_card()
+            else:
+                self._hide_detail_card()
+            self._sync_flow()
             return
         self.companion.hide()
         if self._is_extras_tab(index):
-            self.detail_card.set_title(f"{self.tabs.tabText(index)}详情")
             self.title.setText(self.tabs.tabText(index))
             self._set_ship_actions_visible(False)
-            self.detail.show()
-            self.pets_note.setText("这里只读展示存档中的船队扩展数据；没有 API 的写回不会伪造。")
-            self.pets_note.show()
-            self.preview_pane.show()
+            self.preview_pane.hide()
             self.viewer.hide()
             self.fallback.hide()
+            self.pets_note.hide()
+            self.detail.hide()
+            self.card_spacer.show()
             if self._loaded_path:
-                self.detail.setText("正在读取船队扩展…")
                 self._load_extras()
-            else:
-                self.detail.setText("先读取存档，再查看货船/护卫舰/多用途工具。")
+            self._extra_selected()
             return
-        self.detail_card.set_title("飞船详情")
         self.title.setText("飞船详情")
         self._set_ship_actions_visible(True)
         self.detail.show()
         self.pets_note.hide()
+        self.card_spacer.hide()
         self.preview_pane.show()
         self.fallback.hide()
         self.viewer.show()
         self.detail.setText("选中一艘飞船后在这里查看 3D 模型、等级与属性。")
-        if self.list.selectedItems():
-            self._select()
+        self._select()
+
+    def _extra_selected(self) -> None:
+        """只读扩展表格：选中行后展开详情，未选时不占右侧空间。"""
+        table = self._current_extra_table()
+        if table is None:
+            return
+        rows = table.selectionModel().selectedRows()
+        if not rows:
+            self._hide_detail_card()
+            self._sync_flow()
+            return
+        row = rows[0].row()
+        lines = []
+        for column in range(table.columnCount()):
+            head = table.horizontalHeaderItem(column)
+            item = table.item(row, column)
+            if head is not None and item is not None:
+                lines.append(f"{head.text()}：{item.text()}")
+        self.title.setText(self.tabs.tabText(self.tabs.currentIndex()))
+        self.detail.setText("\n".join(lines) or "这一行没有可显示的字段。")
+        self.detail.show()
+        self.card_spacer.show()
+        self._show_detail_card()
+        self._sync_flow()
 
     def _companion_selected(self, creature: dict) -> None:
         data = creature if isinstance(creature, dict) else {}
@@ -649,8 +770,13 @@ class FleetPage(QWidget):
         if data:
             name = _text(data.get("name") or data.get("creature"), "同伴")
             self.title.setText(f"同伴  {name}")
+            self.companion.show()
+            self._show_detail_card()
         else:
-            self.title.setText("同伴")
+            self.title.setText("同伴详情")
+            self.companion.hide()
+            self._hide_detail_card()
+        self._sync_flow()
 
     def _status(self, text: str) -> None:
         window = self.window()
@@ -670,18 +796,20 @@ class FleetPage(QWidget):
         self._thumb_queue.clear()
         self.load_btn.setEnabled(False)
         self.error_banner.clear()
-        self.save_current.setText("当前存档：正在读取…")
-        self.info.setText("正在读取存档…")
-        self.result_info.setText("正在读取存档…")
+        self._status("正在读取存档…")
+        self.result_info.setText("正在读取…")
         self.list.clear()
         self.list.hide()
         self.empty_state.hide()
         self.pets.clear()
         self.companion.set_creature({})
+        self.companion.hide()
         self._clear_extras()
         self._ships = []
         self._loaded_path = ""
+        self._hide_detail_card()
         self._update_actions()
+        self._sync_flow()
         self.loading_overlay.start("正在读取存档…")
 
         def done(res: dict) -> None:
@@ -690,17 +818,12 @@ class FleetPage(QWidget):
             self.error_banner.clear()
             self._loaded_path = str(res.get("path") or "")
             self._ships = res.get("ships") or []
-            # 长路径会撑爆/截断工具栏，只显示文件名，完整路径放 tooltip。
-            save_name = Path(self._loaded_path).name if self._loaded_path else ""
-            self.result_info.setText(
-                f"{len(self._ships)} 艘  ·  {save_name}" if save_name
-                else f"{len(self._ships)} 艘")
+            self._set_save_path(self._loaded_path or self._save_path)
+            self.result_info.setText(f"{len(self._ships)} 艘")
             self.result_info.setToolTip(self._loaded_path or "尚未读取存档")
-            self.save_current.setText(
-                f"当前存档：{save_name}" if save_name else "当前存档：未读取")
-            self.save_current.setToolTip(self._loaded_path or "尚未读取存档")
             warns = res.get("warnings") or []
-            self.info.setText(f"{len(self._ships)} 艘" + (f"  ·  {len(warns)} 条警告" if warns else ""))
+            self._status(f"已读取 {len(self._ships)} 艘"
+                         + (f" · {len(warns)} 条警告" if warns else ""))
             self._rebuild_ship_list()
             if keep_seed:
                 for row in range(self.list.count()):
@@ -708,8 +831,6 @@ class FleetPage(QWidget):
                     if str((item.data(Qt.UserRole) or {}).get("seed") or "") == keep_seed:
                         self.list.setCurrentItem(item)
                         break
-            if self.list.count() and not self.list.selectedItems():
-                self.list.setCurrentRow(0)
             self.load_btn.setEnabled(True)
             self._watch_save(self._loaded_path)
             self.companion.set_path(self._loaded_path)
@@ -719,6 +840,7 @@ class FleetPage(QWidget):
                 self._load_extras()
             self._update_actions()
             self._update_ship_empty()
+            self._sync_flow()
             if notice:
                 notify.toast(notice, "info")
 
@@ -726,9 +848,7 @@ class FleetPage(QWidget):
             self._loading = False
             self.loading_overlay.stop()
             text = f"读取存档失败：{msg}"
-            self.save_current.setText("当前存档：未读取")
-            self.save_current.setToolTip("")
-            self.info.setText(text)
+            self._status(text)
             self.result_info.setText("读取失败")
             self._ships = []
             self._loaded_path = ""
@@ -736,14 +856,17 @@ class FleetPage(QWidget):
             self.pets.clear()
             self.companion.set_creature({})
             self.companion.set_path("")
+            self.companion.hide()
             self._clear_extras()
+            self._hide_detail_card()
             self.load_btn.setEnabled(True)
             self.error_banner.show_error(text)
-            self._show_ship_empty("读取失败", "请检查存档路径后重试。")
+            self._show_ship_empty("读取失败", "请检查路径后重试。")
             self._update_actions()
+            self._sync_flow()
             notify.error(text)
 
-        run_worker(self.svc.ships, done, fail, self.path.text().strip() or None)
+        run_worker(self.svc.ships, done, fail, self._save_path or None)
 
     def _next_thumb(self) -> None:
         if not self._thumb_queue:
@@ -828,6 +951,8 @@ class FleetPage(QWidget):
         self.empty_state.title_label.setText(title)
         self.empty_state.description_label.setText(description)
         self.empty_state.description_label.setVisible(bool(description))
+        self.empty_state.title_label.setToolTip(title)
+        self.empty_state.description_label.setToolTip(description)
         self.empty_state.show()
 
     def _update_ship_empty(self) -> None:
@@ -840,11 +965,9 @@ class FleetPage(QWidget):
             self.empty_state.hide()
             return
         if self._loaded_path:
-            self._show_ship_empty(
-                "没有飞船", "这个存档里没有飞船；可以备份恢复，或重新读取存档。")
+            self._show_ship_empty("这个存档里没有飞船", "可以换个存档，或重新读取。")
         else:
-            self._show_ship_empty(
-                "没有存档", "选择 save.hg 后点「读取存档」；监视到存档变化会自动刷新。")
+            self._show_ship_empty("没有存档", "先选择 save.hg，再点「读取存档」。")
 
     # ---------------------------------------------------------------- Inspector
 
@@ -853,9 +976,14 @@ class FleetPage(QWidget):
         items = self.list.selectedItems()
         if not items:
             self.write_preview.setText(EMPTY_WRITE_PREVIEW)
+            self._hide_detail_card()
+            self._sync_flow()
             return
         s = items[0].data(Qt.UserRole) or {}
         self.title.setText(f"{s.get('type_label') or s.get('type')}  {s.get('seed')}")
+        self.detail.show()
+        self._show_detail_card()
+        self._sync_flow()
         result = self._write_result
         if not (isinstance(result, dict) and result.get("slot") == s.get("slot")):
             result = None
@@ -871,7 +999,7 @@ class FleetPage(QWidget):
             self.fallback.show()
             self.fallback.setPixmap(QPixmap())
             self.fallback.setText("固定模型：没有程序化 3D 预览\n（种子不会改变它的外观）")
-            self.detail.setText("该船型是固定模型，3D 预览不可用；可查看等级与属性。")
+            self.detail.hide()
             return
 
         self.pets_note.hide()
@@ -965,24 +1093,23 @@ class FleetPage(QWidget):
         if primary == "write":
             self._set_role(self.write_btn, "dangerButton")
             self._set_role(self.push_btn, "ghostButton")
-            note = ("主操作：写回存档（改等级/属性；先备份，可写副本）。"
-                    "次操作「送进游戏」只写模板种子，不动存档。")
+            note = ""
         elif primary == "push":
             self._set_role(self.write_btn, "ghostButton")
             self._set_role(self.push_btn, "primaryButton")
-            note = ("主操作：送进游戏（只写模板种子，不动存档）。"
-                    "这艘船没有可写槽位，写回存档不可用。")
+            note = ""
         else:
             self._set_role(self.write_btn, "dangerButton")
             self._set_role(self.push_btn, "ghostButton")
-            note = ("选中一艘有槽位的飞船可写回存档；"
-                    "有模板槽的船型才可送进游戏。写回会先备份，送进游戏不动存档。")
+            note = "选中飞船后可写回存档；有模板槽的船型可送进游戏。"
         self.action_note.setText(note)
         self.action_note.setToolTip(note)
+        self.action_note.setVisible(bool(note))
+        self._sync_flow()
 
     def _export_all(self) -> None:
         if not self._ships:
-            self.info.setText("还没有飞船可导出：请先读取存档")
+            self._status("还没有飞船可导出：请先读取存档")
             notify.warn("还没有飞船可导出，请先读取存档")
             return
         start = "starforge-fleet.zip"
@@ -999,7 +1126,7 @@ class FleetPage(QWidget):
                  for s in self._ships]
         self._exporting = True
         self._update_actions()
-        self.info.setText(f"导出 {len(items)} 艘到 {path}…")
+        self._status(f"导出 {len(items)} 艘到 {path}…")
 
         def done(res: dict) -> None:
             self._exporting = False
@@ -1008,7 +1135,7 @@ class FleetPage(QWidget):
             exported = int(res.get("exported") or 0)
             count = int(res.get("count") or len(items))
             tail = f" · 失败 {failed}" if failed else ""
-            self.info.setText(f"导出完成 {exported}/{count} 艘{tail} · {res.get('path')}")
+            self._status(f"导出完成 {exported}/{count} 艘{tail} · {res.get('path')}")
             if failed:
                 notify.warn(f"导出完成 {exported}/{count} 艘，失败 {failed} 艘；详情见压缩包内的清单")
             else:
@@ -1017,7 +1144,7 @@ class FleetPage(QWidget):
         def fail(msg: str) -> None:
             self._exporting = False
             self._update_actions()
-            self.info.setText(f"导出失败：{msg}")
+            self._status(f"导出失败：{msg}")
             notify.error(f"导出失败：{msg}")
 
         run_worker(_write_export, done, fail, path, items)
@@ -1025,17 +1152,17 @@ class FleetPage(QWidget):
     def _open_class_editor(self) -> None:
         items = self.list.selectedItems()
         if not items:
-            self.info.setText("先选中一艘飞船再修改船级/属性")
+            self._status("先选中一艘飞船再修改船级/属性")
             notify.warn("先选中一艘飞船")
             return
         ship = items[0].data(Qt.UserRole) or {}
-        path = self._loaded_path or self.path.text().strip()
+        path = self._loaded_path or self._save_path
         if not path:
-            self.info.setText("请先读取存档，再修改船级/属性")
+            self._status("请先读取存档，再修改船级/属性")
             notify.warn("请先读取存档")
             return
         if ship.get("slot") is None:
-            self.info.setText("这艘飞船没有可写入的槽位")
+            self._status("这艘飞船没有可写入的槽位")
             notify.warn("这艘飞船没有可写入的槽位")
             return
         dlg = ClassEditorDialog(path, ship, self)
@@ -1051,11 +1178,11 @@ class FleetPage(QWidget):
         self._write_result = dict(res)
         target = str(res.get("path") or "")
         if res.get("copy") and target:
-            self.path.setText(target)
+            self._set_save_path(target)
         # 写回后立刻在详情区给出真实的 before → after，而不是只弹一次提示。
         self.write_preview.setText("\n".join(write_preview_lines(ship, res)))
         summary = f"船级/属性写入成功 · 槽位 {res.get('slot', ship.get('slot'))}"
-        self.info.setText(summary)
+        self._status(summary)
         notify.success(summary)
         self._load()
 
@@ -1075,7 +1202,7 @@ class FleetPage(QWidget):
         table.resizeColumnsToContents()
 
     def _load_extras(self, force: bool = False) -> None:
-        path = self._loaded_path or self.path.text().strip()
+        path = self._loaded_path or self._save_path
         if not path:
             return
         if self._extras_loaded and not force:
@@ -1119,7 +1246,7 @@ class FleetPage(QWidget):
 
     def _open_save_extras(self) -> None:
         if not self._loaded_path:
-            self.info.setText("请先读取存档，再编辑库存/知识/任务/奖励")
+            self._status("请先读取存档，再编辑库存/知识/任务/奖励")
             notify.warn("请先读取存档")
             return
         dlg = SaveExtrasDialog(self._loaded_path, self)
@@ -1134,15 +1261,15 @@ class FleetPage(QWidget):
         res = dlg.result or {}
         target = str(res.get("path") or "")
         if res.get("copy") and target:
-            self.path.setText(target)
-        self.info.setText("存档扩展编辑写入成功")
+            self._set_save_path(target)
+        self._status("存档扩展编辑写入成功")
         notify.success("存档扩展编辑写入成功，已通过读回校验")
         self._watch_ignore_until = time.monotonic() + 2.0
         self._load()
 
     def _open_save_edit(self) -> None:
         if not self._loaded_path:
-            self.info.setText("请先读取存档，再编辑货币与飞船")
+            self._status("请先读取存档，再编辑货币与飞船")
             notify.warn("请先读取存档")
             return
         items = self.list.selectedItems()
@@ -1159,7 +1286,7 @@ class FleetPage(QWidget):
         res = dlg.result or {}
         target = str(res.get("path") or "")
         if res.get("copy") and target:
-            self.path.setText(target)
+            self._set_save_path(target)
         changed = set(res.get("changed") or [])
         bits = []
         if "currencies" in changed:
@@ -1169,7 +1296,7 @@ class FleetPage(QWidget):
         summary = "存档编辑写入成功" + (f" · {' / '.join(bits)}" if bits else "")
         if res.get("copy"):
             summary += "（副本）"
-        self.info.setText(summary)
+        self._status(summary)
         notify.success(summary)
         self._watch_ignore_until = time.monotonic() + 2.0
         self._load()
@@ -1179,5 +1306,5 @@ class FleetPage(QWidget):
         if items:
             s = items[0].data(Qt.UserRole) or {}
             QGuiApplication.clipboard().setText(s.get("seed") or "")
-            self.info.setText("种子已复制")
+            self._status("种子已复制")
             notify.success("种子已复制")

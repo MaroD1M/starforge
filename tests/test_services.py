@@ -281,3 +281,30 @@ def test_services_companion_planet_and_planet_fauna(tmp_path, monkeypatch):
     assert "没有找到" in fauna_empty["reason"]
     assert svc.planet_fauna(0x100 << 40, 0)["ok"] is False
     assert svc.planet_fauna("bad", 1)["ok"] is False
+
+def test_agent_connect_does_not_reinject_when_already_reachable(monkeypatch):
+    """已连接时必须直接返回，不能再次注入（重复注入会让游戏退出）。"""
+    from starforge.live import agent_install
+    from starforge.live.agent_client import AgentClient
+
+    monkeypatch.setattr(AgentClient, "ping", lambda self, timeout=2.0: True)
+    called = {}
+    monkeypatch.setattr(agent_install, "launch",
+                        lambda **kw: called.setdefault("launch", kw) or {"ok": True})
+    res = get_services().agent_connect()
+    assert res["ok"] is True and res.get("already_connected") is True
+    assert "launch" not in called
+
+
+def test_agent_connect_injects_only_when_not_reachable(monkeypatch):
+    from starforge.live import agent_install, mem
+    from starforge.live.agent_client import AgentClient
+
+    monkeypatch.setattr(AgentClient, "ping", lambda self, timeout=2.0: False)
+    monkeypatch.setattr(mem, "find_pid", lambda *_a, **_k: 1234)
+    seen = {}
+    monkeypatch.setattr(agent_install, "launch",
+                        lambda **kw: seen.update(kw) or {"ok": True, "pid": 1})
+    res = get_services().agent_connect()
+    assert res["ok"] is True
+    assert seen.get("attach") is False

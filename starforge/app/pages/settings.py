@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QFileDialog,
-    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -96,6 +96,32 @@ def _path_row(edit: QLineEdit, title: str = "选择目录") -> QWidget:
     return box
 
 
+_ROW_LABEL_WIDTH = 120
+
+
+def _row(label: str, control: QWidget, hint: str = "",
+         hint_width: int = 240) -> QWidget:
+    """一行一件事：左侧固定宽标签 + 控件 + 可选一行小字说明。"""
+    box = QWidget()
+    h = QHBoxLayout(box)
+    h.setContentsMargins(0, 0, 0, 0)
+    h.setSpacing(10)
+    name = QLabel(str(label))
+    name.setObjectName("muted")
+    name.setFixedWidth(_ROW_LABEL_WIDTH)
+    name.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    name.setToolTip(str(label))
+    h.addWidget(name, 0, Qt.AlignVCenter)
+    h.addWidget(control, 1)
+    if hint:
+        note = elide_label(hint, hint_width)
+        note.setObjectName("muted")
+        note.setFixedWidth(hint_width)
+        note.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        h.addWidget(note, 0)
+    return box
+
+
 _GATING_ALIASES = ("allow_unverified_agent", "allow_unverified_writes",
                    "allow_unverified_build_writes", "agent_allow_unverified_writes",
                    "allow_unverified_build", "experimental_writes")
@@ -133,14 +159,14 @@ class SettingsPage(QWidget):
 
         self.header = PageHeader(
             "设置与诊断",
-            "按问题分组：路径、安全、运行时、诊断；先跑一次体检，再展开要改的那一组。")
+            "路径 / 安全 / 运行时 / 诊断；顶部「运行体检」先看结论。")
         root.addWidget(self.header)
         self.error_banner = ErrorBanner("")
         self.error_banner.set_retry_callback(self._load)
         root.addWidget(self.error_banner)
 
         # ------------------------------------------------------------ 运行体检
-        health = Card("运行体检", "一次检查路径、依赖、存档与写入；只读，不改任何设置。")
+        health = Card("运行体检")
         chips = QHBoxLayout()
         chips.setSpacing(6)
         self.chip_game = QLabel("游戏目录 —")
@@ -156,7 +182,8 @@ class SettingsPage(QWidget):
             chips.addWidget(chip)
         chips.addStretch(1)
         health.add_layout(chips)
-        self.health_summary = muted("尚未运行体检；点「运行体检」开始。")
+        self.health_summary = elide_label("尚未运行体检；点「运行体检」开始。")
+        self.health_summary.setObjectName("muted")
         health.add(self.health_summary)
         health_actions = QHBoxLayout()
         health_actions.setSpacing(6)
@@ -165,20 +192,20 @@ class SettingsPage(QWidget):
         self.run_health_btn.setToolTip("检查 Python 依赖、游戏/存档/数据目录与写入开关；只读")
         self.run_health_btn.clicked.connect(self._doctor)
         health_actions.addWidget(self.run_health_btn)
+        # 兼容旧公开入口：不再占首屏，但保留可编程触发的“查看诊断详情”。
         self.health_detail_btn = QPushButton("查看诊断详情")
         self.health_detail_btn.setObjectName("ghostButton")
         self.health_detail_btn.setToolTip("展开「诊断」分组，查看体检原文与自检结果")
         self.health_detail_btn.clicked.connect(self._open_diagnostics)
+        self.health_detail_btn.setVisible(False)
         health_actions.addWidget(self.health_detail_btn)
         health_actions.addStretch(1)
         health.add_layout(health_actions)
+        self.doctor_btn = self.run_health_btn
         root.addWidget(health)
 
         # ------------------------------------------------------------ 路径
-        self.paths_group = FoldSection(
-            "路径与自动检测",
-            "路径 · 游戏 / 存档 / 数据目录；自动检测优先，找不到再手动选择。",
-            summary="游戏、存档与数据目录；自动检测只读，保存才会写设置。")
+        self.paths_group = FoldSection("路径与自动检测")
         path_tags = QHBoxLayout()
         path_tags.setSpacing(6)
         path_tags.addWidget(_risk_tag("自动检测=只读", "ok"))
@@ -186,22 +213,19 @@ class SettingsPage(QWidget):
         path_tags.addStretch(1)
         self.paths_group.add_body_layout(path_tags)
 
-        form = QFormLayout()
-        form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(8)
         self.game = QLineEdit()
         self.game.setPlaceholderText("游戏根目录（含 Binaries/NMS.exe）")
         self.game.setToolTip("例如 D:\\SteamLibrary\\steamapps\\common\\No Man's Sky")
-        form.addRow("游戏目录", _path_row(self.game, "选择游戏根目录"))
+        self.paths_group.add_body(_row("游戏目录", _path_row(self.game, "选择游戏根目录")))
         self.saves = QLineEdit()
         self.saves.setPlaceholderText("存档目录（含 save.hg）")
         self.saves.setToolTip("例如 %APPDATA%\\HelloGames\\NMS")
-        form.addRow("存档目录", _path_row(self.saves, "选择存档目录"))
+        self.paths_group.add_body(_row("存档目录", _path_row(self.saves, "选择存档目录")))
         self.gamedata = QLineEdit()
         self.gamedata.setPlaceholderText("数据目录（含 Gagarin/ships/catalog.txt；留空=自动）")
         self.gamedata.setToolTip(
             "可选：Gagarin 数据目录。留空时依次尝试游戏目录/GAMEDATA 与环境变量 STARFORGE_GAMEDATA。")
-        form.addRow("数据目录", _path_row(self.gamedata, "选择数据目录"))
+        self.paths_group.add_body(_row("数据目录", _path_row(self.gamedata, "选择数据目录")))
         self.game.textChanged.connect(self._update_path_empty)
         self.saves.textChanged.connect(self._update_path_empty)
         self.game.textChanged.connect(self._sync_paths_summary)
@@ -218,20 +242,19 @@ class SettingsPage(QWidget):
         self.save_btn.clicked.connect(self._save)
         path_actions.addWidget(self.save_btn)
         path_actions.addStretch(1)
-        form.addRow("", path_actions)
-        self.paths_group.add_body_layout(form)
+        self.paths_group.add_body_layout(path_actions)
 
         self.resolved_summary = elide_label(
             "游戏：未设置 · 存档：未设置 · 数据：自动检测")
         self.resolved_summary.setObjectName("muted")
-        self.paths_group.add_body(self.resolved_summary)
+        self.paths_group.add_body(_row("解析路径", self.resolved_summary))
 
         self.path_empty = EmptyState(
             "尚未设置游戏与存档目录",
-            "点「自动检测」尝试查找，或手动选择目录；未设置时无法读取存档或连接游戏。",
+            "点「自动检测」尝试查找，或手动选择目录。",
             icon="⌂",
             button_text="自动检测")
-        self.path_empty.setMaximumHeight(168)
+        self.path_empty.setMaximumHeight(150)
         self.path_empty.actionTriggered.connect(self._autodetect)
         self.paths_group.add_body(self.path_empty)
 
@@ -303,62 +326,57 @@ class SettingsPage(QWidget):
         saves_btns.addWidget(self.saves_open_btn)
         saves_btns.addStretch(1)
         self.paths_group.add_body_layout(saves_btns)
-        self.paths_group.add_body(muted(
-            "切换只决定「我的 → 船队」重新读取时扫描哪个目录；"
-            "要精确使用 save3.hg 这类文件，请到船队页点「浏览…」选择。"))
         root.addWidget(self.paths_group)
 
         # ------------------------------------------------------------ 安全
-        self.safety_group = FoldSection(
-            "安全与性能",
-            "安全 · 写入默认关闭；修改后立即保存。",
-            summary="写入开关、二次确认、实验写、多人提示与性能选项。")
+        self.safety_group = FoldSection("安全与性能")
         sv = self.safety_group.body_layout
-        self.write = QCheckBox("允许写入存档")
+        self.write = QCheckBox("允许写入")
         self.write.setObjectName("settingsWriteEnabled")
+        self.write.setAccessibleName("允许写入存档")
         self.write.toggled.connect(self._save)
-        self.safety_group.add_body(self.write)
-        self.confirm_writes = QCheckBox("写入前二次确认")
+        self.safety_group.add_body(_row(
+            "写入存档", self.write, "改存档；自动备份并读回校验"))
+        self.confirm_writes = QCheckBox("写入前确认")
         self.confirm_writes.setObjectName("settingsConfirmWrites")
         self.confirm_writes.toggled.connect(self._save)
-        self.safety_group.add_body(self.confirm_writes)
-        self.allow_unverified = QCheckBox("允许未验证游戏版本实验写操作")
+        self.safety_group.add_body(_row(
+            "二次确认", self.confirm_writes, "每次写入弹窗"))
+        self.allow_unverified = QCheckBox("允许实验写")
+        self.allow_unverified.setObjectName("settingsUnverifiedWrites")
         self.allow_unverified.setAccessibleName("允许未验证游戏版本实验写操作")
         self.allow_unverified.toggled.connect(self._save_gating)
-        self.safety_group.add_body(self.allow_unverified)
+        self.safety_group.add_body(_row(
+            "实验写", self.allow_unverified, "未验证版本仍可能拒绝"))
         self.gating_note = muted("读取安全设置中…")
         self.safety_group.add_body(self.gating_note)
-        mp_note = QLabel("多人模式：传送 / 还原 / 扫描写会自动禁用；请退到单人模式再操作。")
+        mp_note = QLabel("多人模式：写入类操作会自动禁用。")
         mp_note.setObjectName("chip")
         mp_note.setProperty("state", "warn")
-        mp_note.setWordWrap(True)
-        sv.addWidget(mp_note)
-        perf = QFormLayout()
-        perf.setHorizontalSpacing(12)
-        perf.setVerticalSpacing(8)
+        mp_note.setWordWrap(False)
+        mp_row = QHBoxLayout()
+        mp_row.setSpacing(6)
+        mp_row.addWidget(mp_note)
+        mp_row.addStretch(1)
+        sv.addLayout(mp_row)
         self.backup_keep = QSpinBox()
         self.backup_keep.setObjectName("settingsBackupKeep")
         self.backup_keep.setRange(0, 9999)
         self.backup_keep.setSpecialValueText("0（永不删除）")
         self.backup_keep.setToolTip("每次写入生成的备份最多保留多少份；0 表示永不自动删除")
         self.backup_keep.valueChanged.connect(self._save)
-        perf.addRow("备份保留数", self.backup_keep)
+        self.safety_group.add_body(_row("备份保留数", self.backup_keep, "0=永不删除"))
         self.workers = QSpinBox()
         self.workers.setObjectName("settingsWorkers")
         self.workers.setRange(0, 64)
         self.workers.setSpecialValueText("0（自动）")
         self.workers.setToolTip("搜索/扫描的工作线程数；0 由程序自动选择")
         self.workers.valueChanged.connect(self._save)
-        perf.addRow("搜索线程数", self.workers)
-        self.safety_group.add_body_layout(perf)
-        self.safety_group.add_body(muted("写入流程：备份 → 原子写入 → 读回校验 → 失败回滚。"))
+        self.safety_group.add_body(_row("搜索线程数", self.workers, "0=自动"))
         root.addWidget(self.safety_group)
 
         # ------------------------------------------------------------ 运行时
-        self.runtime_group = FoldSection(
-            "版本与代理",
-            "运行时 · 游戏内组件状态与安装 / 修复 / 卸载；不写存档。",
-            summary="build 指纹、NMSpy / pymhf 组件与代理文件。")
+        self.runtime_group = FoldSection("版本与代理")
         rt_tags = QHBoxLayout()
         rt_tags.setSpacing(6)
         rt_tags.addWidget(_risk_tag("查看=只读", "ok"))
@@ -366,20 +384,18 @@ class SettingsPage(QWidget):
         rt_tags.addWidget(_risk_tag("卸载=删除代理文件", "warn"))
         rt_tags.addStretch(1)
         self.runtime_group.add_body_layout(rt_tags)
-        self.build_label = QLabel("游戏 build：展开本组后检查…")
+        self.build_label = elide_label("展开本组后检查…")
         self.build_label.setObjectName("settingsBuildStatus")
-        self.build_label.setWordWrap(True)
-        self.runtime_group.add_body(self.build_label)
-        self.agent_label = QLabel("游戏内代理：展开本组后检查…")
+        self.runtime_group.add_body(_row("游戏版本", self.build_label))
+        self.agent_label = elide_label("展开本组后检查…")
         self.agent_label.setObjectName("settingsAgentStatus")
-        self.agent_label.setWordWrap(True)
-        self.runtime_group.add_body(self.agent_label)
-        self.runtime_label = elide_label("运行时：展开本组后检查…")
+        self.runtime_group.add_body(_row("游戏内代理", self.agent_label))
+        self.runtime_label = elide_label("展开本组后检查…")
         self.runtime_label.setObjectName("settingsRuntimeStatus")
-        self.runtime_group.add_body(self.runtime_label)
-        self.agent_file_label = elide_label("代理文件：展开本组后检查…")
+        self.runtime_group.add_body(_row("运行时", self.runtime_label))
+        self.agent_file_label = elide_label("展开本组后检查…")
         self.agent_file_label.setObjectName("settingsAgentFileStatus")
-        self.runtime_group.add_body(self.agent_file_label)
+        self.runtime_group.add_body(_row("代理文件", self.agent_file_label))
 
         rt_grid = QGridLayout()
         rt_grid.setHorizontalSpacing(6)
@@ -407,8 +423,8 @@ class SettingsPage(QWidget):
         rt_grid.setColumnStretch(0, 1)
         rt_grid.setColumnStretch(1, 1)
         self.runtime_group.add_body_layout(rt_grid)
-        self.runtime_note = muted(
-            "正常安装包已内置运行时；「准备运行时」只在缺失/损坏时使用。")
+        self.runtime_note = elide_label(
+            "安装包已内置运行时；缺失或损坏时才需要「准备运行时」。")
         self.runtime_group.add_body(self.runtime_note)
 
         env_row = QHBoxLayout()
@@ -430,16 +446,10 @@ class SettingsPage(QWidget):
         root.addWidget(self.runtime_group)
 
         # ------------------------------------------------------------ 诊断
-        self.diag_group = FoldSection(
-            "诊断",
-            "诊断 · 体检原文、自检与诊断包；只读，不执行写入步骤。",
-            summary="体检原文、自检结果与诊断包。")
+        self.diag_group = FoldSection("诊断")
         diag_row = QHBoxLayout()
         diag_row.setSpacing(6)
         diag_row.addWidget(_risk_tag("只读", "ok"))
-        self.doctor_btn = QPushButton("运行体检")
-        self.doctor_btn.clicked.connect(self._doctor)
-        diag_row.addWidget(self.doctor_btn)
         self.selfcheck_btn = QPushButton("运行自检（只读）")
         self.selfcheck_btn.setToolTip(
             "运行 Services.diagnostics（selfcheck，include_write=False）；不写存档")
@@ -453,6 +463,12 @@ class SettingsPage(QWidget):
         logs.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl.fromLocalFile(str(paths.app_home() / "logs"))))
         diag_row.addWidget(logs)
+        self.raw_btn = QPushButton("体检原文")
+        self.raw_btn.setObjectName("ghostButton")
+        self.raw_btn.setCheckable(True)
+        self.raw_btn.setToolTip("展开/收起顶部「运行体检」的原文输出")
+        self.raw_btn.toggled.connect(self._toggle_raw)
+        diag_row.addWidget(self.raw_btn)
         diag_row.addStretch(1)
         self.diag_group.add_body_layout(diag_row)
 
@@ -461,6 +477,7 @@ class SettingsPage(QWidget):
         self.out.setMinimumHeight(220)
         self.out.setMaximumHeight(320)
         self.out.setPlaceholderText("体检结果会以结构化文本显示在这里。")
+        self.out.setVisible(False)
         self.diag_group.add_body(self.out)
         self.doctor_output = self.out
 
@@ -499,6 +516,7 @@ class SettingsPage(QWidget):
         self.loading = self.loading_overlay
         self._update_path_empty()
         self._sync_paths_summary()
+        self._sync_safety_chip()
 
     # ---------------------------------------------------------------- 数据
 
@@ -530,6 +548,7 @@ class SettingsPage(QWidget):
                 self._syncing = False
             self._update_path_empty()
             self._sync_paths_summary(r)
+            self._sync_safety_chip()
             self.error_banner.clear()
             self._refresh_health()
             self._load_saves()
@@ -619,7 +638,7 @@ class SettingsPage(QWidget):
             return
         self.path_empty.title_label.setText("尚未设置游戏与存档目录")
         self.path_empty.description_label.setText(
-            "点「自动检测」尝试查找，或手动选择目录；未设置时无法读取存档或连接游戏。")
+            "点「自动检测」尝试查找，或手动选择目录。")
         self.path_empty.description_label.setVisible(True)
         self.path_empty.show()
 
@@ -640,6 +659,11 @@ class SettingsPage(QWidget):
         # 折叠摘要只保留扫描结果的动态信息（由 _saves_done 写入）。
         self.paths_group.set_summary("")
 
+    def _sync_safety_chip(self) -> None:
+        on = self.write.isChecked()
+        self.safety_group.set_chip("写入开启" if on else "写入关闭",
+                                   "warn" if on else "ok")
+
     def _save(self, *_args) -> None:
         if self._syncing:
             return
@@ -654,6 +678,7 @@ class SettingsPage(QWidget):
                 workers=int(self.workers.value()))
             self._update_path_empty()
             self._sync_paths_summary()
+            self._sync_safety_chip()
             self._refresh_health()
             self.error_banner.clear()
             self._log("设置已保存")
@@ -747,12 +772,12 @@ class SettingsPage(QWidget):
             self._saves_files = []
             self.saves_table.setRowCount(0)
             self.saves_summary.setText(
-                "尚未设置存档目录：点「自动检测」或在上方选择含 save.hg 的目录。")
+                "尚未设置存档目录；点「自动检测」或选择含 save.hg 的目录。")
             self.save_detail.setText(
-                "下一步：选择存档目录后点「刷新列表」；扫描只读取文件头，不写存档。")
+                "下一步：选择存档目录后点「刷新列表」；扫描只读。")
             self.saves_use_btn.setEnabled(False)
             return
-        self.saves_summary.setText("正在扫描存档目录…（只读，不写存档）")
+        self.saves_summary.setText("正在扫描存档目录…")
         self.saves_refresh_btn.setEnabled(False)
 
         def fetch() -> dict:
@@ -811,7 +836,7 @@ class SettingsPage(QWidget):
             default_name = (os.path.basename(self._saves_default)
                             if self._saves_default else "未找到")
             self.paths_group.set_summary(
-                f"{len(files)} 个存档文件 · 默认 {default_name} · 扫描只读")
+                f"{len(files)} 个存档 · 默认 {default_name}")
         self.saves_use_btn.setEnabled(bool(self._saves_dir or self.saves.text().strip()))
         if players and not self._saves_default:
             self.save_detail.setText(self.save_detail.text() +
@@ -950,11 +975,22 @@ class SettingsPage(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def _open_diagnostics(self) -> None:
-        """顶部「查看诊断详情」：展开诊断组并滚到可见位置。"""
+        """展开诊断组并滚到可见位置（顶部结论区仍保持一行）。"""
         self.diag_group.set_expanded(True)
         self.diag_group.set_spotlight(True)
+        self._show_raw(True)
         QTimer.singleShot(1800, lambda: self.diag_group.set_spotlight(False))
         reveal_widget(self.diag_group)
+
+    def _toggle_raw(self, on: bool) -> None:
+        self.out.setVisible(bool(on))
+        self.raw_btn.setText("收起原文" if on else "体检原文")
+
+    def _show_raw(self, on: bool = True) -> None:
+        self.raw_btn.blockSignals(True)
+        self.raw_btn.setChecked(bool(on))
+        self.raw_btn.blockSignals(False)
+        self._toggle_raw(bool(on))
 
     def _autodetect(self) -> None:
         self._log("自动检测中…")
@@ -1004,8 +1040,8 @@ class SettingsPage(QWidget):
 
     def _env_failed(self, msg: str) -> None:
         text = f"读取 build/代理状态失败：{msg}"
-        self.build_label.setText("游戏 build：未知（状态读取失败）")
-        self.agent_label.setText(f"游戏内代理：未知（{msg}）")
+        self.build_label.setText("未知（状态读取失败）")
+        self.agent_label.setText(f"未知（{msg}）")
         self._log(text)
 
     def _runtime_done(self, cap: dict) -> None:
@@ -1020,9 +1056,9 @@ class SettingsPage(QWidget):
         nmspy = str(st.get("nmspy_version") or "")
         pymhf = str(st.get("pymhf_version") or "")
         if not supported:
-            runtime = "运行时：不可用（游戏内通道仅支持 Windows）"
+            runtime = "不可用（仅支持 Windows）"
         elif runtime_files:
-            runtime = f"运行时：已就绪 · Python {py or '版本未知'}"
+            runtime = f"已就绪 · Python {py or '版本未知'}"
             if not ready:
                 missing = []
                 if not nmspy:
@@ -1033,7 +1069,7 @@ class SettingsPage(QWidget):
                     missing.append("HTTP API")
                 runtime += " · 组件缺 " + "、".join(missing)
         else:
-            runtime = "运行时：缺失或不完整" + (f"（{err}）" if err else "")
+            runtime = "缺失或不完整" + (f"（{err}）" if err else "")
         self.runtime_label.setText(runtime)
         self.runtime_label.setToolTip(
             f"NMSpy {nmspy or '—'} · pymhf {pymhf or '—'}\n"
@@ -1041,37 +1077,32 @@ class SettingsPage(QWidget):
         mod_path = str(st.get("mod_path") or "")
         installed = bool(st.get("mod_installed"))
         self.agent_file_label.setText(
-            f"代理文件：已安装 · {os.path.basename(mod_path) if mod_path else '路径未知'}"
-            if installed else "代理文件：未安装（不影响离线功能）")
+            f"已安装 · {os.path.basename(mod_path) if mod_path else '路径未知'}"
+            if installed else "未安装（不影响离线功能）")
         self.agent_file_label.setToolTip(mod_path or "~/.starforge/agent/starforge_agent.py")
         self.bootstrap_btn.setEnabled(supported and not runtime_files)
         self.repair_btn.setEnabled(supported and runtime_files)
         self.install_agent_btn.setEnabled(supported)
         self.uninstall_agent_btn.setEnabled(supported and installed)
         if not runtime_files:
-            self.runtime_note.setText(
-                "运行时缺失：先点「准备运行时」；正常安装包已内置，通常无需联网。")
+            self.runtime_note.setText("运行时缺失：点「准备运行时」；安装包已内置。")
         elif not ready:
-            self.runtime_note.setText(
-                "运行时已就绪但组件不完整：点「安装 / 修复组件」补齐；不会写存档。")
+            self.runtime_note.setText("组件不完整：点「安装 / 修复组件」补齐。")
         else:
-            self.runtime_note.setText(
-                "运行时与组件已就绪；卸载只删除代理文件，不影响运行时与存档。")
+            self.runtime_note.setText("运行时与组件已就绪；卸载只删除代理文件。")
         if ready:
             self.runtime_group.set_chip("组件就绪", "ok")
             self.runtime_group.set_summary(
-                f"运行时就绪 · NMSpy {nmspy or '—'} · pymhf {pymhf or '—'}；"
-                "安装/卸载只写本机代理目录。")
+                f"运行时就绪 · NMSpy {nmspy or '—'} · pymhf {pymhf or '—'}")
         elif not runtime_files:
             self.runtime_group.set_chip("缺运行时", "warn")
-            self.runtime_group.set_summary(
-                "下一步：展开本组点「准备运行时」，再点「安装 / 修复组件」。")
+            self.runtime_group.set_summary("下一步：展开本组点「准备运行时」。")
         else:
             self.runtime_group.set_chip("需修复", "bad")
             self.runtime_group.set_summary("组件不完整：展开本组点「安装 / 修复组件」。")
 
     def _runtime_failed(self, msg: str) -> None:
-        self.runtime_label.setText(f"运行时：状态未知（{msg}）")
+        self.runtime_label.setText(f"状态未知（{msg}）")
         self.runtime_label.setToolTip(msg)
         self.runtime_group.set_chip("状态未知", "warn")
         self.runtime_group.set_summary(
@@ -1254,28 +1285,28 @@ class SettingsPage(QWidget):
     def _format_build(info: dict) -> str:
         info = info if isinstance(info, dict) else {}
         if info.get("error"):
-            return f"游戏 build：未知（{info['error']}）"
+            return f"未知（{info['error']}）"
         bid = info.get("build_id") or (
             (info.get("fingerprint") or {}).get("version") if isinstance(
                 info.get("fingerprint"), dict) else "") or "未知"
         status = str(info.get("status") or "").strip().lower()
         if info.get("verified"):
-            return f"游戏 build：{bid} · 已验证（写权限仍受安全设置约束）"
+            return f"{bid} · 已验证（写权限仍受安全设置约束）"
         if status == "unverified":
-            return f"游戏 build：{bid} · 未验证（只读）"
-        return f"游戏 build：{bid} · 未知/未验证（只读）"
+            return f"{bid} · 未验证（只读）"
+        return f"{bid} · 未知/未验证（只读）"
 
     @staticmethod
     def _format_agent(info: dict) -> str:
         info = info if isinstance(info, dict) else {}
         if info.get("error"):
-            return f"游戏内代理：状态未知（{info['error']}）"
+            return f"状态未知（{info['error']}）"
         if not info.get("supported"):
-            return f"游戏内代理：不可用（{info.get('note') or '仅支持 Windows'}）"
+            return f"不可用（{info.get('note') or '仅支持 Windows'}）"
         state = "已连接" if info.get("reachable") else (
             "游戏运行中，未连接" if info.get("game_running") else "未连接")
         note = str(info.get("note") or "").strip()
-        return f"游戏内代理：{state}" + (f" · {note}" if note else "")
+        return state + (f" · {note}" if note else "")
 
     # ------------------------------------------------------------ 日志/诊断
 
@@ -1301,6 +1332,7 @@ class SettingsPage(QWidget):
     def _show_launcher(self) -> None:
         self._log("读取 launcher.log…")
         self.diag_group.set_expanded(True)
+        self._show_raw(True)
         run_worker(self.svc.recent_logs, self._launcher_done, self._log_failed, 20)
 
     def _launcher_done(self, res: dict) -> None:

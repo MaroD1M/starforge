@@ -296,7 +296,11 @@ class MainWindow(QMainWindow):
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(0)
         rv.addWidget(self._build_command_bar())
-        rv.addWidget(self._build_context_bar())
+        self.context_bar = self._build_context_bar()
+        # 工作区主张与「下一步」已由页面内的任务步骤/空态承担，
+        # 顶部不再多一行文字；保留对象以兼容旧入口。
+        self.context_bar.setVisible(False)
+        rv.addWidget(self.context_bar)
 
         self.stack = _PageStack()
         self.pages = {
@@ -512,7 +516,10 @@ class MainWindow(QMainWindow):
         self.claim_label.setAccessibleName("工作区主张")
         self.claim_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.claim_label.setMinimumWidth(0)
+        # 主张与页头说明重复：只作为工具提示，不再占一行文字。
+        self.claim_label.setVisible(False)
         h.addWidget(self.claim_label, 1)
+        h.addStretch(1)
         self.next_text = QLabel("下一步")
         self.next_text.setObjectName("nextStepLabel")
         self.next_text.setAccessibleName("建议的下一步")
@@ -647,9 +654,16 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- 页面定位
 
     def _apply_page_view(self, page: QWidget, view: dict) -> None:
-        tab = str(view.get("tab") or "")
+        tab = str(view.get("tab") or view.get("section") or "")
         if tab:
-            self._select_page_tab(page, tab)
+            show_section = getattr(page, "show_section", None)
+            if callable(show_section):
+                try:
+                    show_section(tab)
+                except RuntimeError:
+                    pass
+            else:
+                self._select_page_tab(page, tab)
         anchor = str(view.get("anchor") or "")
         focus_name = str(view.get("focus") or "")
         # 页面刚显示时尺寸还是 0；延后一帧再滚动/高亮/聚焦。
@@ -739,8 +753,10 @@ class MainWindow(QMainWindow):
             return ("搜一艘飞船", "去搜船", self._intent_search)
         if view == "map":
             return ("扫描附近星系，找一颗乐土", "去扫描", self._intent_scan)
-        if view in ("discovered", "glyphs"):
-            return ("用符文地址去看过的星系", "去搜船", self._intent_search)
+        if view == "discovered":
+            return ("按群系 / 虫蚀 / 距离筛选已发现星球", "去筛选", self._intent_discovered)
+        if view == "glyphs":
+            return ("输入符文 / 坐标 / UA 并转换", "去转换", self._intent_address)
         if view in ("fleet", "archive"):
             return ("读取我的存档", "去读取", self._intent_load_fleet)
         if view == "designer":
@@ -763,6 +779,23 @@ class MainWindow(QMainWindow):
     def _intent_search(self) -> None:
         self.activate_view("search", announce=False)
         self.focus_current_filter()
+
+    def _intent_discovered(self) -> None:
+        self.activate_view("discovered", announce=False)
+        page = self.pages.get("systems")
+        combo = getattr(page, "disc_save", None)
+        if combo is not None:
+            combo.setFocus(Qt.OtherFocusReason)
+        self.toast("选「存档 / 群系 / 虫蚀 / 距离」，表格会自动筛选；选中后可传送。", "info")
+
+    def _intent_address(self) -> None:
+        self.activate_view("glyphs", announce=False)
+        page = self.pages.get("systems")
+        edit = getattr(page, "addr_input", None)
+        if edit is not None:
+            edit.setFocus(Qt.OtherFocusReason)
+            edit.selectAll()
+        self.toast("输入 12 位符文、X:Y:Z:SSSS 坐标或 0x… UA，点「转换地址」。", "info")
 
     def _intent_scan(self) -> None:
         self.activate_view("map", announce=False)

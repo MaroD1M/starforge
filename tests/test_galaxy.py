@@ -172,6 +172,18 @@ class _PageServices:
     def glyph_strip_png(self, glyphs: str) -> bytes:
         return b""
 
+    def discoveries_index_all(self) -> dict:
+        return {"ok": True, "count": 0, "saves": [], "errors": []}
+
+    def discoveries_query(self, **kw) -> dict:
+        return {"ok": True, "count": 0, "planets": []}
+
+    def discovered_planets(self, path: str | None = None) -> dict:
+        return {"ok": True, "count": 0, "planets": []}
+
+    def discovered_filter(self, planets=None, **kw) -> dict:
+        return {"ok": True, "count": 0, "planets": list(planets or [])}
+
 
 def _make_page(monkeypatch):
     from starforge.app.pages import galaxy as page_mod
@@ -188,10 +200,43 @@ def test_primary_action_follows_current_tab(qapp, monkeypatch):
         assert page.primary_btn.text() == "扫描"
         page.tabs.setCurrentWidget(page.index_page)
         assert page.primary_btn.text() == "查询"
-        page.tabs.setCurrentWidget(page.discovered_page)
+        page.show_section("已发现")
         assert page.primary_btn.text() == "传送到此星球"
-        page.tabs.setCurrentWidget(page.address_page)
+        page.show_section("地址工作台")
         assert page.primary_btn.text() == "转换地址"
+    finally:
+        page.close()
+
+
+def test_sections_have_their_own_header_and_hero_visibility(qapp, monkeypatch):
+    page = _make_page(monkeypatch)
+    try:
+        page.show_section("已发现")
+        assert page.header.title.text() == "已发现星球"
+        assert page.hero.isHidden() is True
+        assert page.tabs.tabBar().isVisible() in (False, True)
+        page.show_section("地址工作台")
+        assert page.header.title.text() == "地址工作台"
+        assert page.hero.isHidden() is True
+        assert page.detail_card.isHidden() is True
+        page.show_section("行星")
+        assert page.header.title.text() == "星图"
+        assert page.hero.isHidden() is False
+        assert page.detail_card.isHidden() is True      # 结果优先：未选中不展开详情
+    finally:
+        page.close()
+
+
+def test_discovered_filters_cover_save_keyword_sort_and_limit(qapp, monkeypatch):
+    page = _make_page(monkeypatch)
+    try:
+        page.show_section("已发现")
+        assert page.disc_save.itemText(0).startswith("全部存档")
+        assert page.disc_keyword.placeholderText()
+        assert [page.disc_sort.itemData(i) for i in range(page.disc_sort.count())] == [
+            "distance", "discovered", "biome", "name"]
+        assert [page.disc_limit.itemData(i) for i in range(page.disc_limit.count())] == [
+            500, 1000, 0]
     finally:
         page.close()
 

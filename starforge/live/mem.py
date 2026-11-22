@@ -241,10 +241,80 @@ class WinProcess(Process):
             self.h = None
 
 
-def find_pid(name: str = "NMS.exe") -> int | None:
-    """按进程名找 PID（Windows）。"""
+def find_pid(name: str = "NMS.exe", *, require_exe: bool = False,
+             require_window: bool = False) -> int | None:
+    """按进程名找 PID（Windows），跳过已死/无路径的僵尸进程。
+
+    同名进程可能不止一个：实测游戏崩溃后会留下 ``NMS.exe`` 子进程，但它的
+    ``ExecutablePath`` 为空、打不开；旧的 find_pid 直接返回第一个匹配 PID，
+    导致 agent 注入到僵尸进程并一直显示「未连接」。这里用
+    ``OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`` + ``QueryFullProcessImageNameW``
+    校验真实路径：无路径的跳过；优先返回 ``...\\Binaries\\NMS.exe``。
+
+    ``require_exe=True`` 时只接受以 ``\\Binaries\\NMS.exe`` 结尾的进程（附加注入用）；
+    ``require_window=True`` 时还要求有可见主窗口——Steam 启动瞬间会出现没有窗口的
+    同名子进程，注入到它只会得到「0 hooks、代理不可达」。
+    """
     if not IS_WINDOWS:
         return None
+    fallback: int | None = None
+    exe_pid: int | None = None
+    for pid in iter_pids(name):
+        path = _process_image_path(pid)
+        if not path:
+            continue                                   # 已死/无权限/僵尸：跳过
+        is_game = path.replace("/", "\\").lower().endswith("\\binaries\\nms.exe")
+        if is_game:
+            if require_window and not _has_main_window(pid):
+                if exe_pid is None:
+                    exe_pid = pid
+                continue
+            return pid
+        if fallback is None:
+            fallback = pid
+    if exe_pid is not None and not require_window:
+        return exe_pid
+    return None if (require_exe or require_window) else fallback
+
+
+def _has_main_window(pid: int) -> bool:
+    """进程是否有可见、带标题、无 owner 的主窗口（用于区分真正的游戏进程）。"""
+    if not IS_WINDOWS:
+        return False
+    try:
+        ctypes, wintypes, _k32 = _win()
+        user32 = ctypes.windll.user32
+        found: list[int] = []
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                           wintypes.LPARAM)
+
+        def _callback(hwnd, _lparam):
+            try:
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                if user32.GetWindow(hwnd, 4):          # GW_OWNER：tooltip/子窗跳过
+                    return True
+                owner = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+                if owner.value != int(pid):
+                    return True
+                if user32.GetWindowTextLengthW(hwnd) > 0:
+                    found.append(int(hwnd))
+                    return False
+            except Exception:                          # noqa: BLE001
+                pass
+            return True
+
+        user32.EnumWindows(callback_type(_callback), 0)
+        return bool(found)
+    except Exception:                                  # noqa: BLE001 - 查询失败按“没有窗口”处理
+        return False
+
+
+def iter_pids(name: str = "NMS.exe"):
+    """遍历所有同名进程 PID（Windows）；平台不支持时返回空迭代器。"""
+    if not IS_WINDOWS:
+        return
     ctypes, wintypes, k32 = _win()
     TH32CS_SNAPPROCESS = 0x00000002
 
@@ -257,23 +327,50 @@ def find_pid(name: str = "NMS.exe") -> int | None:
 
     snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if snap in (0, -1):
-        return None
+        return
     try:
         e = PE32()
         e.dwSize = ctypes.sizeof(PE32)
         ok = k32.Process32First(snap, ctypes.byref(e))
         while ok:
             if e.szExeFile.decode("mbcs", "replace").lower() == name.lower():
-                return int(e.th32ProcessID)
+                yield int(e.th32ProcessID)
             ok = k32.Process32Next(snap, ctypes.byref(e))
     finally:
         k32.CloseHandle(snap)
-    return None
+
+
+def _process_image_path(pid: int) -> str:
+    """取进程映像路径；打不开/没有路径（僵尸）返回空串。"""
+    if not IS_WINDOWS:
+        return ""
+    try:
+        ctypes, wintypes, k32 = _win()
+        access = 0x1000                              # PROCESS_QUERY_LIMITED_INFORMATION
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        k32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD)]
+        h = k32.OpenProcess(access, False, int(pid))
+        if not h:
+            return ""
+        try:
+            size = wintypes.DWORD(32768)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if not k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                return ""
+            return str(buf.value or "")
+        finally:
+            k32.CloseHandle(h)
+    except Exception:                                  # noqa: BLE001 - 任何异常都按僵尸/不可读处理
+        return ""
 
 
 def attach(name: str = "NMS.exe") -> Process:
     """连上游戏进程；不支持/未运行就抛 LiveUnsupported（带中文原因）。"""
-    pid = find_pid(name)
+    pid = find_pid(name, require_exe=name.lower() == "nms.exe")
     if not pid:
         raise LiveUnsupported(f"没有找到 {name}：请先启动游戏并载入存档")
     return WinProcess(pid, name)

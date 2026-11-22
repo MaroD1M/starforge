@@ -43,7 +43,7 @@ CONTROL_HEIGHT = 30
 STATUS_CHIP_RADIUS = 10
 NAV_ITEM_HEIGHT = 32
 NAV_SUB_HEIGHT = 28
-CONTEXT_BAR_HEIGHT = 40
+CONTEXT_BAR_HEIGHT = 32
 
 
 def scale(widget, value: float) -> int:
@@ -215,6 +215,7 @@ QSplitter::handle:hover { background: #2a3546; }
 # 统一排版规则：全局组件通过 objectName 引用，避免在页面里各写一套字号。
 QSS += f"""
 QLabel#pageTitle {{ font-size: {FONT_TITLE}px; font-weight: 700; color: #e6ecf5; }}
+QLabel#pageSubtitle {{ font-size: {FONT_CAPTION}px; color: #8b95a7; }}
 QLabel#cardTitle {{ font-size: {FONT_SECTION - 1}px; font-weight: 700; color: #e6ecf5; }}
 QLabel#sectionTitle {{ font-size: {FONT_SECTION}px; font-weight: 700; color: #e6ecf5; }}
 QLabel#sectionHint {{ color: #8b95a7; font-size: {FONT_CAPTION}px; }}
@@ -323,6 +324,43 @@ QPushButton {{ border-radius: {CONTROL_RADIUS}px; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {{
   border-radius: {CONTROL_RADIUS}px;
 }}
+
+/* ---------- 交互骨架：任务步骤 / 筛选 chips / 详情抽屉 ---------- */
+QFrame#uxFlowStep {{
+  background: #0c121b; border: 1px solid #1e2a3a; border-radius: 11px;
+}}
+QFrame#uxFlowStep[state="active"] {{ background: #1c1509; border-color: #8a5a1c; }}
+QFrame#uxFlowStep[state="done"] {{ background: #0e1c17; border-color: #1d4a38; }}
+QLabel#uxFlowNum {{ color: #6f7f93; font-size: 10.5px; font-weight: 700; }}
+QFrame#uxFlowStep[state="active"] QLabel#uxFlowNum {{ color: #f2b45c; }}
+QFrame#uxFlowStep[state="done"] QLabel#uxFlowNum {{ color: #a8e8c9; }}
+QLabel#uxFlowLabel {{ color: #8b95a7; font-size: 11.5px; }}
+QFrame#uxFlowStep[state="active"] QLabel#uxFlowLabel {{ color: #f0cd9a; }}
+QFrame#uxFlowStep[state="done"] QLabel#uxFlowLabel {{ color: #a8e8c9; }}
+QLabel#uxFlowArrow {{ color: #3a4658; font-size: 14px; }}
+
+QFrame#uxFilterPanel {{
+  background: #0b111a; border: 1px solid #1e2a3a; border-radius: 10px;
+}}
+QFrame#uxToolbar {{
+  background: #0e141d; border: 1px solid #1e2a3a; border-radius: 10px;
+}}
+
+QPushButton#uxChip {{
+  background: #111927; border: 1px solid #2a3a4d; border-radius: 11px;
+  padding: 3px 9px; color: #c6d4ea; font-size: 11px;
+}}
+QPushButton#uxChip:hover {{ border-color: #a5483c; color: #ffc9c0; }}
+
+QFrame#uxDrawer {{
+  background: #0d141e; border: 1px solid #24384a; border-radius: 12px;
+}}
+QLabel#uxDrawerTitle {{ color: #e6ecf5; font-size: 14px; font-weight: 700; }}
+QPushButton#uxIconButton {{
+  background: transparent; border: none; color: #8b95a7;
+  font-size: 16px; padding: 0;
+}}
+QPushButton#uxIconButton:hover {{ color: #e6ecf5; background: #1a2231; border-radius: 11px; }}
 """
 
 

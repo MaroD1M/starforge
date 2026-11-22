@@ -380,3 +380,68 @@ def test_planet_fauna_reads_save_tree(tmp_path, monkeypatch):
     failed = di.planet_fauna(SYSTEM_UA, 1)
     assert failed["ok"] is False and failed["fauna"] == []
     assert "synthetic open failure" in failed["reason"]
+
+# ---------------------------------------------------------------- 多存档 / 关键词 / 排序
+
+
+def test_index_saves_merges_all_and_dedupes(tmp_path, monkeypatch):
+    planets = _rows(_tree([
+        _planet(1, vp=(0x11, 0), name="Alpha Prime", ts=100),
+        _planet(2, vp=(0x22, 4), ts=200),
+    ]))
+    save1 = tmp_path / "save.hg"
+    save1.write_bytes(b"synthetic save a")
+    save2 = tmp_path / "save3.hg"
+    save2.write_bytes(b"synthetic save b")
+    db = tmp_path / "discoveries.db"
+    calls: list = []
+    _fake_discovered(monkeypatch, save1, planets, calls)
+
+    res = di.index_saves([save1, save2], db_file=str(db))
+    assert res["ok"] is True
+    assert [item["name"] for item in res["saves"]] == ["save.hg", "save3.hg"]
+    assert res["raw_count"] == 4          # 两份存档各 2 行
+    assert res["count"] == 2              # 按行星地址去重
+    st = di.stats(db_file=str(db))
+    assert st["planets"] == 4 and st["unique_planets"] == 2
+    assert [f["name"] for f in st["save_files"]] == ["save.hg", "save3.hg"]
+
+
+def test_query_keyword_and_save_ids(tmp_path, monkeypatch):
+    planets = _rows(_tree([
+        _planet(1, vp=(0x11, 0), name="Alpha Prime", ts=100),
+        _planet(2, vp=(0x22, 4), name="Beta World", ts=200),
+    ]))
+    save1 = tmp_path / "save.hg"
+    save1.write_bytes(b"synthetic save a")
+    save2 = tmp_path / "save3.hg"
+    save2.write_bytes(b"synthetic save b")
+    db = tmp_path / "discoveries.db"
+    _fake_discovered(monkeypatch, save1, planets)
+    di.index_saves([save1, save2], db_file=str(db))
+
+    rows = di.query(keyword="alpha", db_file=str(db))
+    assert len(rows) == 2 and {r["name"] for r in rows} == {"Alpha Prime"}
+    # 关键词也匹配星系/坐标/符文文本
+    assert di.query(keyword="no-such-thing", db_file=str(db)) == []
+
+    saves = di.stats(db_file=str(db))["save_files"]
+    only = di.query(save_ids=[saves[-1]["save_id"]], db_file=str(db))
+    assert len(only) == 2
+    assert {row["save_name"] for row in only} == {"save3.hg"}
+
+
+def test_query_order_name(tmp_path, monkeypatch):
+    planets = _rows(_tree([
+        _planet(1, vp=(0x11, 0), name="Zulu", ts=100),
+        _planet(2, vp=(0x22, 4), name="Alpha", ts=200),
+        _planet(3, vp=(0x33, 0), name=None, ts=300),
+    ]))
+    save = tmp_path / "save.hg"
+    save.write_bytes(b"synthetic save")
+    db = tmp_path / "discoveries.db"
+    _fake_discovered(monkeypatch, save, planets)
+    di.index_save(str(save), db_file=str(db))
+
+    names = [r.get("name") for r in di.query(order="name", db_file=str(db))]
+    assert names == [None, "Alpha", "Zulu"]

@@ -123,6 +123,8 @@ class GalaxyStore:
             where.append("s.interceptor IS NOT NULL")
         if f.get("min_planets"):
             where.append("s.planets >= ?"); args.append(int(f["min_planets"]))
+        if f.get("min_moons"):
+            where.append("s.moons >= ?"); args.append(int(f["min_moons"]))
 
         pwhere = []
         if f.get("biome"):
@@ -235,6 +237,8 @@ def _system_matches(info: dict, f: dict) -> bool:
     if f.get("dissonant") and not info.get("dissonant"):
         return False
     if f.get("min_planets") and int(info.get("planets") or 0) < int(f["min_planets"]):
+        return False
+    if f.get("min_moons") and int(info.get("moons") or 0) < int(f["min_moons"]):
         return False
     if f.get("has_interceptor") and not info.get("interceptor"):
         return False

@@ -305,18 +305,25 @@ def test_never_calls_real_agent_client(qapp, monkeypatch):
 def test_three_step_state_machine_highlights_only_next(qapp, monkeypatch):
     import copy
 
+    from PySide6.QtWidgets import QPushButton
+
+    def primaries() -> list:
+        return [b for b in page.findChildren(QPushButton)
+                if b.objectName() == "primary"]
+
     svc = FakeServices({"multitool": MULTITOOL, "freighter": FREIGHTER, "pets": PETS})
     page = _make_page(monkeypatch, svc)
     page._detect_template_mod = lambda: 0
 
-    # 前两步完成 → 只有模板 Mod 是「进行中」
+    # 前两步完成 → 只有模板 Mod 是「进行中」，primary 只留给「刷新状态」
     page._apply_state(copy.deepcopy(CAPABILITIES))
     assert page.step1.property("state") == "done"
     assert page.step2.property("state") == "done"
     assert page.step3.property("state") == "current"
     assert page.step3.action.text() == "安装 / 更新模板 Mod"
+    assert primaries() == [page.refresh_btn]
 
-    # 运行时缺失 → 第 1 步进行中，后两步等待但仍可点
+    # 运行时缺失 → 第 1 步进行中，后两步等待但仍可点；primary 是准备运行时
     blocked = copy.deepcopy(CAPABILITIES)
     blocked["status"].update({
         "runtime_ready": False, "pymhf_http_api": False,
@@ -331,6 +338,7 @@ def test_three_step_state_machine_highlights_only_next(qapp, monkeypatch):
     assert page.step1.action.text() == "准备运行时"
     assert "下一步" in page.status.text() and "运行时" in page.status.text()
     assert page.step2.action.isEnabled() and page.step3.action.isEnabled()
+    assert primaries() == [page.step1.action]
 
     # 运行时文件在、组件缺失 → 第 1 步标红并给「安装 / 修复组件」
     page._apply_state({
@@ -343,3 +351,5 @@ def test_three_step_state_machine_highlights_only_next(qapp, monkeypatch):
     })
     assert page.step1.property("state") == "error"
     assert page.step1.action.text() == "安装 / 修复组件"
+    assert primaries() == [page.step1.action]
+    page.close()

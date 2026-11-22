@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -52,6 +54,7 @@ from ..widgets.galaxy_flow import (
 from ..widgets.page import PageSplitter, page_layout
 from ..widgets.page_header import PageHeader
 from ..widgets.ui import Card, muted, primary_button
+from ..widgets.ux import FilterChips, FilterPanel, TaskFlow
 from ..widgets.worker import run as run_worker
 
 BIOMES = [("", "不限"), ("Lush", "茂盛"), ("Toxic", "剧毒"), ("Scorched", "焦土"),
@@ -72,7 +75,7 @@ BUILD_UNVERIFIED_HINT = (
     "需要先开启实验写入开关（设置页 → 安全 → 允许未验证 build 的实验写入）")
 
 # 「已发现」表格列：表格与 CSV 前 7 列共用同一组字段。
-DISCOVERED_COLUMNS = ["行星序号", "星系", "群系", "虫蚀", "命名", "距离", "符文"]
+DISCOVERED_COLUMNS = ["行星", "星系", "群系", "虫蚀", "命名", "距离", "符文", "存档"]
 DISCOVERED_SORT_ROLE = int(Qt.UserRole) + 1
 DISCOVERED_SOURCE_LABELS = {"save": "存档", "save-pending": "待上传"}
 
@@ -144,7 +147,7 @@ def _discovered_flag_text(value, *, yes: str = "是", no: str = "否") -> str:
 
 
 def _discovered_cells(row: dict) -> list[str]:
-    """表格前 7 列（也是 CSV 的前 7 列），顺序与 DISCOVERED_COLUMNS 一致。"""
+    """表格与 CSV 共用的列值，顺序与 DISCOVERED_COLUMNS 一致。"""
     index = row.get("planet_index")
     system = (row.get("system_name") or row.get("coords")
               or row.get("system_ua") or "—")
@@ -156,6 +159,7 @@ def _discovered_cells(row: dict) -> list[str]:
         str(row.get("name") or "未命名"),
         _discovered_distance_text(row.get("distance_ly")),
         str(row.get("glyphs") or "—"),
+        str(row.get("save_name") or _discovered_source_text(row)),
     ]
 
 
@@ -171,6 +175,7 @@ def _discovered_sort_values(row: dict) -> list:
         0 if row.get("name") else 1,
         float("inf") if row.get("distance_ly") in (None, "") else float(row["distance_ly"]),
         str(row.get("glyphs") or "").casefold(),
+        cells[7].casefold(),
     ]
 
 
@@ -329,6 +334,7 @@ class GalaxyPage(QWidget):
         self._discovered_has_data = False
         self._discovered_loaded = False
         self._discovered_loading = False
+        self._discovered_loaded_at = 0.0
         self._discovered_filter_seq = 0
         self._discovered_index_meta: dict = {}
         self._index_busy = False
@@ -368,7 +374,7 @@ class GalaxyPage(QWidget):
         self.more_btn.setToolTip("刷新、导出、浮动符文与清空筛选")
         self.more_menu = QMenu(self)
         self.refresh_action = self.more_menu.addAction(
-            "刷新当前星系", lambda: self._load_current(manual=True))
+            "刷新当前星系", self._refresh_current_mode)
         self.export_action = self.more_menu.addAction(
             "导出 CSV", self._export_current_csv)
         self.overlay_action = self.more_menu.addAction(
@@ -388,6 +394,7 @@ class GalaxyPage(QWidget):
         root.addWidget(self.error_banner)
 
         hero = Card()
+        self.hero = hero
         hv = hero.v
         self.badge = QLabel("—")
         self.badge.setStyleSheet("font-size:16px;font-weight:700;")
@@ -410,11 +417,14 @@ class GalaxyPage(QWidget):
         self.current_empty.hide()
         hv.addWidget(self.current_empty)
         root.addWidget(hero)
+        self.map_flow = TaskFlow(["当前星系", "扫描 / 查询", "选中后传送"])
+        root.addWidget(self.map_flow)
 
         split = PageSplitter("galaxy-v2")
         root.addWidget(split, 1)
 
         mid = Card("行星与船池")
+        self.mid_card = mid
         mid.setMinimumWidth(360)
         mv = mid.v
         mv.setContentsMargins(12, 8, 12, 8)
@@ -452,6 +462,12 @@ class GalaxyPage(QWidget):
         self.min_planets.setValue(0)
         self.min_planets.setSpecialValueText("不限")
         self.scan_filter_flow.addWidget(self._filter_field("最少行星", self.min_planets))
+        self.moons = QComboBox()
+        self.moons.addItem("不限", 0)
+        self.moons.addItem("≥1", 1)
+        self.moons.addItem("≥2", 2)
+        self.moons.setToolTip("只保留至少拥有该数量卫星的星系")
+        self.scan_filter_flow.addWidget(self._filter_field("卫星", self.moons))
         self.diss = QComboBox()
         self.diss.addItem("不限", None)
         self.diss.addItem("仅异常", True)
@@ -466,7 +482,8 @@ class GalaxyPage(QWidget):
         self.scan_filter_flow.addWidget(self.reset_filters_btn)
         sf.addWidget(self.scan_filter_flow)
 
-        for widget in (self.biome, self.sent, self.race, self.interceptor, self.diss):
+        for widget in (self.biome, self.sent, self.race, self.interceptor,
+                       self.moons, self.diss):
             widget.currentIndexChanged.connect(self._update_filter_summary)
         for widget in (self.min_planets, self.count):
             widget.valueChanged.connect(self._update_filter_summary)
@@ -539,6 +556,12 @@ class GalaxyPage(QWidget):
         self.idx_min.setValue(0)
         self.idx_min.setSpecialValueText("不限")
         self.index_filter_flow.addWidget(self._filter_field("最少行星", self.idx_min))
+        self.idx_moons = QComboBox()
+        self.idx_moons.addItem("不限", 0)
+        self.idx_moons.addItem("≥1", 1)
+        self.idx_moons.addItem("≥2", 2)
+        self.idx_moons.setToolTip("只保留至少拥有该数量卫星的星系")
+        self.index_filter_flow.addWidget(self._filter_field("卫星", self.idx_moons))
         self.idx_interceptor = QComboBox()
         self.idx_interceptor.addItem("不限", None)
         self.idx_interceptor.addItem("有", True)
@@ -563,18 +586,38 @@ class GalaxyPage(QWidget):
         iv.addWidget(self.index_pane, 1)
         iv.addWidget(self.index_stats)
         self.tabs.addTab(self.index_page, "银河索引")
-        self.tabs.addTab(self._build_discovered_page(), "已发现")
-        self.tabs.addTab(self._build_address_page(), "地址工作台")
-        mv.addWidget(self.tabs, 1)
+
+        # 「已发现」「符文」是独立视图，不是星图的内部分栏。
+        # 用 QStackedWidget 承载，避免同一个页面里再叠一层标签条，
+        # 也让每个视图可以拥有自己的标题/筛选条/主操作。
+        self.discovered_page = self._build_discovered_page()
+        self.address_page = self._build_address_page()
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self.tabs)             # 0 星图
+        self.view_stack.addWidget(self.discovered_page)  # 1 已发现
+        self.view_stack.addWidget(self.address_page)     # 2 地址工作台
+        self.view_stack.currentChanged.connect(self._on_section_changed)
+        mv.addWidget(self.view_stack, 1)
 
         mv.addWidget(self.status)
         split.addWidget(mid)
 
         right = Card("详情")
+        self.detail_card = right
         rv = right.v
         self.detail_title = QLabel("选择行星")
         self.detail_title.setStyleSheet("font-size:15px;font-weight:700;")
-        rv.addWidget(self.detail_title)
+        detail_head = QHBoxLayout()
+        detail_head.setSpacing(6)
+        detail_head.addWidget(self.detail_title, 1)
+        self.detail_close_btn = QPushButton("×")
+        self.detail_close_btn.setObjectName("uxIconButton")
+        self.detail_close_btn.setFixedSize(22, 22)
+        self.detail_close_btn.setToolTip("关闭详情，把空间还给结果区")
+        self.detail_close_btn.setAccessibleName("关闭详情")
+        self.detail_close_btn.clicked.connect(self._close_detail)
+        detail_head.addWidget(self.detail_close_btn)
+        rv.addLayout(detail_head)
         self.detail = muted(
             "点表格里的行星、扫描结果、银河索引或已发现行星查看详情；双击打开详情窗。")
         rv.addWidget(self.detail)
@@ -621,26 +664,33 @@ class GalaxyPage(QWidget):
         page = QWidget()
         v = QVBoxLayout(page)
         v.setContentsMargins(0, 4, 0, 0)
-        v.setSpacing(4)
+        v.setSpacing(6)
 
+        # 一屏一个任务：① 筛选 → ② 选中 → ③ 传送。
+        self.disc_flow = TaskFlow(["筛选", "选中一颗", "传送"])
+        v.addWidget(self.disc_flow)
+
+        toolbar = QFrame()
+        toolbar.setObjectName("uxToolbar")
+        th = QHBoxLayout(toolbar)
+        th.setContentsMargins(10, 6, 10, 6)
+        th.setSpacing(6)
+
+        # 快速筛选：只放最常用的 3 个（存档 / 群系 / 距离）。
         self.disc_filter_flow = GalaxyFlowBar(h_spacing=6, v_spacing=6)
+
+        self.disc_save = QComboBox()
+        self.disc_save.addItem("全部存档", None)
+        self.disc_save.setMinimumWidth(150)
+        self.disc_save.setToolTip(
+            "默认汇总存档目录下所有可读的 save*.hg；也可以只看某一个存档。")
+        self.disc_filter_flow.addWidget(self._filter_field("存档", self.disc_save))
+
         self.disc_biome = QComboBox()
         self.disc_biome.addItem("不限", None)
         for name in DISCOVERY_BIOMES:
             self.disc_biome.addItem(zh_mod.biome_label(name), name)
         self.disc_filter_flow.addWidget(self._filter_field("群系", self.disc_biome))
-
-        self.disc_infested = QComboBox()
-        self.disc_infested.addItem("不限", None)
-        self.disc_infested.addItem("虫蚀", True)
-        self.disc_infested.addItem("非虫蚀", False)
-        self.disc_filter_flow.addWidget(self._filter_field("虫蚀", self.disc_infested))
-
-        self.disc_named = QComboBox()
-        self.disc_named.addItem("不限", None)
-        self.disc_named.addItem("已命名", True)
-        self.disc_named.addItem("未命名", False)
-        self.disc_filter_flow.addWidget(self._filter_field("命名", self.disc_named))
 
         self.disc_distance = QDoubleSpinBox()
         self.disc_distance.setRange(0, 1_000_000)
@@ -654,7 +704,7 @@ class GalaxyPage(QWidget):
         self.disc_distance.setToolTip("只显示距当前星系不超过该距离的已发现星球；需先点右侧按钮确定中心")
         self.disc_filter_flow.addWidget(self._filter_field("距离", self.disc_distance))
 
-        self.disc_center_btn = QPushButton("以当前星系为中心")
+        self.disc_center_btn = QPushButton("设为中心")
         self.disc_center_btn.setObjectName("ghostButton")
         self.disc_center_btn.setCheckable(True)
         self.disc_center_btn.setToolTip(
@@ -662,9 +712,64 @@ class GalaxyPage(QWidget):
         self.disc_center_btn.toggled.connect(self._toggle_discovered_origin)
         self.disc_filter_flow.addWidget(self.disc_center_btn)
 
+        th.addWidget(self.disc_filter_flow, 1)
+
+        self.disc_more_btn = QPushButton("筛选")
+        self.disc_more_btn.setObjectName("ghostButton")
+        self.disc_more_btn.setCheckable(True)
+        self.disc_more_btn.setToolTip("更多筛选：关键词 / 虫蚀 / 命名 / 排序 / 上限")
+        th.addWidget(self.disc_more_btn)
+        v.addWidget(toolbar)
+
+        self.disc_chips = FilterChips()
+        self.disc_chips.removed.connect(self._remove_disc_filter)
+        v.addWidget(self.disc_chips)
+
+        # 次要筛选收进可展开面板，不占首屏。
+        self.disc_filter_panel = FilterPanel()
+        self.disc_more_flow = GalaxyFlowBar(h_spacing=6, v_spacing=6)
+
+        self.disc_keyword = QLineEdit()
+        self.disc_keyword.setPlaceholderText("行星名 / 星系 / 坐标 / 符文")
+        self.disc_keyword.setClearButtonEnabled(True)
+        self.disc_keyword.setMinimumWidth(190)
+        self.disc_more_flow.addWidget(self._filter_field("关键词", self.disc_keyword))
+
+        self.disc_infested = QComboBox()
+        self.disc_infested.addItem("不限", None)
+        self.disc_infested.addItem("虫蚀", True)
+        self.disc_infested.addItem("非虫蚀", False)
+        self.disc_more_flow.addWidget(self._filter_field("虫蚀", self.disc_infested))
+
+        self.disc_named = QComboBox()
+        self.disc_named.addItem("不限", None)
+        self.disc_named.addItem("已命名", True)
+        self.disc_named.addItem("未命名", False)
+        self.disc_more_flow.addWidget(self._filter_field("命名", self.disc_named))
+
+        self.disc_sort = QComboBox()
+        for label, value in (("距离（银河中心）", "distance"), ("最近发现", "discovered"),
+                             ("群系", "biome"), ("名称", "name")):
+            self.disc_sort.addItem(label, value)
+        self.disc_more_flow.addWidget(self._filter_field("排序", self.disc_sort))
+
+        self.disc_limit = QComboBox()
+        for label, value in (("500 条", 500), ("1000 条", 1000), ("全部", 0)):
+            self.disc_limit.addItem(label, value)
+        self.disc_limit.setToolTip("结果上限；筛选仍会作用在全部记录上")
+        self.disc_more_flow.addWidget(self._filter_field("上限", self.disc_limit))
+
+        self.disc_filter_panel.body.addWidget(self.disc_more_flow)
+        self.disc_more_btn.toggled.connect(self.disc_filter_panel.setVisible)
+        v.addWidget(self.disc_filter_panel)
+
         self.disc_origin_hint = muted("距离中心：未设置")
-        self.disc_filter_flow.addWidget(self.disc_origin_hint)
-        v.addWidget(self.disc_filter_flow)
+        v.addWidget(self.disc_origin_hint)
+
+        self._disc_filter_timer = QTimer(self)
+        self._disc_filter_timer.setSingleShot(True)
+        self._disc_filter_timer.setInterval(260)
+        self._disc_filter_timer.timeout.connect(self._apply_discovered_filters)
 
         self.disc_stats = muted("已发现：读取中…")
         v.addWidget(self.disc_stats)
@@ -681,31 +786,124 @@ class GalaxyPage(QWidget):
             icon="◇")
         self.disc_pane = self._table_pane(self.disc_table, self.disc_empty)
         v.addWidget(self.disc_pane, 1)
-        self._autosize_table(self.disc_table, (64, 150, 66, 48, 126, 84, 110))
+        self._autosize_table(self.disc_table, (56, 168, 62, 44, 118, 80, 104, 148))
         self._set_empty_state(
             self.disc_table, self.disc_empty, False,
             "正在读取已发现星球…", "正在建立/读取本地发现索引，请稍候。")
 
-        self.disc_biome.currentIndexChanged.connect(self._apply_discovered_filters)
-        self.disc_infested.currentIndexChanged.connect(self._apply_discovered_filters)
-        self.disc_named.currentIndexChanged.connect(self._apply_discovered_filters)
+        for widget in (self.disc_biome, self.disc_infested, self.disc_named,
+                       self.disc_save, self.disc_sort, self.disc_limit):
+            widget.currentIndexChanged.connect(self._apply_discovered_filters)
+            widget.currentIndexChanged.connect(self._update_disc_chips)
         self.disc_distance.valueChanged.connect(self._apply_discovered_filters)
+        self.disc_distance.valueChanged.connect(self._update_disc_chips)
+        self.disc_keyword.textChanged.connect(
+            lambda _text: self._disc_filter_timer.start())
+        self.disc_keyword.textChanged.connect(self._update_disc_chips)
+        self._update_disc_chips()
         self.discovered_page = page
         return page
+
+    def _update_disc_chips(self, *_args) -> None:
+        items: list[tuple[str, str]] = []
+        save = self.disc_save.currentData()
+        if save:
+            items.append(("save", f"存档 {self.disc_save.currentText()}"))
+        if self.disc_biome.currentData():
+            items.append(("biome", f"群系 {self.disc_biome.currentText()}"))
+        if self.disc_infested.currentData() is not None:
+            items.append(("infested", "虫蚀" if self.disc_infested.currentData() else "非虫蚀"))
+        if self.disc_named.currentData() is not None:
+            items.append(("named", "已命名" if self.disc_named.currentData() else "未命名"))
+        keyword = self.disc_keyword.text().strip()
+        if keyword:
+            items.append(("keyword", f"关键词 {keyword}"))
+        if self.disc_distance.value() > 0:
+            items.append(("distance", f"距离 ≤ {int(self.disc_distance.value())} ly"))
+        if str(self.disc_sort.currentData() or "distance") != "distance":
+            items.append(("sort", f"排序 {self.disc_sort.currentText()}"))
+        self.disc_chips.set_filters(items)
+
+    def _remove_disc_filter(self, key: str) -> None:
+        key = str(key or "")
+        if key == "save":
+            self.disc_save.setCurrentIndex(0)
+        elif key == "biome":
+            self.disc_biome.setCurrentIndex(0)
+        elif key == "infested":
+            self.disc_infested.setCurrentIndex(0)
+        elif key == "named":
+            self.disc_named.setCurrentIndex(0)
+        elif key == "keyword":
+            self.disc_keyword.clear()
+        elif key == "distance":
+            self.disc_center_btn.setChecked(False)
+            self.disc_distance.setValue(0)
+        elif key == "sort":
+            self.disc_sort.setCurrentIndex(0)
+        self._update_disc_chips()
+        self._apply_discovered_filters()
 
     # ---------------------------------------------------------------- 主操作
 
     def _tab_key(self) -> str:
+        stack = getattr(self, "view_stack", None)
+        if stack is not None:
+            current = stack.currentWidget()
+            if current is self.discovered_page:
+                return "discovered"
+            if current is self.address_page:
+                return "address"
         widget = self.tabs.currentWidget()
         if widget is self.index_page:
             return "index"
-        if widget is self.discovered_page:
-            return "discovered"
-        if widget is self.address_page:
-            return "address"
         if widget is self.scan_page:
             return "scan"
         return "current"
+
+    def show_section(self, key: str) -> None:
+        """切到「星图 / 已发现 / 地址工作台」中的一块（外壳左栏调用）。
+
+        星图内部仍是 4 个子标签；已发现与地址工作台是独立视图，没有标签条。
+        """
+        name = str(key or "").strip()
+        if not name:
+            return
+        # 切视图先收掉旧选择，避免详情/传送目标跨视图残留。
+        self._selection = {}
+        self._update_warp_action(None)
+        if name in ("已发现", "discovered", "discoveries"):
+            self.view_stack.setCurrentWidget(self.discovered_page)
+            if not self._discovered_loading:
+                # 30 秒内重复进入不重建索引：避免“每点一次就重新加载”。
+                # 超过窗口或点「更多 → 刷新发现索引」才走增量索引；
+                # 存档没变时是毫秒级快路径，变了才会重新解析。
+                fresh = (self._discovered_loaded
+                         and time.monotonic() - self._discovered_loaded_at < 30)
+                if fresh:
+                    self._sync_primary_action()
+                else:
+                    self._load_discovered(rebuild=True)
+            return
+        if name in ("地址工作台", "address", "glyphs", "符文"):
+            self.view_stack.setCurrentWidget(self.address_page)
+            try:
+                self.addr_input.setFocus(Qt.OtherFocusReason)
+                self.addr_input.selectAll()
+            except (AttributeError, RuntimeError):
+                pass
+            return
+        # 其余都回到星图；按名字选中内部子标签（行星 / 扫描结果 / 银河索引）。
+        self.view_stack.setCurrentWidget(self.tabs)
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index) == name:
+                self.tabs.setCurrentIndex(index)
+                break
+        self._sync_primary_action()
+
+    def _on_section_changed(self, _index: int) -> None:
+        self._sync_primary_action()
+        self.status.setText(self._ready_status())
 
     def _on_tab_changed(self, _index: int) -> None:
         for table in (self.planets, self.ships, self.scan_table,
@@ -729,13 +927,32 @@ class GalaxyPage(QWidget):
                "就绪：查看当前星系；点顶部「扫描」找附近星系。")
 
     def _sync_primary_action(self) -> None:
-        """按当前标签页决定唯一 primary 的语义与可用性。"""
+        """按当前视图决定唯一 primary 的语义、页头文案与可见筛选条。"""
         mode = self._tab_key()
         self._primary_mode = mode
         scanning = bool(self._scan_job is not None
                         and getattr(self._scan_job, "status", "") == "running")
         scanning = scanning or self.scan_cancel_btn.isVisible()
         has_target = self._warp_target is not None and not self._warp_busy
+
+        titles = {
+            "current": ("星图", "查看当前星系的行星与船池；扫描附近星系找乐土。"),
+            "scan": ("星图 · 扫描结果", "按群系 / 哨兵 / 种族扫描附近星系，结果写入银河索引。"),
+            "index": ("星图 · 银河索引", "查询已扫描的星系索引；选中后可传送。"),
+            "discovered": ("已发现星球",
+                           "全部存档的发现记录；跨档自动去重，选中后可传送。"),
+            "address": ("地址工作台", "符文 / 坐标 / UA 三形态互转。"),
+        }
+        title, subtitle = titles.get(mode, titles["current"])
+        try:
+            if self.header.title.text() != title:
+                self.header.title.setText(title)
+                self.header.title.setToolTip(title)
+            if self.header.subtitle.text() != subtitle:
+                self.header.subtitle.setText(subtitle)
+                self.header.subtitle.setToolTip(subtitle)
+        except RuntimeError:
+            pass
 
         if mode == "index":
             self.primary_btn.setText("查询中…" if self._index_busy else "查询")
@@ -762,15 +979,61 @@ class GalaxyPage(QWidget):
 
         # 扫描条件只服务扫描相关标签；其它标签各自有自己的筛选条。
         self.scan_filter_box.setVisible(mode in ("current", "scan"))
+        # 「当前星系」大卡只在星图视图有意义；已发现/符文各自是独立视图。
+        try:
+            self.hero.setVisible(mode in ("current", "scan", "index"))
+            card_title = {"discovered": "", "address": "地址转换"
+                          }.get(mode, "行星与船池")
+            if self.mid_card.title_label.text() != card_title:
+                self.mid_card.title_label.setText(card_title)
+            self.mid_card.title_label.setVisible(bool(card_title))
+            # 结果优先：没选中时不占右侧空间，选中后才出现详情。
+            self.detail_card.setVisible(mode != "address" and bool(self._selection))
+            self.detail_close_btn.setVisible(mode != "address")
+            if hasattr(self, "map_flow"):
+                self.map_flow.setVisible(mode in ("current", "scan", "index"))
+                if mode in ("current", "scan", "index"):
+                    if self._selection:
+                        self.map_flow.set_active(2, done=(0, 1))
+                    elif scanning or self._index_busy:
+                        self.map_flow.set_active(1, done=(0,))
+                    else:
+                        self.map_flow.set_active(1, done=(0,))
+            if hasattr(self, "disc_flow"):
+                if mode == "discovered":
+                    if self._warp_busy:
+                        self.disc_flow.set_active(2, done=(0, 1))
+                    elif self._selection:
+                        self.disc_flow.set_active(1, done=(0,))
+                    else:
+                        self.disc_flow.set_active(0)
+            if not self._selection:
+                hint = {
+                    "discovered": "点表格里的已发现行星查看详情；双击打开详情窗口。",
+                    "address": "",
+                }.get(mode, "点表格里的行星、扫描结果、银河索引或已发现行星查看详情；双击打开详情窗口。")
+                if hint and self.detail.text() != hint:
+                    self.detail.setText(hint)
+        except (AttributeError, RuntimeError):
+            pass
         # 「已发现」的主操作就是传送，详情卡不再重复一个传送按钮。
         self.warp_btn.setVisible(mode != "discovered")
         if mode != "discovered":
             self.warp_btn.setEnabled(has_target and not self._warp_busy)
         self.refresh_action.setEnabled(mode != "address")
+        self.refresh_action.setText("刷新发现索引" if mode == "discovered" else "刷新当前星系")
+        self.export_action.setText("导出已发现 CSV" if mode == "discovered" else "导出 CSV")
         self.export_action.setEnabled(self._has_exportable_rows(mode))
         self.overlay_action.setEnabled(bool(self._selected_glyphs()))
         self.clear_filters_action.setEnabled(mode in ("current", "scan", "index", "discovered"))
         self.seed_action.setEnabled(mode == "address")
+
+    def _refresh_current_mode(self) -> None:
+        """「更多 → 刷新」按当前视图刷新对应数据。"""
+        if self._tab_key() == "discovered":
+            self._load_discovered(manual=True, rebuild=True)
+        else:
+            self._load_current(manual=True)
 
     def _on_primary(self) -> None:
         mode = self._primary_mode
@@ -983,6 +1246,8 @@ class GalaxyPage(QWidget):
             filters["dissonant"] = True
         if self.min_planets.value() > 0:
             filters["min_planets"] = int(self.min_planets.value())
+        if int(self.moons.currentData() or 0) > 0:
+            filters["min_moons"] = int(self.moons.currentData())
         if self.interceptor.currentData():
             filters["has_interceptor"] = True
         return filters
@@ -999,6 +1264,8 @@ class GalaxyPage(QWidget):
             parts.append("仅异常")
         if self.min_planets.value() > 0:
             parts.append(f"行星不少于 {self.min_planets.value()} 颗")
+        if int(self.moons.currentData() or 0) > 0:
+            parts.append(f"卫星不少于 {self.moons.currentData()} 颗")
         if self.interceptor.currentData():
             parts.append("有拦截机")
         summary = " · ".join(parts) if parts else "不限条件"
@@ -1006,7 +1273,8 @@ class GalaxyPage(QWidget):
             f"筛选摘要：{summary}；扫描范围 {int(self.count.value())} 个系统。")
 
     def _reset_scan_filters(self) -> None:
-        for widget in (self.biome, self.sent, self.race, self.interceptor, self.diss):
+        for widget in (self.biome, self.sent, self.race, self.interceptor,
+                       self.moons, self.diss):
             widget.setCurrentIndex(0)
         self.min_planets.setValue(0)
         self.count.setValue(200)
@@ -1021,7 +1289,7 @@ class GalaxyPage(QWidget):
         self._loaded = True
         self._load_current()
         self._refresh_index_stats()
-        self._load_discovered()
+        # 「已发现」按需加载：进入该视图时才索引全部存档（多存档会慢一些）。
 
     def _load_current(self, manual: bool = False) -> None:
         self.status.setText("加载中：正在读取当前星系…")
@@ -1075,12 +1343,14 @@ class GalaxyPage(QWidget):
                 "当前星系没有船",
                 "没有读到船池数据；请确认存档/游戏目录，或用「更多 → 刷新当前星系」。")
             if pls or ships:
-                self.status.setText(f"当前星系：{len(pls)} 颗行星 / {len(ships)} 艘船")
+                if self._tab_key() in ("current", "scan", "index"):
+                    self.status.setText(f"当前星系：{len(pls)} 颗行星 / {len(ships)} 艘船")
                 self.current_empty.hide()
                 if manual:
                     notify.success("当前星系已刷新")
             else:
-                self.status.setText("当前星系为空：没有读取到行星或船池数据。")
+                if self._tab_key() in ("current", "scan", "index"):
+                    self.status.setText("当前星系为空：没有读取到行星或船池数据。")
                 self.current_empty.title_label.setText("当前星系没有结果")
                 self.current_empty.description_label.setText(
                     "没有读到行星或船池数据；请确认存档/游戏目录，再用「更多 → 刷新当前星系」。")
@@ -1170,6 +1440,25 @@ class GalaxyPage(QWidget):
         row.addWidget(self.addr_planet)
         v.addLayout(row)
 
+        v.addWidget(muted(
+            "输入任一形态即可：12 位符文 / X:Y:Z:SSSS 坐标 / 0x… UA；"
+            "另外两种会自动算出。行星位为 0 时标注“未知行星，不可传送”。"))
+
+        examples = QHBoxLayout()
+        examples.setSpacing(6)
+        examples.addWidget(muted("示例："))
+        for label, value in (("符文", "3112F19BDCE5"),
+                             ("坐标", "04E4:0070:01BC:0112"),
+                             ("UA", "0x10DEFF474570")):
+            button = QPushButton(label)
+            button.setObjectName("ghostButton")
+            button.setToolTip(f"填入一个{label}示例并立即转换")
+            button.clicked.connect(
+                lambda _checked=False, v=value: self._fill_address_example(v))
+            examples.addWidget(button)
+        examples.addStretch(1)
+        v.addLayout(examples)
+
         grid = QGridLayout()
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(6)
@@ -1234,6 +1523,12 @@ class GalaxyPage(QWidget):
         button.setEnabled(False)
         button.setToolTip(f"{text}（当前结果）")
         return button
+
+    def _fill_address_example(self, value: str) -> None:
+        """示例按钮：填入并立即转换；不触发传送，也不复制。"""
+        self.addr_input.setText(str(value))
+        self.addr_input.selectAll()
+        self._address_submit()
 
     def _addr_set_busy(self, busy: bool, text: str | None = None) -> None:
         self._addr_busy = busy
@@ -1377,6 +1672,8 @@ class GalaxyPage(QWidget):
             filters["dissonant"] = bool(self.idx_diss.currentData())
         if self.idx_min.value() > 0:
             filters["min_planets"] = int(self.idx_min.value())
+        if int(self.idx_moons.currentData() or 0) > 0:
+            filters["min_moons"] = int(self.idx_moons.currentData())
         if self.idx_interceptor.currentData():
             filters["has_interceptor"] = True
         return filters
@@ -1534,12 +1831,23 @@ class GalaxyPage(QWidget):
             query["infested"] = bool(self.disc_infested.currentData())
         if self.disc_named.currentData() is not None:
             query["named"] = bool(self.disc_named.currentData())
+        save_id = self.disc_save.currentData()
+        if save_id:
+            query["save_ids"] = [str(save_id)]
+        keyword = self.disc_keyword.text().strip()
+        if keyword:
+            query["keyword"] = keyword
+        order = str(self.disc_sort.currentData() or "distance")
+        limit = int(self.disc_limit.currentData() or 0)
         if self._discovered_origin_ua not in (None, ""):
             query["near_ua"] = self._discovered_origin_ua
             query["order"] = "distance"
-            query["limit"] = None if self.disc_distance.value() > 0 else 500
+            # 有距离上限时让服务层再筛一遍，索引层先多取一些
+            query["limit"] = None if self.disc_distance.value() > 0 else (limit or None)
         else:
-            query["limit"] = 500
+            query["order"] = order
+            # 多存档会有重复行星：先取全量、去重后再按「上限」截断
+            query["limit"] = (limit or None) if save_id else None
         return query
 
     def _toggle_discovered_origin(self, checked: bool) -> None:
@@ -1587,16 +1895,37 @@ class GalaxyPage(QWidget):
         else:
             total = int(total if total is not None else shown)
             parts = [f"已发现：{total} 颗", f"显示 {shown} 颗"]
-            if shown >= 500:
-                parts.append("已达上限 500")
+            limit = int(self.disc_limit.currentData() or 0)
+            if limit and shown >= limit:
+                parts.append(f"已达上限 {limit}")
             if note:
                 parts.append(note)
             self.disc_stats.setText(" · ".join(parts))
         self.disc_stats.setToolTip("\n".join(warnings))
 
+    def _refresh_discovered_saves(self, saves: list[dict] | None = None) -> None:
+        """用索引里的存档列表填充「存档」筛选；保留用户当前选择。"""
+        rows = [item for item in (saves or [])
+                if isinstance(item, dict) and item.get("save_id")]
+        current = self.disc_save.currentData()
+        self.disc_save.blockSignals(True)
+        try:
+            self.disc_save.clear()
+            self.disc_save.addItem(f"全部存档（{len(rows)}）", None)
+            for item in rows:
+                name = str(item.get("name") or "save.hg")
+                count = int(item.get("count") or 0)
+                self.disc_save.addItem(f"{name}（{count}）", item.get("save_id"))
+            index = self.disc_save.findData(current) if current else 0
+            self.disc_save.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.disc_save.blockSignals(False)
+        self._update_disc_chips()
+
     def _set_discovered_filter_enabled(self, enabled: bool) -> None:
-        for widget in (self.disc_biome, self.disc_infested, self.disc_named,
-                       self.disc_center_btn):
+        for widget in (self.disc_save, self.disc_keyword, self.disc_biome,
+                       self.disc_infested, self.disc_named, self.disc_sort,
+                       self.disc_limit, self.disc_center_btn):
             widget.setEnabled(enabled)
         self.disc_distance.setEnabled(enabled and self.disc_center_btn.isChecked())
 
@@ -1617,20 +1946,21 @@ class GalaxyPage(QWidget):
         # 默认保留服务层排序（距离/发现时间）；用户点表头仍可自行排序。
         self.disc_table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
         self.disc_table.setSortingEnabled(True)
-        self._autosize_table(self.disc_table, (64, 150, 66, 48, 126, 84, 110))
+        self._autosize_table(self.disc_table, (56, 168, 62, 44, 118, 80, 104, 148))
 
     def _load_discovered(self, manual: bool = False, *, rebuild: bool = True) -> None:
         """首次/刷新时先建索引，再查索引；筛选变化只查索引。"""
         if self._discovered_loading:
             return
         if self.disc_distance.value() > 0 and self._discovered_origin_ua in (None, ""):
-            self.disc_stats.setText("已发现：请先点「以当前星系为中心」确定距离中心。")
+            self.disc_stats.setText("已发现：请先点「设为中心」确定距离中心。")
             return
         self._discovered_loading = True
         self.disc_stats.setText(
-            "已发现：建立索引…" if rebuild else "已发现：筛选中…")
+            "已发现：刷新中…" if rebuild and self._discovered_rows else
+            ("已发现：建立索引…" if rebuild else "已发现：筛选中…"))
         self.disc_stats.setToolTip("")
-        if rebuild:
+        if rebuild and not self._discovered_rows:
             self._set_empty_state(
                 self.disc_table, self.disc_empty, False,
                 "正在建立发现索引…", "只读存档、只写本地缓存；首次会慢一些。")
@@ -1646,7 +1976,7 @@ class GalaxyPage(QWidget):
         def load() -> dict:
             index_res = None
             if rebuild:
-                index_res = self.svc.discoveries_index()
+                index_res = self.svc.discoveries_index_all()
                 if not index_res.get("ok"):
                     # 索引坏了也保留可用性：退回直接读取当前存档。
                     base = self.svc.discovered_planets()
@@ -1687,9 +2017,6 @@ class GalaxyPage(QWidget):
                     }
 
             query = dict(query_kwargs)
-            save_id = (index_res or {}).get("save_id")
-            if save_id:
-                query["save_id"] = save_id
             queried = self.svc.discoveries_query(**query)
             rows = [row for row in (queried.get("planets") or []) if isinstance(row, dict)]
             if filters.get("max_distance"):
@@ -1702,6 +2029,10 @@ class GalaxyPage(QWidget):
                 )
                 rows = [row for row in (filtered.get("planets") or [])
                         if isinstance(row, dict)]
+            rows = self._dedupe_discovered(rows)
+            limit = int(self.disc_limit.currentData() or 0)
+            if limit and len(rows) > limit:
+                rows = rows[:limit]
             total = index_count
             if rebuild:
                 total = int((index_res or {}).get("count") or 0)
@@ -1713,6 +2044,7 @@ class GalaxyPage(QWidget):
                 return
             self._discovered_loading = False
             self._discovered_loaded = True
+            self._discovered_loaded_at = time.monotonic()
             res = res if isinstance(res, dict) else {}
             self._discovered_warnings = [
                 str(w) for w in (res.get("warnings") or []) if str(w).strip()]
@@ -1729,6 +2061,8 @@ class GalaxyPage(QWidget):
                 "rebuilt": bool(index_meta.get("rebuilt")),
             }
             self._fill_discovered(rows)
+            if isinstance(index_meta.get("saves"), list):
+                self._refresh_discovered_saves(index_meta["saves"])
 
             if not self._discovered_has_data:
                 self._set_discovered_filter_enabled(False)
@@ -1745,12 +2079,18 @@ class GalaxyPage(QWidget):
                 return
 
             self._set_discovered_filter_enabled(True)
-            note = "直接读取" if res.get("fallback") else ""
+            notes = []
+            if res.get("fallback"):
+                notes.append("直接读取")
+            save_count = len(index_meta.get("saves") or [])
+            if save_count > 1:
+                notes.append(f"{save_count} 个存档")
+            note = " · ".join(notes)
             if total <= 0:
                 self._set_empty_state(
                     self.disc_table, self.disc_empty, False,
                     "没有已发现的星球",
-                    "当前存档里没有 Planet 类型的发现记录；可先扫描或继续探索后刷新。")
+                    "存档目录里没有 Planet 类型的发现记录；可先扫描或继续探索后刷新。")
                 self._render_discovered_stats(0, total=0, note=note)
             elif not rows:
                 self._set_empty_state(
@@ -1770,6 +2110,7 @@ class GalaxyPage(QWidget):
                 return
             self._discovered_loading = False
             self._discovered_loaded = True
+            self._discovered_loaded_at = time.monotonic()
             if rebuild:
                 self._discovered_has_data = False
                 self._discovered_all = []
@@ -1803,6 +2144,43 @@ class GalaxyPage(QWidget):
             return
         self._load_discovered(rebuild=False)
 
+    @staticmethod
+    def _dedupe_discovered(rows: list[dict]) -> list[dict]:
+        """同名行星/同一地址在多份存档里只显示一行，来源合并成「save.hg 等 N 个」。"""
+        seen: dict[tuple, dict] = {}
+        out: list[dict] = []
+        for row in rows:
+            key = (str(row.get("system_ua") or ""), row.get("planet_index"),
+                   str(row.get("planet_ua") or ""))
+            name = str(row.get("save_name") or "")
+            if key in seen:
+                item = seen[key]
+                names = item.setdefault("_save_names", [])
+                if name and name not in names:
+                    names.append(name)
+                if len(names) > 1:
+                    ordered = sorted(names)
+                    label = " + ".join(ordered[:2])
+                    if len(ordered) > 2:
+                        label += f" +{len(ordered) - 2}"
+                    item["save_name"] = label
+                continue
+            item = dict(row)
+            item["_save_names"] = [name] if name else []
+            seen[key] = item
+            out.append(item)
+        return out
+
+    def _close_detail(self) -> None:
+        for table in (self.planets, self.ships, self.scan_table,
+                      self.index_table, self.disc_table):
+            try:
+                table.clearSelection()
+            except RuntimeError:
+                continue
+        self._selection = {}
+        self._update_warp_action(None)
+
     def _select_discovered(self) -> None:
         rows = self.disc_table.selectionModel().selectedRows()
         if not rows:
@@ -1827,7 +2205,7 @@ class GalaxyPage(QWidget):
             f"坐标：{row.get('coords') or '—'}",
             f"发现者：{row.get('discoverer') or '—'}",
             (f"时间：{_discovered_timestamp_text(row.get('discovered_at'))}"
-             f" · 来源：{_discovered_source_text(row)}"),
+             f" · 来源：{row.get('save_name') or _discovered_source_text(row)}"),
         ]
         if row.get("distance_ly") not in (None, ""):
             lines.append(f"距离：{_discovered_distance_text(row.get('distance_ly'))}")
@@ -1893,6 +2271,12 @@ class GalaxyPage(QWidget):
         if filters.get("min_planets"):
             try:
                 if int(system.get("planets") or 0) < int(filters["min_planets"]):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        if filters.get("min_moons"):
+            try:
+                if int(system.get("moons") or 0) < int(filters["min_moons"]):
                     return False
             except (TypeError, ValueError):
                 return False

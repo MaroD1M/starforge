@@ -422,6 +422,27 @@ class Services:
             _record("scan", "建立发现索引失败", res.get("error") or "", "discoveries", False)
         return _ok(**res)
 
+    def discoveries_index_all(self) -> dict:
+        """索引**全部**玩家存档的发现记录（多存档汇总）。"""
+        from .. import discoveries_index as index_mod
+
+        res = index_mod.index_saves()
+        detail = f"{res.get('count', 0)} 颗 · {len(res.get('saves') or [])} 个存档"
+        if res.get("rebuilt"):
+            detail += " · 已重建"
+        elif res.get("cached"):
+            detail += " · 全部命中缓存"
+        _record("scan", "建立发现索引（全部存档）" if res.get("ok") else "建立发现索引失败",
+                detail, "discoveries", bool(res.get("ok")))
+        return _ok(**res)
+
+    def discoveries_saves(self) -> dict:
+        """返回已索引的存档列表（只含文件名，不暴露完整路径）。"""
+        from .. import discoveries_index as index_mod
+
+        st = index_mod.stats()
+        return _ok(saves=st.get("save_files") or [], total=st.get("planets") or 0)
+
     def discoveries_query(self, **kw: Any) -> dict:
         """查询本地发现索引；筛选参数与 ``discoveries.filter_discovered`` 一致。"""
         from .. import discoveries_index as index_mod
@@ -1443,11 +1464,19 @@ class Services:
     def agent_connect(self) -> dict:
         """连接到**已运行**的游戏（pymhf 走“发现已运行实例”分支）。
 
-        UI 的「连接游戏」原来传 `attach=True`，而那条路径在 build 185034 上会让游戏
-        以访问冲突退出，默认已拒绝。这里改成“要求游戏已在运行 + attach=False”，
-        既避开不安全的 attach 注入，也不会替用户启动游戏。
+        两个安全前提：
+        1. 已经连上（`ping` 成功）就直接返回，**绝不重复注入**——重复注入会让游戏退出；
+        2. 未连接时才注入；UI 负责在注入前提示“建议回主菜单”（已进入存档时注入可能崩）。
         """
         from ..live import agent_install, mem
+        from ..live.agent_client import AgentClient
+
+        try:
+            if AgentClient(timeout=1.5).ping():
+                return {"ok": True, "already_connected": True,
+                        "note": "游戏内代理已在运行；无需重复注入"}
+        except Exception:                                  # noqa: BLE001
+            pass
 
         try:
             pid = mem.find_pid("NMS.exe")
@@ -1456,7 +1485,7 @@ class Services:
                     "error": f"无法检测游戏进程：{type(e).__name__}: {e}"}
         if not pid:
             return {"ok": False, "code": "E_NO_GAME",
-                    "error": "游戏没有运行：先启动游戏（进入主菜单即可）再点连接"}
+                    "error": "游戏没有运行：先启动游戏（建议停在主菜单）再点连接"}
         try:
             return agent_install.launch(attach=False)
         except Exception as e:                             # noqa: BLE001
